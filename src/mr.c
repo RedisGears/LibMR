@@ -97,6 +97,7 @@ struct MRCtx {
     /* Steps dictionaries */
     mr_dict* readerDict;
     mr_dict* mappersDict;
+    mr_dict* filtersDict;
 
     mr_threadpool executionsThreadPool;
 
@@ -133,11 +134,12 @@ mr_dictType dictTypeHeapIds = {
 typedef enum StepType {
     StepType_Reader,
     StepType_Mapper,
+    StepType_Filter,
     StepType_Collect,
 }StepType;
 
 typedef enum StepRunResult {
-    StepRunResult_Continue, StepRunResult_More, StepRunResult_Hold,
+    StepRunResult_Continue, StepRunResult_More, StepRunResult_Hold, StepRunResult_Error,
 }StepRunResult;
 
 typedef struct StepDefinition {
@@ -153,6 +155,10 @@ typedef struct ReadStep {
 typedef struct MapStep {
     ExecutionMapper mapCallback;
 }MapStep;
+
+typedef struct FilterStep {
+    ExecutionFilter filterCallback;
+}FilterStep;
 
 typedef struct CollectStep {
     ARR(Record*) collectedRecords;
@@ -173,6 +179,7 @@ typedef struct Step {
     ExecutionBuilderStep bStep;
     union {
         MapStep map;
+        FilterStep filter;
         ReadStep read;
         CollectStep collect;
     };
@@ -218,6 +225,7 @@ struct Execution {
 
 struct ExecutionCtx {
     Execution* e;
+    char* err;
 };
 
 typedef struct mr_BufferWriter WriteSerializationCtx;
@@ -267,6 +275,18 @@ void MR_ExecutionBuilderMap(ExecutionBuilder* builder, const char* name, void* a
     builder->steps = array_append(builder->steps, s);
 }
 
+void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* name, void* args) {
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.filtersDict, name);
+    RedisModule_Assert(sd);
+    ExecutionBuilderStep s = {
+            .args = args,
+            .argsType = sd->type,
+            .name = MR_STRDUP(name),
+            .type = StepType_Filter,
+    };
+    builder->steps = array_append(builder->steps, s);
+}
+
 void MR_FreeExecutionBuilder(ExecutionBuilder* builder) {
     for (size_t i = 0 ; i < array_len(builder->steps) ; ++i) {
         ExecutionBuilderStep* s = builder->steps + i;
@@ -303,6 +323,9 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
     case StepType_Mapper:
         s->map.mapCallback = sd->callback;
         break;
+    case StepType_Filter:
+        s->filter.filterCallback = sd->callback;
+        break;
     case StepType_Collect:
         s->collect.collectedRecords = array_new(Record*, 20);
         s->collect.nDone = 0;
@@ -317,6 +340,9 @@ static StepDefinition* MR_GetStepDefinition(StepType type, const char* name) {
     switch (type) {
     case StepType_Mapper:
         sd = mr_dictFetchValue(mrCtx.mappersDict, name);
+        break;
+    case StepType_Filter:
+        sd = mr_dictFetchValue(mrCtx.filtersDict, name);
         break;
     case StepType_Reader:
         sd = mr_dictFetchValue(mrCtx.readerDict, name);
@@ -599,17 +625,41 @@ static StepRunResult MR_RunCollectStep(ExecutionCtx* eCtx, Step* s, Record** r) 
     }
 }
 
+static StepRunResult MR_RunFilterStep(ExecutionCtx* eCtx, Step* s, Record** r) {
+    if (!*r) {
+        s->flags &= StepFlag_Done;
+        return StepRunResult_Continue;
+    }
+    int res = s->filter.filterCallback(eCtx, *r, s->bStep.args);
+    if (eCtx->err){
+        MR_RecordFree(*r);
+        return StepRunResult_Error;
+    }
+    if (!res) {
+        MR_RecordFree(*r);
+        return StepRunResult_More;
+    } else {
+        return StepRunResult_Continue;
+    }
+}
+
 static StepRunResult MR_RunMapStep(ExecutionCtx* eCtx, Step* s, Record** r) {
     if (!*r) {
         s->flags &= StepFlag_Done;
         return StepRunResult_Continue;
     }
     *r = s->map.mapCallback(eCtx, *r, s->bStep.args);
+    if (eCtx->err) {
+        return StepRunResult_Error;
+    }
     return StepRunResult_Continue;
 }
 
 static StepRunResult MR_RunReaderStep(ExecutionCtx* eCtx, Step* s, Record** r) {
     *r = s->read.readCallback(eCtx, s->bStep.args);
+    if (eCtx->err) {
+        return StepRunResult_Error;
+    }
     if (!*r) {
         s->flags &= StepFlag_Done;
     }
@@ -622,6 +672,8 @@ static StepRunResult MR_RunStep(ExecutionCtx* eCtx, Step* s, Record** r) {
         return MR_RunReaderStep(eCtx, s, r);
     case StepType_Mapper:
         return MR_RunMapStep(eCtx, s, r);
+    case StepType_Filter:
+        return MR_RunFilterStep(eCtx, s, r);
     case StepType_Collect:
         return MR_RunCollectStep(eCtx, s, r);
     default:
@@ -631,7 +683,8 @@ static StepRunResult MR_RunStep(ExecutionCtx* eCtx, Step* s, Record** r) {
     return StepRunResult_Continue;
 }
 
-static void MR_ResetStack(ExecutionCtx* eCtx, Step** stack) {
+static void MR_ResetStack(ExecutionCtx* eCtx, Step** stack, Record** currRecrod) {
+    *currRecrod = NULL;
     array_trimm_len(stack, 0);
     /* Find the first step which is not done and take is
      * as the step to resume the run */
@@ -646,8 +699,8 @@ static void MR_ResetStack(ExecutionCtx* eCtx, Step** stack) {
 
 static int MR_RunExecutionInternal(ExecutionCtx* eCtx) {
     array_new_on_stack(Step*, 30, stack);
-    MR_ResetStack(eCtx, stack);
     Record* currRecord = NULL;
+    MR_ResetStack(eCtx, stack, &currRecord);
     while (1) {
         Step* currStep = stack[array_len(stack) - 1];
         StepRunResult res = MR_RunStep(eCtx, currStep, &currRecord);
@@ -662,19 +715,26 @@ static int MR_RunExecutionInternal(ExecutionCtx* eCtx) {
                 }
                 /* no more steps, currRecord is considered a result */
                 eCtx->e->results = array_append(eCtx->e->results, currRecord);
-                MR_ResetStack(eCtx, stack);
+                MR_ResetStack(eCtx, stack, &currRecord);
             } else {
                 /* more steps to run, add the next step to the stack */
                 stack = array_append(stack, eCtx->e->steps + currStep->index + 1);
             }
             break;
         case StepRunResult_More:
-            MR_ResetStack(eCtx, stack);
+            MR_ResetStack(eCtx, stack, &currRecord);
             break;
         case StepRunResult_Hold:
             /* hold the execution */
             array_free(stack);
             return 0;
+        case StepRunResult_Error:
+            /* collect the error and reset the run */
+            RedisModule_Assert(eCtx->err);
+            eCtx->e->errors = array_append(eCtx->e->errors, eCtx->err);
+            eCtx->err = NULL;
+            MR_ResetStack(eCtx, stack, &currRecord);
+            break;
         default:
             RedisModule_Assert(false);
         }
@@ -743,6 +803,7 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
 static void MR_RunExecution(Execution* e, void* pd) {
     ExecutionCtx eCtx = {
             .e = e,
+            .err = NULL
     };
     MR_ExecutionInvokeCallback(&eCtx, &e->callbacks.resume);
     if (MR_RunExecutionInternal(&eCtx)) {
@@ -1050,6 +1111,12 @@ size_t MR_ExecutionCtxGetErrorsLen(ExecutionCtx* ectx){
     return array_len(ectx->e->errors);
 }
 
+LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size_t len) {
+    ectx->err = MR_ALLOC(len + 1);
+    memcpy(ectx->err, err, len);
+    ectx->err[len] = '\0';
+}
+
 static void MR_StepDispose(Step* s) {
     if (s->bStep.name) {
         MR_FREE(s->bStep.name);
@@ -1059,6 +1126,7 @@ static void MR_StepDispose(Step* s) {
     }
     switch (s->bStep.type) {
     case StepType_Mapper:
+    case StepType_Filter:
     case StepType_Reader:
         break;
     case StepType_Collect:
@@ -1106,6 +1174,7 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads) {
 
     mrCtx.readerDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
     mrCtx.mappersDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    mrCtx.filtersDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     mrCtx.executionsThreadPool = mr_thpool_init(numThreads);
     mrCtx.stats = (MRStats){
@@ -1127,6 +1196,10 @@ int MR_RegisterObject(MRObjectType* t) {
     mrCtx.objectTypesDict = array_append(mrCtx.objectTypesDict, t);
     t->id = array_len(mrCtx.objectTypesDict) - 1;
     return REDISMODULE_OK;
+}
+
+LIBMR_API int MR_RegisterRecord(MRRecordType* t) {
+    return MR_RegisterObject(&t->type);
 }
 
 MRObjectType* MR_GetObjectType(size_t id) {
@@ -1156,6 +1229,17 @@ void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* a
         .callback = mapper,
     };
     mr_dictAdd(mrCtx.mappersDict, msd->name, msd);
+}
+
+void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* argType) {
+    RedisModule_Assert(!mr_dictFetchValue(mrCtx.filtersDict, name));
+    StepDefinition* msd = MR_ALLOC(sizeof(*msd));
+    *msd = (StepDefinition) {
+        .name = MR_STRDUP(name),
+        .type = argType,
+        .callback = filter,
+    };
+    mr_dictAdd(mrCtx.filtersDict, msd->name, msd);
 }
 
 long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx) {

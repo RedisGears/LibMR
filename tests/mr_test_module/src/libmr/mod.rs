@@ -24,6 +24,11 @@ use crate::libmrraw::bindings::{
     MR_ExecutionCtxGetResult,
     MR_ExecutionCtxGetErrorsLen,
     MR_ExecutionCtxGetError,
+    MRRecordType,
+    MR_RegisterRecord,
+    MR_ExecutionCtxSetError,
+    MR_ExecutionBuilderFilter,
+    MR_RegisterFilter,
 };
 
 use serde::ser::{
@@ -55,6 +60,8 @@ use redis_module::{
 use libc::{
     strlen,
 };
+
+pub type MRError = String;
 
 pub extern "C" fn rust_obj_free<T: BaseObject>(ctx: *mut c_void) {
     unsafe{Box::from_raw(ctx as *mut T)};
@@ -91,7 +98,7 @@ pub extern "C" fn rust_obj_to_string(_arg: *mut c_void) -> *mut c_char {
     0 as *mut c_char
 }
 
-pub extern "C" fn rust_obj_send_reply(_arg1: *mut RedisModuleCtx) {
+pub extern "C" fn rust_obj_send_reply(_arg1: *mut RedisModuleCtx, _record: *mut ::std::os::raw::c_void) {
     
 }
 
@@ -100,7 +107,7 @@ pub trait BaseObject: Clone + Serialize + Deserialize<'static> {
     fn init(&mut self) {}
 }
 
-fn register<T: Clone + Serialize + Deserialize<'static> + BaseObject>() -> *mut MRObjectType {
+fn register<T: BaseObject>() -> *mut MRObjectType {
     unsafe {
         let obj = Box::into_raw(Box::new(MRObjectType {
             type_: T::get_name().as_ptr() as *mut c_char,
@@ -110,7 +117,6 @@ fn register<T: Clone + Serialize + Deserialize<'static> + BaseObject>() -> *mut 
             serialize: Some(rust_obj_serialize::<T>),
             deserialize: Some(rust_obj_deserialize::<T>),
             tostring: Some(rust_obj_to_string),
-            sendReply: Some(rust_obj_send_reply),
         }));
     
         MR_RegisterObject(obj);
@@ -119,14 +125,35 @@ fn register<T: Clone + Serialize + Deserialize<'static> + BaseObject>() -> *mut 
     }
 }
 
+fn register_record<T: BaseObject>() -> *mut MRRecordType {
+    unsafe {
+        let obj = Box::into_raw(Box::new(MRRecordType {
+            type_: MRObjectType{
+                type_: T::get_name().as_ptr() as *mut c_char,
+                id: 0,
+                free: Some(rust_obj_free::<T>),
+                dup: Some(rust_obj_dup::<T>),
+                serialize: Some(rust_obj_serialize::<T>),
+                deserialize: Some(rust_obj_deserialize::<T>),
+                tostring: Some(rust_obj_to_string),
+            },
+            sendReply: Some(rust_obj_send_reply),
+        }));
+    
+        MR_RegisterRecord(obj);
+
+        obj
+    }
+}
+
 pub struct RecordType<R: BaseObject> {
-    t: *mut MRObjectType,
+    t: *mut MRRecordType,
     phantom: PhantomData<R>,
 }
 
 impl<R: Record> RecordType<R> {
     pub fn new() -> RecordType<R> {
-        let obj = register::<R>();
+        let obj = register_record::<R>();
         RecordType {
             t: obj,
             phantom: PhantomData,
@@ -139,14 +166,22 @@ impl<R: Record> RecordType<R> {
 }
 
 pub trait Record: BaseObject{
-    fn new(t: *mut MRObjectType) -> Self;
+    fn new(t: *mut MRRecordType) -> Self;
     fn to_redis_value(&mut self) -> RedisValue;
 }
 
-pub extern "C" fn rust_reader<Step:Reader>(_ectx: *mut ExecutionCtx, args: *mut ::std::os::raw::c_void) -> *mut crate::libmrraw::bindings::Record {
+pub extern "C" fn rust_reader<Step:Reader>(ectx: *mut ExecutionCtx, args: *mut ::std::os::raw::c_void) -> *mut crate::libmrraw::bindings::Record {
     let r = unsafe{&mut *(args as *mut Step)};
     match r.read() {
-        Some(res) => Box::into_raw(Box::new(res)) as *mut crate::libmrraw::bindings::Record,
+        Some(res) => {
+            match res {
+                Ok(res) => Box::into_raw(Box::new(res)) as *mut crate::libmrraw::bindings::Record,
+                Err(e) => {
+                    unsafe{MR_ExecutionCtxSetError(ectx, e.as_ptr() as *mut c_char, e.len())};
+                    0 as *mut crate::libmrraw::bindings::Record
+                },
+            }
+        },
         None => 0 as *mut crate::libmrraw::bindings::Record,
     }  
 }
@@ -154,7 +189,7 @@ pub extern "C" fn rust_reader<Step:Reader>(_ectx: *mut ExecutionCtx, args: *mut 
 pub trait Reader : BaseObject{
     type R: Record;
 
-    fn read(&mut self) -> Option<Self::R>;
+    fn read(&mut self) -> Option<Result<Self::R, MRError>>;
 
     fn register() {
         let obj = register::<Self>();
@@ -164,17 +199,24 @@ pub trait Reader : BaseObject{
     }
 }
 
-pub extern "C" fn rust_map<Step:MapStep>(_ectx: *mut ExecutionCtx, r: *mut crate::libmrraw::bindings::Record, args: *mut c_void) -> *mut crate::libmrraw::bindings::Record {
+pub extern "C" fn rust_map<Step:MapStep>(ectx: *mut ExecutionCtx, r: *mut crate::libmrraw::bindings::Record, args: *mut c_void) -> *mut crate::libmrraw::bindings::Record {
     let s = unsafe{&*(args as *mut Step)};
     let r = unsafe{Box::from_raw(r as *mut Step::InRecord)};
-    Box::into_raw(Box::new(s.map(*r))) as *mut crate::libmrraw::bindings::Record
+    match s.map(*r) {
+        Ok(res) => Box::into_raw(Box::new(res)) as *mut crate::libmrraw::bindings::Record,
+        Err(e) => {
+            unsafe{MR_ExecutionCtxSetError(ectx, e.as_ptr() as *mut c_char, e.len())};
+            0 as *mut crate::libmrraw::bindings::Record
+        }
+    }
+    
 }
 
 pub trait MapStep: BaseObject{
     type InRecord: Record;
     type OutRecord: Record;
 
-    fn map(&self, r: Self::InRecord) -> Self::OutRecord;
+    fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, MRError>;
 
     fn register() {
         let obj = register::<Self>();
@@ -182,6 +224,33 @@ pub trait MapStep: BaseObject{
             MR_RegisterMapper(Self::get_name().as_ptr() as *mut c_char, Some(rust_map::<Self>), obj);
         }
     }
+}
+
+pub extern "C" fn rust_filter<Step:FilterStep>(ectx: *mut ExecutionCtx, r: *mut crate::libmrraw::bindings::Record, args: *mut c_void) -> c_int {
+    let s = unsafe{&*(args as *mut Step)};
+    let r = unsafe{&*(r as *mut Step::R)}; // do not take ownership on the record
+    match s.filter(r) {
+        Ok(res) => res as c_int,
+        Err(e) => {
+            unsafe{MR_ExecutionCtxSetError(ectx, e.as_ptr() as *mut c_char, e.len())};
+            0 as c_int
+        }
+    }
+    
+}
+
+pub trait FilterStep: BaseObject{
+    type R: Record;
+
+    fn filter(&self, r: &Self::R) -> Result<bool, MRError>;
+
+    fn register() {
+        let obj = register::<Self>();
+        unsafe{
+            MR_RegisterFilter(Self::get_name().as_ptr() as *mut c_char, Some(rust_filter::<Self>), obj);
+        }
+    }
+    
 }
 
 pub struct Builder<R: Record> {
@@ -214,6 +283,13 @@ impl<R: Record> Builder<R> {
             inner_builder: Some(inner_builder),
             phantom: PhantomData,
         }
+    }
+
+    pub fn filter<Step: FilterStep::<R=R>>(self, step: Step) -> Builder<Step::R> {
+        unsafe {
+            MR_ExecutionBuilderFilter(self.inner_builder.unwrap(), Step::get_name().as_ptr() as *const c_char, Box::into_raw(Box::new(step)) as *const Step as *mut c_void)
+        }
+        self
     }
 
     pub fn collect(self) -> Self {

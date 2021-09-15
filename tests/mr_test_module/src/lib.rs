@@ -36,12 +36,15 @@ use libmr::{
     BaseObject,
     Record,
     Reader,
-    RecordType
+    MapStep,
+    RecordType,
+    MRError,
+    FilterStep,
 };
 
 use libmrraw::bindings::{
-    MRObjectType,
     MR_Init,
+    MRRecordType,
 };
 
 use std::os::raw::{
@@ -58,6 +61,77 @@ fn get_redis_ctx() -> *mut RedisModuleCtx {
     unsafe {
         DETACHED_CTX
     }
+}
+
+fn get_ctx() -> Context {
+    let inner = get_redis_ctx();
+    Context::new(inner)
+}
+
+fn ctx_lock() {
+    let inner = get_redis_ctx();
+    unsafe{
+        RedisModule_ThreadSafeContextLock.unwrap()(inner);
+    }
+}
+
+fn ctx_unlock() {
+    let inner = get_redis_ctx();
+    unsafe{
+        RedisModule_ThreadSafeContextUnlock.unwrap()(inner);
+    }
+}
+
+fn strin_record_new(s: String) -> StringRecord {
+    let mut r = unsafe{
+        HASH_RECORD_TYPE.as_ref().unwrap().create()
+    };
+    r.s = Some(s);
+    r
+}
+
+fn lmr_read_keys_type(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(KeysReader::new()).
+                    map(TypeMapper).
+                    collect().
+                    create_execution();
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|mut res, mut errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        if errs.len() > 0 {
+            let err = errs.pop().unwrap();
+            thread_ctx.reply(Err(RedisError::String(err.to_string())));
+        } else {
+            let res: Vec<RedisValue> = res.drain(..).map(|r| r.to_redis_value()).collect();
+            thread_ctx.reply(Ok(RedisValue::Array(res)));
+        }
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
+fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(KeysReader::new()).
+                    filter(TypeFilter::new("string".to_string())).
+                    collect().
+                    create_execution();
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|mut res, mut errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        if errs.len() > 0 {
+            let err = errs.pop().unwrap();
+            thread_ctx.reply(Err(RedisError::String(err.to_string())));
+        } else {
+            let res: Vec<RedisValue> = res.drain(..).map(|r| r.to_redis_value()).collect();
+            thread_ctx.reply(Ok(RedisValue::Array(res)));
+        }
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
 }
 
 fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
@@ -84,7 +158,7 @@ fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 impl Default for  crate::libmrraw::bindings::Record {
     fn default() -> Self {
         crate::libmrraw::bindings::Record {
-            type_: 0 as *mut MRObjectType,
+            recordType: 0 as *mut MRRecordType,
         }
     }
 }
@@ -98,10 +172,10 @@ struct StringRecord {
 }
 
 impl Record for StringRecord {
-    fn new(t: *mut MRObjectType) -> Self {
+    fn new(t: *mut MRRecordType) -> Self {
         StringRecord {
             base: crate::libmrraw::bindings::Record {
-                type_: t,
+                recordType: t,
             },
             s: None,
         }
@@ -119,6 +193,82 @@ impl Record for StringRecord {
 impl BaseObject for StringRecord {
     fn get_name() -> &'static str {
         "StringRecord\0"
+    }
+}
+
+/* filter by key type */
+#[derive(Clone, Serialize, Deserialize)]
+struct TypeFilter {
+    t: String,
+}
+
+impl TypeFilter {
+    pub fn new(t: String) -> TypeFilter{
+        TypeFilter{
+            t: t,
+        }
+    }
+}
+
+impl FilterStep for TypeFilter {
+    type R = StringRecord;
+
+    fn filter(&self, r: &Self::R) -> Result<bool, MRError> {
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call("type",&[r.s.as_ref().unwrap()]);
+        ctx_unlock();
+        if let Ok(res) = res {
+            if let RedisValue::SimpleString(res) = res {
+                if res == self.t {
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            } else {
+                Err("bad result returned from type command".to_string())
+            }
+        } else {
+            Err("bad result returned from type command".to_string())
+        }
+    }
+}
+
+impl BaseObject for TypeFilter {
+    fn get_name() -> &'static str {
+        "TypeFilter\0"
+    }
+}
+
+/* map key name to its type */
+#[derive(Clone, Serialize, Deserialize)]
+struct TypeMapper;
+
+impl MapStep for TypeMapper {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, MRError> {
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call("type",&[r.s.as_ref().unwrap()]);
+        ctx_unlock();
+        if let Ok(res) = res {
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
+                Ok(r)
+            } else {
+                Err("bad result returned from type command".to_string())
+            }
+        } else {
+            Err("bad result returned from type command".to_string())
+        }
+    }
+}
+
+impl BaseObject for TypeMapper {
+    fn get_name() -> &'static str {
+        "TypeMapper\0"
     }
 }
 
@@ -152,11 +302,7 @@ extern "C" fn cursor_callback(_ctx: *mut RedisModuleCtx,
 
     let key_str = RedisString::from_ptr(keyname).unwrap();
 
-    let mut r = unsafe{
-        HASH_RECORD_TYPE.as_ref().unwrap().create()
-    };
-
-    r.s = Some(key_str.to_string());
+    let r = strin_record_new(key_str.to_string());
 
     reader.pending.push(r);
 }
@@ -164,21 +310,21 @@ extern "C" fn cursor_callback(_ctx: *mut RedisModuleCtx,
 impl Reader for KeysReader {
     type R = StringRecord;
 
-    fn read(&mut self) -> Option<Self::R> {
+    fn read(&mut self) -> Option<Result<Self::R, MRError>> {
         let cursor = *self.cursor.as_ref()?;
         loop {
             if let Some(element) = self.pending.pop() {
-                return Some(element);
+                return Some(Ok(element));
             }
             if self.is_done {
                 return None;
             }
+            ctx_lock();
             let res = unsafe{
-                RedisModule_ThreadSafeContextLock.unwrap()(get_redis_ctx());
                 let res = RedisModule_Scan.unwrap()(get_redis_ctx(), cursor, Some(cursor_callback), self as *mut KeysReader as *mut c_void);
-                RedisModule_ThreadSafeContextUnlock.unwrap()(get_redis_ctx());
                 res
             };
+            ctx_unlock();
             if res == 0 {
                 self.is_done = true;
             }
@@ -220,6 +366,8 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
         HASH_RECORD_TYPE = Some(RecordType::new())
     };
 	KeysReader::register();
+    TypeMapper::register();
+    TypeFilter::register();
 	Status::Ok
 }
 
@@ -230,5 +378,7 @@ redis_module!{
     init: init_func,
     commands: [
         ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0],
+        ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0],
+        ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0],
     ],
 }
