@@ -33,9 +33,17 @@ typedef enum NodeStatus{
     NodeStatus_Connected, NodeStatus_Disconnected, NodeStatus_HelloSent, NodeStatus_Free
 }NodeStatus;
 
+typedef enum SendMsgType{
+    SendMsgType_BySlot, SendMsgType_ById, SendMsgType_ToAll
+}SendMsgType;
+
 typedef struct SendMsg{
     size_t refCount; // ref count does not need to be thread safe as its only touched on the event loop
-    char idToSend[REDISMODULE_NODE_ID_LEN + 1];
+    union {
+        char idToSend[REDISMODULE_NODE_ID_LEN + 1];
+        size_t slotToSend;
+    };
+    SendMsgType sendMsgType;
     functionId function;
     char* msg;
     size_t msgLen;
@@ -76,6 +84,10 @@ struct ClusterCtx {
     ARR(MR_ClusterMessageReceiver) callbacks;
     Cluster* CurrCluster;
     mr_dict* nodesMsgIds;
+    size_t minSlot;
+    size_t maxSlot;
+    size_t clusterSize;
+    char myId[REDISMODULE_NODE_ID_LEN + 1];
 }clusterCtx;
 
 typedef struct ClusterSetCtx {
@@ -140,14 +152,14 @@ static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
 /* Runs on the event loop */
 static void MR_ClusterSendMsgTask(void* ctx) {
     SendMsg* sendMsg = ctx;
-    if(sendMsg->idToSend[0] != '\0'){
+    if (sendMsg->sendMsgType == SendMsgType_ById) {
         Node* n = MR_GetNode(sendMsg->idToSend);
         if(!n){
             RedisModule_Log(mr_staticCtx, "warning", "Could not find node to send message to");
-            return;
+        } else {
+            MR_ClusterSendMsgToNode(n, sendMsg);
         }
-        MR_ClusterSendMsgToNode(n, sendMsg);
-    }else{
+    } else if (sendMsg->sendMsgType == SendMsgType_ToAll) {
         mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
         mr_dictEntry *entry = NULL;
         while((entry = mr_dictNext(iter))){
@@ -157,6 +169,15 @@ static void MR_ClusterSendMsgTask(void* ctx) {
             }
         }
         mr_dictReleaseIterator(iter);
+    } else if (sendMsg->sendMsgType == SendMsgType_BySlot) {
+        Node* n = clusterCtx.CurrCluster->slots[sendMsg->slotToSend];
+        if(!n){
+            RedisModule_Log(mr_staticCtx, "warning", "Could not find node to send message to");
+            return;
+        }
+        MR_ClusterSendMsgToNode(n, sendMsg);
+    } else {
+        RedisModule_Assert(false);
     }
     MR_ClusterFreeMsg(sendMsg);
 }
@@ -166,8 +187,9 @@ void MR_ClusterSendMsg(const char* nodeId, functionId function, char* msg, size_
     if(nodeId){
         memcpy(msgStruct->idToSend, nodeId, REDISMODULE_NODE_ID_LEN);
         msgStruct->idToSend[REDISMODULE_NODE_ID_LEN] = '\0';
+        msgStruct->sendMsgType = SendMsgType_ById;
     }else{
-        msgStruct->idToSend[0] = '\0';
+        msgStruct->sendMsgType = SendMsgType_ToAll;
     }
     msgStruct->function = function;
     msgStruct->msg = msg;
@@ -181,6 +203,24 @@ void MR_ClusterCopyAndSendMsg(const char* nodeId, functionId function, char* msg
     char* cMsg = MR_ALLOC(len);
     memcpy(cMsg, msg, len);
     MR_ClusterSendMsg(nodeId, function, cMsg, len);
+}
+
+void MR_ClusterSendMsgBySlot(size_t slot, functionId function, char* msg, size_t len) {
+    SendMsg* msgStruct = MR_ALLOC(sizeof(*msgStruct));
+    msgStruct->slotToSend = slot;
+    msgStruct->sendMsgType = SendMsgType_BySlot;
+    msgStruct->function = function;
+    msgStruct->msg = msg;
+    msgStruct->msgLen = len;
+    msgStruct->retries = 0;
+    msgStruct->refCount = 1;
+    MR_EventLoopAddTask(MR_ClusterSendMsgTask, msgStruct);
+}
+
+void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg, size_t len) {
+    char* cMsg = MR_ALLOC(len);
+    memcpy(cMsg, msg, len);
+    MR_ClusterSendMsgBySlot(slot, function, cMsg, len);
 }
 
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver) {
@@ -493,6 +533,7 @@ static void MR_RefreshClusterData(){
     clusterCtx.CurrCluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
     memcpy(clusterCtx.CurrCluster->myId, RedisModule_GetMyClusterID(), REDISMODULE_NODE_ID_LEN);
     clusterCtx.CurrCluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
+    memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
     clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
@@ -535,11 +576,18 @@ static void MR_RefreshClusterData(){
         if(!n){
             n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, NULL, NULL, minslot, maxslot);
         }
+
+        if (n->isMe) {
+            clusterCtx.minSlot = minslot;
+            clusterCtx.maxSlot = maxslot;
+        }
+
         for(int i = minslot ; i <= maxslot ; ++i){
             clusterCtx.CurrCluster->slots[i] = n;
         }
     }
     RedisModule_FreeCallReply(allSlotsRelpy);
+    clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     MR_ClusterConnectToShards();
 }
 
@@ -582,6 +630,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     memset(clusterCtx.CurrCluster->myId, '0', zerosPadding);
     memcpy(clusterCtx.CurrCluster->myId + zerosPadding, myId, myIdLen);
     clusterCtx.CurrCluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
+    memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
     clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
@@ -631,6 +680,11 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
             clusterCtx.CurrCluster->slots[i] = n;
         }
 
+        if (n->isMe) {
+            clusterCtx.minSlot = minslot;
+            clusterCtx.maxSlot = maxslot;
+        }
+
         if(j < numOfRanges - 1){
             // we are not at the last range
             const char* unixAdd = RedisModule_StringPtrLen(argv[i + 7], NULL);
@@ -639,6 +693,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
             }
         }
     }
+    clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     MR_ClusterConnectToShards();
 }
 
@@ -856,10 +911,45 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     return REDISMODULE_OK;
 }
 
+int MR_ClusterIsMySlot(size_t slot) {
+    return clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
+}
+
+uint16_t MR_Crc16(const char *buf, int len);
+
+static unsigned int keyHashSlot(const char *key, int keylen) {
+    int s, e; /* start-end indexes of { and } */
+
+    for (s = 0; s < keylen; s++)
+        if (key[s] == '{') break;
+
+    /* No '{' ? Hash the whole key. This is the base case. */
+    if (s == keylen) return MR_Crc16(key,keylen) & 0x3FFF;
+
+    /* '{' found? Check if we have the corresponding '}'. */
+    for (e = s+1; e < keylen; e++)
+        if (key[e] == '}') break;
+
+    /* No '}' or nothing between {} ? Hash the whole key. */
+    if (e == keylen || e == s+1) return MR_Crc16(key,keylen) & 0x3FFF;
+
+    /* If we are here there is both a { and a } on its right. Hash
+     * what is in the middle between { and }. */
+    return MR_Crc16(key+s+1,e-s-1) & 0x3FFF;
+}
+
+size_t MR_ClusterGetSlotdByKey(const char* key, size_t len) {
+    return keyHashSlot(key, len);
+}
+
 int MR_ClusterInit(RedisModuleCtx* rctx) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    clusterCtx.minSlot = 0;
+    clusterCtx.maxSlot = 0;
+    clusterCtx.clusterSize = 1;
+    memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
     if (RedisModule_CreateCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh, "readonly", 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command " CLUSTER_REFRESH_COMMAND);
@@ -890,14 +980,14 @@ int MR_ClusterInit(RedisModuleCtx* rctx) {
 }
 
 size_t MR_ClusterGetSize(){
-    return mr_dictSize(clusterCtx.CurrCluster->nodes);
+    return clusterCtx.clusterSize;
 }
 
 bool MR_ClusterIsClusterMode(){
-    return clusterCtx.CurrCluster && clusterCtx.CurrCluster->isClusterMode && MR_ClusterGetSize() > 1;
+    return MR_ClusterGetSize() > 1;
 }
 
-char* MR_ClusterGetMyId(){
-    return clusterCtx.CurrCluster->myId;
+const char* MR_ClusterGetMyId(){
+    return clusterCtx.myId;
 }
 

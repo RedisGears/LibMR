@@ -74,6 +74,9 @@ LIBMR_API void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* 
  * Will return all the records to the initiator */
 LIBMR_API void MR_ExecutionBuilderCollect(ExecutionBuilder* builder);
 
+/* Add a reshuffle step to the builder. */
+LIBMR_API void MR_ExecutionBuilderReshuffle(ExecutionBuilder* builder);
+
 /* Free the give execution builder */
 LIBMR_API void MR_FreeExecutionBuilder(ExecutionBuilder* builder);
 
@@ -123,11 +126,13 @@ LIBMR_API int MR_ReadSerializationCtxIsError(ReaderSerializationCtx* sctx);
 
 /* records functions */
 typedef void (*SendAsRedisReply)(RedisModuleCtx*, void* record);
+typedef size_t (*HashTag)(void* record);
 
 /* represent record type */
 typedef struct MRRecordType{
     MRObjectType type;
     SendAsRedisReply sendReply;
+    HashTag hashTag;
 }MRRecordType;
 
 /* Base record struct, each record should have it
@@ -137,5 +142,7 @@ struct Record {
 };
 LIBMR_API int MR_RegisterRecord(MRRecordType* t);
 LIBMR_API void MR_RecordFree(Record* r);
+
+LIBMR_API size_t MR_CalculateSlot(const char* buff, size_t len);
 
 #endif /* SRC_MR_H_ */

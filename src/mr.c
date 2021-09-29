@@ -32,11 +32,14 @@ typedef struct RemoteFunctionDef {
     MR_ClusterMessageReceiver functionPointer;
 }RemoteFunctionDef;
 
+typedef struct Step Step;
+
 typedef void (*ExecutionTaskCallback)(Execution* e, void* pd);
 
 /* functions declarations */
 static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, void* pd);
 static void MR_RunExecution(Execution* e, void* pd);
+static Record* MR_RunStep(Execution* e, Step* s);
 void MR_FreeExecution(Execution* e);
 
 /* Remote functions declaration */
@@ -135,11 +138,12 @@ typedef enum StepType {
     StepType_Reader,
     StepType_Mapper,
     StepType_Filter,
+    StepType_Reshuffle,
     StepType_Collect,
 }StepType;
 
 typedef enum StepRunResult {
-    StepRunResult_Continue, StepRunResult_More, StepRunResult_Hold, StepRunResult_Error,
+    StepRunResult_Ok, StepRunResult_Hold, StepRunResult_Error,
 }StepRunResult;
 
 typedef struct StepDefinition {
@@ -165,6 +169,12 @@ typedef struct CollectStep {
     size_t nDone;
 }CollectStep;
 
+typedef struct ReshuffleStep {
+    ARR(Record*) pendingRecords;
+    size_t nDone;
+    int sentDoneMsg
+}ReshuffleStep;
+
 typedef struct ExecutionBuilderStep {
     void* args;
     MRObjectType* argsType;
@@ -174,7 +184,7 @@ typedef struct ExecutionBuilderStep {
 
 #define StepFlag_Done 1<<0
 
-typedef struct Step {
+struct Step {
     int flags;
     ExecutionBuilderStep bStep;
     union {
@@ -182,9 +192,11 @@ typedef struct Step {
         FilterStep filter;
         ReadStep read;
         CollectStep collect;
+        ReshuffleStep reshuffle;
     };
     size_t index;
-}Step;
+    struct Step* child;
+};
 
 struct ExecutionBuilder {
     ARR(ExecutionBuilderStep) steps;
@@ -216,7 +228,7 @@ struct Execution {
     size_t nRecieved;
     size_t nCompleted;
     ARR(Record*) results;
-    ARR(char*) errors;
+    ARR(Record*) errors;
 
     ExecutionCallbacks callbacks;
     MR_LoopTaskCtx* timeoutTask;
@@ -225,7 +237,7 @@ struct Execution {
 
 struct ExecutionCtx {
     Execution* e;
-    char* err;
+    Record* err;
 };
 
 typedef struct mr_BufferWriter WriteSerializationCtx;
@@ -287,6 +299,16 @@ void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* name, void
     builder->steps = array_append(builder->steps, s);
 }
 
+void MR_ExecutionBuilderReshuffle(ExecutionBuilder* builder) {
+    ExecutionBuilderStep s = (ExecutionBuilderStep){
+            .args = NULL,
+            .argsType = NULL,
+            .name = NULL,
+            .type = StepType_Reshuffle,
+    };
+    builder->steps = array_append(builder->steps, s);
+}
+
 void MR_FreeExecutionBuilder(ExecutionBuilder* builder) {
     for (size_t i = 0 ; i < array_len(builder->steps) ; ++i) {
         ExecutionBuilderStep* s = builder->steps + i;
@@ -303,7 +325,7 @@ void MR_FreeExecutionBuilder(ExecutionBuilder* builder) {
 
 static void SetId(char* idBuf, char* idBufStr, size_t id){
     char noneClusterId[REDISMODULE_NODE_ID_LEN] = {0};
-    char* sharId;
+    const char* sharId;
     if(MR_ClusterIsClusterMode()){
         sharId = MR_ClusterGetMyId();
     }else{
@@ -325,6 +347,11 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
         break;
     case StepType_Filter:
         s->filter.filterCallback = sd->callback;
+        break;
+    case StepType_Reshuffle:
+        s->reshuffle.pendingRecords = array_new(Record*, 20);
+        s->reshuffle.nDone = 0;
+        s->reshuffle.sentDoneMsg = 0;
         break;
     case StepType_Collect:
         s->collect.collectedRecords = array_new(Record*, 20);
@@ -377,7 +404,7 @@ static Execution* MR_ExecutionAlloc() {
     e->nRecieved = 0;
     e->nCompleted = 0;
     e->results = array_new(Record*, 10);
-    e->errors = array_new(char*, 10);
+    e->errors = array_new(Record*, 10);
     e->callbacks = (ExecutionCallbacks){
             .done = {.pd = NULL, .callback = NULL},
             .resume = {.pd = NULL, .callback = NULL},
@@ -397,13 +424,16 @@ Execution* MR_CreateExecution(ExecutionBuilder* builder) {
     SetId(e->id, e->idStr, id);
 
     /* Copy steps array. */
+    Step* child = NULL;
     for (size_t i = 0 ; i < array_len(builder->steps) ; ++i) {
         ExecutionBuilderStep* builderStep = builder->steps + i;
         Step s;
         MR_CreateExecutionStep(&s, builderStep);
         s.index = array_len(e->steps);
         s.flags = 0;
+        s.child = child;
         e->steps = array_append(e->steps, s);
+        child = e->steps + array_len(e->steps) - 1;
     }
 
     e->flags |= ExecutionFlag_Initiator;
@@ -418,10 +448,12 @@ static size_t MR_SetRecordToStep(Execution* e, size_t stepIndex, Record* r) {
     RedisModule_Assert(stepIndex < array_len(e->steps));
     Step* s = e->steps + stepIndex;
     switch (s->bStep.type) {
+    case StepType_Reshuffle:
+        s->reshuffle.pendingRecords = array_append(s->reshuffle.pendingRecords, r);
+        return array_len(s->reshuffle.pendingRecords);
     case StepType_Collect:
         s->collect.collectedRecords = array_append(s->collect.collectedRecords, r);
         return array_len(s->collect.collectedRecords);
-        break;
     default:
         RedisModule_Assert(0);
     }
@@ -433,10 +465,12 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
     RedisModule_Assert(stepIndex < array_len(e->steps));
     Step* s = e->steps + stepIndex;
     switch (s->bStep.type) {
+    case StepType_Reshuffle:
+        ++s->reshuffle.nDone;
+        return s->reshuffle.nDone;
     case StepType_Collect:
         ++s->collect.nDone;
         return s->collect.nDone;
-        break;
     default:
         RedisModule_Assert(0);
     }
@@ -531,7 +565,7 @@ static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     MR_ExecutionAddTask(e, MR_SetRecord, RedisModule_HoldString(NULL, payload));
 }
 
-static void MR_SendRecord(Execution* e, Step* s, Record** r, const char* nodeId) {
+static void MR_SendRecordToSlot(Execution* e, Step* s, Record* r, size_t slot) {
     mr_Buffer buff;
     mr_BufferInitialize(&buff);
     mr_BufferWriter buffWriter;
@@ -541,7 +575,22 @@ static void MR_SendRecord(Execution* e, Step* s, Record** r, const char* nodeId)
     /* write the step index to add the record to */
     mr_BufferWriterWriteLong(&buffWriter, s->index);
     /* Write the record */
-    MR_RecordSerialize(*r, &buffWriter);
+    MR_RecordSerialize(r, &buffWriter);
+
+    MR_ClusterSendMsgBySlot(slot, PASS_RECORD_FUNCTION_ID, buff.buff, buff.size);
+}
+
+static void MR_SendRecord(Execution* e, Step* s, Record* r, const char* nodeId) {
+    mr_Buffer buff;
+    mr_BufferInitialize(&buff);
+    mr_BufferWriter buffWriter;
+    mr_BufferWriterInit(&buffWriter, &buff);
+    /* write the execution id */
+    mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
+    /* write the step index to add the record to */
+    mr_BufferWriterWriteLong(&buffWriter, s->index);
+    /* Write the record */
+    MR_RecordSerialize(r, &buffWriter);
 
     MR_ClusterSendMsg(nodeId, PASS_RECORD_FUNCTION_ID, buff.buff, buff.size);
 }
@@ -570,182 +619,222 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
     MR_ExecutionAddTask(e, MR_StepDone, RedisModule_HoldString(NULL, payload));
 }
 
-static StepRunResult MR_RunCollectStep(ExecutionCtx* eCtx, Step* s, Record** r) {
-    if (eCtx->e->flags & ExecutionFlag_Local) {
-        /* on local execution, collect does nothing */
-        return StepRunResult_Continue;
-    }
-    if (!(s->flags & StepFlag_Done)) {
-        if (*r) {
-            if (eCtx->e->flags & ExecutionFlag_Initiator) {
-                /* We are the initiator, lets continue processing the Record. */
-                return StepRunResult_Continue;
+static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
+    while (1) {
+        Record* r = MR_RunStep(e, s->child);
+        if ((e->flags & ExecutionFlag_Local) || MR_IsHold(r)) {
+            /* on local execution, reshuffle does nothing */
+            return r;
+        }
+
+        if (r) {
+            size_t hslot = MR_RecordGetHslot(r);
+            if (MR_ClusterIsMySlot(hslot)) {
+                /* We own the record, lets continue processing the it. */
+                return r;
             }
             /* send record to the initiator */
-            MR_SendRecord(eCtx->e, s, r, eCtx->e->id);
-            /* we pass the record to the initiator, we can free it now */
-            MR_RecordFree(*r);
-            return StepRunResult_More;
+            MR_SendRecordToSlot(e, s, r, hslot);
+            /* we pass the record, we can free it now */
+            MR_RecordFree(r);
+            continue;
         }
-        if (!(eCtx->e->flags & ExecutionFlag_Initiator)) {
-            /* got all the record, notify initiator that we are done passing all the record. */
+
+        if (!s->reshuffle.sentDoneMsg) {
+            /* send step done to the initiator */
             mr_Buffer buff;
             mr_BufferInitialize(&buff);
             mr_BufferWriter buffWriter;
             mr_BufferWriterInit(&buffWriter, &buff);
             /* write the execution id */
-            mr_BufferWriterWriteBuff(&buffWriter, eCtx->e->id, ID_LEN);
-            /* write the step index to add the record to */
+            mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
+            /* write the step index */
             mr_BufferWriterWriteLong(&buffWriter, s->index);
-            MR_ClusterSendMsg(eCtx->e->id, NOTIFY_STEP_DONE_FUNCTION_ID, buff.buff, buff.size);
+            MR_ClusterSendMsg(NULL, NOTIFY_STEP_DONE_FUNCTION_ID, buff.buff, buff.size);
+            s->reshuffle.sentDoneMsg = 1;
+        }
+
+        if (array_len(s->reshuffle.pendingRecords) > 0) {
+            /* process Records that came from other shards */
+            return array_pop(s->reshuffle.pendingRecords);
+        }
+
+        if (s->reshuffle.nDone == MR_ClusterGetSize() - 1) {
+            /* all shards finished sending all the record, we are done. */
+            s->flags &= StepFlag_Done;
+            return NULL;
+        } else {
+            /* hold the execution, wait for shards to send data */
+            return MR_HoldRecordGet();
         }
     }
+}
 
-    if (!(eCtx->e->flags & ExecutionFlag_Initiator)) {
-        /* we are not the initiator, we have nothing to give here */
-        s->flags &= StepFlag_Done;
-        *r = NULL;
-        return StepRunResult_Continue;
-    }
+static Record* MR_RunCollectStep(Execution* e, Step* s) {
+    while (1) {
+        Record* r = MR_RunStep(e, s->child);
+        if ((e->flags & ExecutionFlag_Local) || MR_IsHold(r)) {
+            /* on local execution, collect does nothing */
+            return r;
+        }
 
-    if (array_len(s->collect.collectedRecords) > 0) {
-        /* process Records that came from other shards */
-        *r = array_pop(s->collect.collectedRecords);
-        return StepRunResult_Continue;
-    }
+        if (r) {
+            if (e->flags & ExecutionFlag_Initiator) {
+                /* We are the initiator, lets continue processing the Record. */
+                return r;
+            }
+            /* send record to the initiator */
+            MR_SendRecord(e, s, r, e->id);
+            /* we pass the record to the initiator, we can free it now */
+            MR_RecordFree(r);
+            continue;
+        }
 
-    if (s->collect.nDone == MR_ClusterGetSize() - 1) {
-        /* all shards finished sending all the record, we are done. */
-        s->flags &= StepFlag_Done;
-        *r = NULL;
-        return StepRunResult_Continue;
-    } else {
-        /* hold the execution, wait for shards to send data */
-        return StepRunResult_Hold;
+        if (!(e->flags & ExecutionFlag_Initiator)) {
+            /* send step done to the initiator */
+            mr_Buffer buff;
+            mr_BufferInitialize(&buff);
+            mr_BufferWriter buffWriter;
+            mr_BufferWriterInit(&buffWriter, &buff);
+            /* write the execution id */
+            mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
+            /* write the step index to add the record to */
+            mr_BufferWriterWriteLong(&buffWriter, s->index);
+            MR_ClusterSendMsg(e->id, NOTIFY_STEP_DONE_FUNCTION_ID, buff.buff, buff.size);
+            /* we are not the initiator, we have nothing to give here */
+            s->flags &= StepFlag_Done;
+            return NULL;
+        }
+
+        if (array_len(s->collect.collectedRecords) > 0) {
+            /* process Records that came from other shards */
+            return array_pop(s->collect.collectedRecords);
+        }
+
+        if (s->collect.nDone == MR_ClusterGetSize() - 1) {
+            /* all shards finished sending all the record, we are done. */
+            s->flags &= StepFlag_Done;
+            return NULL;
+        } else {
+            /* hold the execution, wait for shards to send data */
+            return MR_HoldRecordGet();
+        }
     }
 }
 
-static StepRunResult MR_RunFilterStep(ExecutionCtx* eCtx, Step* s, Record** r) {
-    if (!*r) {
-        s->flags &= StepFlag_Done;
-        return StepRunResult_Continue;
-    }
-    int res = s->filter.filterCallback(eCtx, *r, s->bStep.args);
-    if (eCtx->err){
-        MR_RecordFree(*r);
-        return StepRunResult_Error;
-    }
-    if (!res) {
-        MR_RecordFree(*r);
-        return StepRunResult_More;
-    } else {
-        return StepRunResult_Continue;
+static Record* MR_RunFilterStep(Execution* e, Step* s) {
+    while (1) {
+        Record* r = MR_RunStep(e, s->child);
+        if (MR_IsError(r) || MR_IsHold(r)) {
+            return r;
+        }
+        if (!r) {
+            s->flags &= StepFlag_Done;
+            return StepRunResult_Ok;
+        }
+        ExecutionCtx eCtx = {
+            .e = e,
+            .err = NULL,
+        };
+        int res = s->filter.filterCallback(&eCtx, r, s->bStep.args);
+        if (eCtx.err){
+            MR_RecordFree(r);
+            return eCtx.err;
+        }
+        if (!res) {
+            MR_RecordFree(r);
+        } else {
+            return r;
+        }
     }
 }
 
-static StepRunResult MR_RunMapStep(ExecutionCtx* eCtx, Step* s, Record** r) {
-    if (!*r) {
+static Record* MR_RunMapStep(Execution* e, Step* s) {
+    Record* r = MR_RunStep(e, s->child);
+    if (MR_IsError(r) || MR_IsHold(r)) {
+        return r;
+    }
+    if (!r) {
         s->flags &= StepFlag_Done;
-        return StepRunResult_Continue;
+        return StepRunResult_Ok;
     }
-    *r = s->map.mapCallback(eCtx, *r, s->bStep.args);
-    if (eCtx->err) {
-        return StepRunResult_Error;
+    ExecutionCtx eCtx = {
+        .e = e,
+        .err = NULL,
+    };
+    r = s->map.mapCallback(&eCtx, r, s->bStep.args);
+    if (eCtx.err) {
+        return eCtx.err;
     }
-    return StepRunResult_Continue;
+    return r;
 }
 
-static StepRunResult MR_RunReaderStep(ExecutionCtx* eCtx, Step* s, Record** r) {
-    *r = s->read.readCallback(eCtx, s->bStep.args);
-    if (eCtx->err) {
-        return StepRunResult_Error;
+static Record* MR_RunReaderStep(Execution* e, Step* s) {
+    ExecutionCtx eCtx = {
+        .e = e,
+        .err = NULL,
+    };
+    Record* r = s->read.readCallback(&eCtx, s->bStep.args);
+    if (eCtx.err) {
+        return eCtx.err;
     }
-    if (!*r) {
+    if (!r) {
         s->flags &= StepFlag_Done;
     }
-    return StepRunResult_Continue;
+    return r;
 }
 
-static StepRunResult MR_RunStep(ExecutionCtx* eCtx, Step* s, Record** r) {
+static Record* MR_RunStep(Execution* e, Step* s) {
+    if (s->flags & StepFlag_Done) {
+        return NULL;
+    }
     switch(s->bStep.type){
     case StepType_Reader:
-        return MR_RunReaderStep(eCtx, s, r);
+        return MR_RunReaderStep(e, s);
     case StepType_Mapper:
-        return MR_RunMapStep(eCtx, s, r);
+        return MR_RunMapStep(e, s);
     case StepType_Filter:
-        return MR_RunFilterStep(eCtx, s, r);
+        return MR_RunFilterStep(e, s);
+    case StepType_Reshuffle:
+        return MR_RunReshuffleStep(e, s);
     case StepType_Collect:
-        return MR_RunCollectStep(eCtx, s, r);
+        return MR_RunCollectStep(e, s);
     default:
         RedisModule_Assert(false);
     }
     RedisModule_Assert(false);
-    return StepRunResult_Continue;
+    return StepRunResult_Ok;
 }
 
-static void MR_ResetStack(ExecutionCtx* eCtx, Step** stack, Record** currRecrod) {
-    *currRecrod = NULL;
-    array_trimm_len(stack, 0);
-    /* Find the first step which is not done and take is
-     * as the step to resume the run */
-    for (size_t i = 0 ; i < array_len(eCtx->e->steps) ; ++i){
-        Step* s = eCtx->e->steps + i;
-        if (!(s->flags & StepFlag_Done)) {
-            stack = array_append(stack, s);
-            break;
-        }
-    }
-}
-
-static int MR_RunExecutionInternal(ExecutionCtx* eCtx) {
-    array_new_on_stack(Step*, 30, stack);
-    Record* currRecord = NULL;
-    MR_ResetStack(eCtx, stack, &currRecord);
+static int MR_RunExecutionInternal(Execution* e) {
+    Step* lastStep = e->steps + array_len(e->steps) - 1;
     while (1) {
-        Step* currStep = stack[array_len(stack) - 1];
-        StepRunResult res = MR_RunStep(eCtx, currStep, &currRecord);
-        switch(res) {
-        case StepRunResult_Continue:
-            if (currStep->index == array_len(eCtx->e->steps) - 1) {
-                /* last step */
-                if (!currRecord) {
-                    /* currRecord is NULL and we reach the last step, we are done. */
-                    array_free(stack);
-                    return 1;
-                }
-                /* no more steps, currRecord is considered a result */
-                eCtx->e->results = array_append(eCtx->e->results, currRecord);
-                MR_ResetStack(eCtx, stack, &currRecord);
-            } else {
-                /* more steps to run, add the next step to the stack */
-                stack = array_append(stack, eCtx->e->steps + currStep->index + 1);
-            }
-            break;
-        case StepRunResult_More:
-            MR_ResetStack(eCtx, stack, &currRecord);
-            break;
-        case StepRunResult_Hold:
-            /* hold the execution */
-            array_free(stack);
-            return 0;
-        case StepRunResult_Error:
-            /* collect the error and reset the run */
-            RedisModule_Assert(eCtx->err);
-            eCtx->e->errors = array_append(eCtx->e->errors, eCtx->err);
-            eCtx->err = NULL;
-            MR_ResetStack(eCtx, stack, &currRecord);
-            break;
-        default:
-            RedisModule_Assert(false);
+        Record* record = MR_RunStep(e, lastStep);
+        if (MR_IsError(record)) {
+            e->errors = array_append(e->errors, record);
+            continue;
         }
+        if (MR_IsHold(record)) {
+            return 0;
+        }
+
+        if (!record) {
+            /* record is NULL, we are done. */
+            return 1;
+        }
+        e->results = array_append(e->results, record);
     }
     RedisModule_Assert(false);
     return 1;
 }
 
-static void MR_ExecutionInvokeCallback(ExecutionCtx* eCtx, ExecutionCallbackData* callback) {
+static void MR_ExecutionInvokeCallback(Execution* e, ExecutionCallbackData* callback) {
+    ExecutionCtx eCtx = {
+            .e = e,
+            .err = NULL
+    };
     if (callback->callback) {
-        callback->callback(eCtx, callback->pd);
+        callback->callback(&eCtx, callback->pd);
     }
 }
 
@@ -801,14 +890,10 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
 }
 
 static void MR_RunExecution(Execution* e, void* pd) {
-    ExecutionCtx eCtx = {
-            .e = e,
-            .err = NULL
-    };
-    MR_ExecutionInvokeCallback(&eCtx, &e->callbacks.resume);
-    if (MR_RunExecutionInternal(&eCtx)) {
+    MR_ExecutionInvokeCallback(e, &e->callbacks.resume);
+    if (MR_RunExecutionInternal(e)) {
         /* we are done, invoke on done callback and perform termination process. */
-        MR_ExecutionInvokeCallback(&eCtx, &e->callbacks.done);
+        MR_ExecutionInvokeCallback(e, &e->callbacks.done);
         if (e->flags & ExecutionFlag_Local) {
             /* not need to wait to any shard, delete the execution */
             MR_EventLoopAddTask(MR_DeleteExecution, e);
@@ -818,7 +903,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
             MR_ClusterCopyAndSendMsg(e->id, NOTIFY_DONE_FUNCTION_ID, e->id, ID_LEN);
         }
     } else {
-        MR_ExecutionInvokeCallback(&eCtx, &e->callbacks.hold);
+        MR_ExecutionInvokeCallback(e, &e->callbacks.hold);
     }
 }
 
@@ -882,6 +967,7 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     memcpy(e->id, executionId, ID_LEN);
     snprintf(e->idStr, STR_ID_LEN, "%.*s-%lld", REDISMODULE_NODE_ID_LEN, e->id, *(long long*)&e->id[REDISMODULE_NODE_ID_LEN]);
 
+    Step* child = NULL;
     for (size_t i = 0 ; i < nSteps ; ++i) {
         Step s;
         s.bStep.type = mr_BufferReaderReadLong(buffReader);
@@ -909,7 +995,9 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
         MR_InitializeFromStepDef(&s, sd);
         s.flags = 0;
         s.index = i;
+        s.child = child;
         e->steps = array_append(e->steps, s);
+        child = e->steps + array_len(e->steps) - 1;
     }
     return e;
 }
@@ -989,12 +1077,9 @@ static void MR_ExecutionDistribute(Execution* e, void* pd) {
 }
 
 static void MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
-    e->errors = array_append(e->errors, MR_STRDUP("execution max idle reached"));
+    e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution max idle reached"));
     /* we are done, invoke on done callback. */
-    ExecutionCtx eCtx = {
-            .e = e,
-    };
-    MR_ExecutionInvokeCallback(&eCtx, &e->callbacks.done);
+    MR_ExecutionInvokeCallback(e, &e->callbacks.done);
     MR_FreeExecution(e);
 }
 
@@ -1104,7 +1189,7 @@ size_t MR_ExecutionCtxGetResultsLen(ExecutionCtx* ectx) {
 }
 
 const char* MR_ExecutionCtxGetError(ExecutionCtx* ectx, size_t i) {
-    return ectx->e->errors[i];
+    return MR_ErrorRecordGetError(ectx->e->errors[i]);
 }
 
 size_t MR_ExecutionCtxGetErrorsLen(ExecutionCtx* ectx){
@@ -1112,9 +1197,9 @@ size_t MR_ExecutionCtxGetErrorsLen(ExecutionCtx* ectx){
 }
 
 LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size_t len) {
-    ectx->err = MR_ALLOC(len + 1);
-    memcpy(ectx->err, err, len);
-    ectx->err[len] = '\0';
+    char error[len + 1];
+    memcpy(error, err, len);
+    ectx->err = MR_ErrorRecordCreate(error);
 }
 
 static void MR_StepDispose(Step* s) {
@@ -1128,6 +1213,12 @@ static void MR_StepDispose(Step* s) {
     case StepType_Mapper:
     case StepType_Filter:
     case StepType_Reader:
+        break;
+    case StepType_Reshuffle:
+        for (size_t i = 0 ; i < array_len(s->reshuffle.pendingRecords) ; ++i){
+            MR_RecordFree(s->reshuffle.pendingRecords[i]);
+        }
+        array_free(s->reshuffle.pendingRecords);
         break;
     case StepType_Collect:
         for (size_t i = 0 ; i < array_len(s->collect.collectedRecords) ; ++i){
@@ -1154,7 +1245,7 @@ void MR_FreeExecution(Execution* e) {
     }
     array_free(e->results);
     for (size_t i = 0 ; i < array_len(e->errors) ; ++i) {
-        MR_FREE(e->errors[i]);
+        MR_RecordFree(e->errors[i]);
     }
     array_free(e->errors);
     MR_FREE(e);
@@ -1272,4 +1363,8 @@ int MR_WriteSerializationCtxIsError(WriteSerializationCtx* sctx) {
 
 int MR_ReadSerializationCtxIsError(ReaderSerializationCtx* sctx) {
     return 0;
+}
+
+size_t MR_CalculateSlot(const char* buff, size_t len) {
+    return MR_ClusterGetSlotdByKey(buff, len);
 }

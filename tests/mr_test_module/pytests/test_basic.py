@@ -22,3 +22,13 @@ def testBasicMRFilter(env, conn):
         conn.execute_command('hset', 'doc%d' % i, 'foo', 'bar')
     res = env.cmd('lmrtest.readallstringkeys')
     env.assertEqual(sorted(res), sorted(['key%d' % i for i in range(1000)]))
+
+@MRTestDecorator()
+def testBasicMRReshuffle(env, conn):
+    for i in range(1000):
+        conn.execute_command('set', 'key%d' % i, str(i))
+    res = env.cmd('lmrtest.replacekeysvalues', 'key')
+    env.assertEqual(sorted(res), sorted(['OK' for i in range(1000)]))
+    for i in range(1000):
+        env.assertTrue(conn.execute_command('exists', str(i)))
+    

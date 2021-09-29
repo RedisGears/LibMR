@@ -17,18 +17,22 @@ void MR_ClusterSendMsg(const char* nodeId, functionId function, char* msg, size_
 
 void MR_ClusterCopyAndSendMsg(const char* nodeId, functionId function, char* msg, size_t len);
 
+void MR_ClusterSendMsgBySlot(size_t slot, functionId function, char* msg, size_t len);
+
+void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg, size_t len);
+
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver);
 
 bool MR_ClusterIsClusterMode();
 
-char* MR_ClusterGetMyId();
+const char* MR_ClusterGetMyId();
 
 size_t MR_ClusterGetSize();
 
 int MR_ClusterInit(RedisModuleCtx* rctx);
 
-bool MR_ClusterIsInitialized();
+size_t MR_ClusterGetSlotdByKey(const char* key, size_t len);
 
-const char* MR_ClusterGetNodeIdByKey(const char* key);
+int MR_ClusterIsMySlot(size_t slot);
 
 #endif /* SRC_CLUSTER_H_ */

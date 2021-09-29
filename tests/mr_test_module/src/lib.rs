@@ -45,10 +45,12 @@ use libmr::{
 use libmrraw::bindings::{
     MR_Init,
     MRRecordType,
+    MR_CalculateSlot,
 };
 
 use std::os::raw::{
     c_void,
+    c_char,
 };
 
 #[allow(improper_ctypes)]
@@ -91,7 +93,7 @@ fn strin_record_new(s: String) -> StringRecord {
 }
 
 fn lmr_read_keys_type(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    let execution = create_builder(KeysReader::new()).
+    let execution = create_builder(KeysReader::new(None)).
                     map(TypeMapper).
                     collect().
                     create_execution();
@@ -112,8 +114,36 @@ fn lmr_read_keys_type(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+fn replace_keys_values(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    let mut args = args.into_iter().skip(1);
+    let prefix = args.next().ok_or(RedisError::Str("not prefix was given"))?.try_as_str()?;
+    let execution = create_builder(KeysReader::new(Some(prefix.to_string()))).
+                    filter(TypeFilter::new("string".to_string())).
+                    map(ReadStringMapper{}).
+                    reshuffle().
+                    map(WriteDummyString{}).
+                    collect().
+                    create_execution();
+    
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|mut res, mut errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        if errs.len() > 0 {
+            let err = errs.pop().unwrap();
+            thread_ctx.reply(Err(RedisError::String(err.to_string())));
+        } else {
+            let res: Vec<RedisValue> = res.drain(..).map(|r| r.to_redis_value()).collect();
+            thread_ctx.reply(Ok(RedisValue::Array(res)));
+        }
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    let execution = create_builder(KeysReader::new()).
+    let execution = create_builder(KeysReader::new(None)).
                     filter(TypeFilter::new("string".to_string())).
                     collect().
                     create_execution();
@@ -135,7 +165,7 @@ fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 }
 
 fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    let execution = create_builder(KeysReader::new()).
+    let execution = create_builder(KeysReader::new(None)).
                     collect().
                     create_execution();
     let blocked_client = ctx.block_client();
@@ -187,6 +217,10 @@ impl Record for StringRecord {
             None => RedisValue::Null,
         }
         
+    }
+
+    fn hash_slot(&self) -> usize {
+        unsafe{MR_CalculateSlot(self.s.as_ref().unwrap().as_ptr() as *const c_char, self.s.as_ref().unwrap().len())}
     }
 }
 
@@ -273,6 +307,68 @@ impl BaseObject for TypeMapper {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct ReadStringMapper;
+
+impl MapStep for ReadStringMapper {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, MRError> {
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call("get",&[r.s.as_ref().unwrap()]);
+        ctx_unlock();
+        if let Ok(res) = res {
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
+                Ok(r)
+            } else {
+                Err("bad result returned from type command".to_string())
+            }
+        } else {
+            Err("bad result returned from type command".to_string())
+        }
+    }
+}
+
+impl BaseObject for ReadStringMapper {
+    fn get_name() -> &'static str {
+        "ReadStringMapper\0"
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct WriteDummyString;
+
+impl MapStep for WriteDummyString {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, MRError> {
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call("set",&[r.s.as_ref().unwrap(), "val"]);
+        ctx_unlock();
+        if let Ok(res) = res {
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
+                Ok(r)
+            } else {
+                Err("bad result returned from type command".to_string())
+            }
+        } else {
+            Err("bad result returned from type command".to_string())
+        }
+    }
+}
+
+impl BaseObject for WriteDummyString {
+    fn get_name() -> &'static str {
+        "WriteDummyString\0"
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct KeysReader {
     #[serde(skip)]
     cursor: Option<*mut RedisModuleScanCursor>,
@@ -280,13 +376,15 @@ struct KeysReader {
     pending: Vec<StringRecord>,
     #[serde(skip)]
     is_done: bool,
+    prefix: Option<String>
 }
 
 impl KeysReader {
-    fn new() -> KeysReader {
+    fn new(prefix: Option<String>) -> KeysReader {
         let mut reader = KeysReader {cursor: None,
             pending:Vec::new(),
             is_done: false,
+            prefix: prefix,
         };
         reader.init();
         reader
@@ -301,6 +399,11 @@ extern "C" fn cursor_callback(_ctx: *mut RedisModuleCtx,
     let reader = unsafe{&mut *(privdata as *mut KeysReader)};
 
     let key_str = RedisString::from_ptr(keyname).unwrap();
+    if let Some(pre) = &reader.prefix {
+        if !key_str.starts_with(pre) {
+            return;
+        }
+    }
 
     let r = strin_record_new(key_str.to_string());
 
@@ -368,6 +471,8 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
 	KeysReader::register();
     TypeMapper::register();
     TypeFilter::register();
+    WriteDummyString::register();
+    ReadStringMapper::register();
 	Status::Ok
 }
 
@@ -380,5 +485,6 @@ redis_module!{
         ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0],
         ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0],
         ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0],
+        ["lmrtest.replacekeysvalues", replace_keys_values, "readonly", 0,0,0],
     ],
 }

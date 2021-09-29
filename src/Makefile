@@ -9,7 +9,7 @@ GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API \
 -I../deps/hiredis/adapters/ \
 -I../deps/libevent/include/
 
-SOURCES=mr.o record.o cluster.o event_loop.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o
+SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o
 
 HIREDIS=../deps/hiredis/libhiredis.a
 LIBEVENT=../deps/libevent/.libs/libevent.a

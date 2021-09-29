@@ -29,6 +29,7 @@ use crate::libmrraw::bindings::{
     MR_ExecutionCtxSetError,
     MR_ExecutionBuilderFilter,
     MR_RegisterFilter,
+    MR_ExecutionBuilderReshuffle,
 };
 
 use serde::ser::{
@@ -102,6 +103,11 @@ pub extern "C" fn rust_obj_send_reply(_arg1: *mut RedisModuleCtx, _record: *mut 
     
 }
 
+pub extern "C" fn rust_obj_hash_slot<T:Record>(record: *mut ::std::os::raw::c_void) -> usize {
+    let record = unsafe{&mut *(record as *mut T)};
+    record.hash_slot()
+}
+
 pub trait BaseObject: Clone + Serialize + Deserialize<'static> {
     fn get_name() -> &'static str;
     fn init(&mut self) {}
@@ -125,7 +131,7 @@ fn register<T: BaseObject>() -> *mut MRObjectType {
     }
 }
 
-fn register_record<T: BaseObject>() -> *mut MRRecordType {
+fn register_record<T: Record>() -> *mut MRRecordType {
     unsafe {
         let obj = Box::into_raw(Box::new(MRRecordType {
             type_: MRObjectType{
@@ -138,6 +144,7 @@ fn register_record<T: BaseObject>() -> *mut MRRecordType {
                 tostring: Some(rust_obj_to_string),
             },
             sendReply: Some(rust_obj_send_reply),
+            hashTag: Some(rust_obj_hash_slot::<T>),
         }));
     
         MR_RegisterRecord(obj);
@@ -168,6 +175,7 @@ impl<R: Record> RecordType<R> {
 pub trait Record: BaseObject{
     fn new(t: *mut MRRecordType) -> Self;
     fn to_redis_value(&mut self) -> RedisValue;
+    fn hash_slot(&self) -> usize;
 }
 
 pub extern "C" fn rust_reader<Step:Reader>(ectx: *mut ExecutionCtx, args: *mut ::std::os::raw::c_void) -> *mut crate::libmrraw::bindings::Record {
@@ -295,6 +303,13 @@ impl<R: Record> Builder<R> {
     pub fn collect(self) -> Self {
         unsafe {
             MR_ExecutionBuilderCollect(self.inner_builder.unwrap());
+        }
+        self
+    }
+
+    pub fn reshuffle(self) -> Self {
+        unsafe {
+            MR_ExecutionBuilderReshuffle(self.inner_builder.unwrap());
         }
         self
     }
