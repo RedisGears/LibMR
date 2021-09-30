@@ -77,15 +77,22 @@ def runSkipTests():
 def waitBeforeTestStart():
     return True if os.environ.get('HOLD', False) else False
 
-def MRTestDecorator(skipTest=False, envArgs={}):
+def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
+            test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
+            print(Colors.Cyan('\tRunning: %s' % test_name))
             if skipTest and not runSkipTests():
                 raise unittest.SkipTest()
-            test_name = '%s %s' % (inspect.getfile(test_function), test_function.__name__)
-            print(Colors.Cyan('\tRunning: %s' % test_name))
             env = Env(**envArgs)
             conn = getConnectionByEnv(env)
+            if skipOnSingleShard:
+                if env.shardsCount == 1:
+                    raise unittest.SkipTest()
+                
+            if skipOnCluster:
+                if 'cluster' in env.env:
+                    raise unittest.SkipTest()
             args = {
                 'env': env,
                 'conn': conn

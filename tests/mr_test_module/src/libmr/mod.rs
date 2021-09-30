@@ -30,6 +30,7 @@ use crate::libmrraw::bindings::{
     MR_ExecutionBuilderFilter,
     MR_RegisterFilter,
     MR_ExecutionBuilderReshuffle,
+    MR_ExecutionSetMaxIdle,
 };
 
 use serde::ser::{
@@ -354,6 +355,10 @@ pub extern "C" fn rust_on_done<R: Record, F:FnOnce(Vec<&mut R>, Vec<&str>)>(ectx
 }
 
 impl<R: Record> ExecutionObj<R> {
+
+    pub fn set_max_idle(&self, max_idle: usize) {
+        unsafe{MR_ExecutionSetMaxIdle(self.inner_e, max_idle)};
+    }
 
     pub fn set_done_hanlder<F:FnOnce(Vec<&mut R>, Vec<&str>)>(&self, f: F) {
         let f = Box::into_raw(Box::new(f));

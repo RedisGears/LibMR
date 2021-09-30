@@ -417,6 +417,7 @@ static Execution* MR_ExecutionAlloc() {
 }
 
 Execution* MR_CreateExecution(ExecutionBuilder* builder) {
+    // todo: if cluster is not initialize, failed the execution creation.
     Execution* e = MR_ExecutionAlloc();
 
     /* Set execution id */
@@ -961,11 +962,13 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     size_t executionIdLen;
     const char* executionId = mr_BufferReaderReadBuff(buffReader, &executionIdLen);
     RedisModule_Assert(executionIdLen == ID_LEN);
+    size_t maxIdle = mr_BufferReaderReadLong(buffReader);
     size_t nSteps = mr_BufferReaderReadLong(buffReader);
 
     Execution* e = MR_ExecutionAlloc();
     memcpy(e->id, executionId, ID_LEN);
     snprintf(e->idStr, STR_ID_LEN, "%.*s-%lld", REDISMODULE_NODE_ID_LEN, e->id, *(long long*)&e->id[REDISMODULE_NODE_ID_LEN]);
+    e->timeoutMS = maxIdle;
 
     Step* child = NULL;
     for (size_t i = 0 ; i < nSteps ; ++i) {
@@ -1058,6 +1061,7 @@ static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
 
 static void MR_ExecutionSerialize(mr_BufferWriter* buffWriter, Execution* e) {
     mr_BufferWriterWriteBuff(buffWriter, e->id, ID_LEN); /* write the exectuion id */
+    mr_BufferWriterWriteLong(buffWriter, e->timeoutMS); /* max idle time */
     mr_BufferWriterWriteLong(buffWriter, array_len(e->steps)); /* number of steps */
     for (size_t i = 0 ; i < array_len(e->steps) ; ++i) {
         MR_ExecutionStepSerialize(buffWriter, e->steps + i);
@@ -1170,6 +1174,10 @@ void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDone, void* 
         .callback = onDone,
         .pd = pd,
     };
+}
+
+void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle) {
+    e->timeoutMS = maxIdle;
 }
 
 void MR_Run(Execution* e) {

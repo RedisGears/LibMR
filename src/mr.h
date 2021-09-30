@@ -92,6 +92,9 @@ LIBMR_API void MR_FreeExecutionBuilder(ExecutionBuilder* builder);
  * from it. */
 LIBMR_API Execution* MR_CreateExecution(ExecutionBuilder* builder);
 
+/* Set max idle time (in ms) for the given execution */
+LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
+
 LIBMR_API void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDone, void* pd);
 
 LIBMR_API void MR_Run(Execution* e);

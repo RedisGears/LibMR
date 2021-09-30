@@ -53,6 +53,8 @@ use std::os::raw::{
     c_char,
 };
 
+use std::{thread, time};
+
 #[allow(improper_ctypes)]
 #[link(name = "mr", kind = "static")]
 extern "C" {}
@@ -90,6 +92,28 @@ fn strin_record_new(s: String) -> StringRecord {
     };
     r.s = Some(s);
     r
+}
+
+fn lmr_reach_max_idle(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(MaxIdleReader::new(50)).
+                    collect().
+                    create_execution();
+    execution.set_max_idle(20);
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|mut res, mut errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        if errs.len() > 0 {
+            let err = errs.pop().unwrap();
+            thread_ctx.reply(Err(RedisError::String(err.to_string())));
+        } else {
+            let res: Vec<RedisValue> = res.drain(..).map(|r| r.to_redis_value()).collect();
+            thread_ctx.reply(Ok(RedisValue::Array(res)));
+        }
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
 }
 
 fn lmr_read_keys_type(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
@@ -369,6 +393,41 @@ impl BaseObject for WriteDummyString {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct MaxIdleReader {
+    #[serde(skip)]
+    is_initiator: bool,
+    sleep_time: usize,
+    is_done: bool,
+}
+
+impl MaxIdleReader {
+    fn new(sleep_time: usize) -> MaxIdleReader {
+        MaxIdleReader {is_initiator: true, sleep_time: sleep_time, is_done: false}
+    }
+}
+impl Reader for MaxIdleReader {
+    type R = StringRecord;
+
+    fn read(&mut self) -> Option<Result<Self::R, MRError>> {
+        if self.is_done {
+            return None;
+        }
+        self.is_done = true;
+        if !self.is_initiator {
+            let ten_millis = time::Duration::from_millis(self.sleep_time as u64);
+            thread::sleep(ten_millis);
+        }
+        Some(Ok(strin_record_new("record".to_string())))
+    }
+}
+
+impl BaseObject for MaxIdleReader {
+    fn get_name() -> &'static str {
+        "MaxIdleReader\0"
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct KeysReader {
     #[serde(skip)]
     cursor: Option<*mut RedisModuleScanCursor>,
@@ -469,6 +528,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
         HASH_RECORD_TYPE = Some(RecordType::new())
     };
 	KeysReader::register();
+    MaxIdleReader::register();
     TypeMapper::register();
     TypeFilter::register();
     WriteDummyString::register();
@@ -486,5 +546,6 @@ redis_module!{
         ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0],
         ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0],
         ["lmrtest.replacekeysvalues", replace_keys_values, "readonly", 0,0,0],
+        ["lmrtest.reachmaxidle", lmr_reach_max_idle, "readonly", 0,0,0],
     ],
 }
