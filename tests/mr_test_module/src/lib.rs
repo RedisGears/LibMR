@@ -170,6 +170,28 @@ fn lmr_accumulate_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+fn lmr_read_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(ErrorReader::new()).
+                    map(DummyMapper).
+                    filter(DummyFilter).
+                    reshuffle().
+                    collect().
+                    accumulate(CountAccumulator).
+                    create_execution().map_err(|e|RedisError::String(e))?;
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|res, errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        let mut final_res = Vec::new();
+        final_res.push(RedisValue::Integer(res.len() as i64));
+        final_res.push(RedisValue::Integer(errs.len() as i64));
+        thread_ctx.reply(Ok(RedisValue::Array(final_res)));
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None)).
                     collect().
@@ -675,6 +697,35 @@ impl BaseObject for MaxIdleReader {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct ErrorReader{
+    is_done: bool,
+}
+
+impl ErrorReader {
+    fn new() -> ErrorReader {
+        ErrorReader {is_done: false}
+    }
+}
+
+impl Reader for ErrorReader {
+    type R = StringRecord;
+
+    fn read(&mut self) -> Option<Result<Self::R, RustMRError>> {
+        if self.is_done {
+            return None;
+        }
+        self.is_done = true;
+        Some(Err("read_error".to_string()))
+    }
+}
+
+impl BaseObject for ErrorReader {
+    fn get_name() -> &'static str {
+        "ErrorReader\0"
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct KeysReader {
     #[serde(skip)]
     cursor: Option<*mut RedisModuleScanCursor>,
@@ -778,6 +829,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     };
 	KeysReader::register();
     MaxIdleReader::register();
+    ErrorReader::register();
     TypeMapper::register();
     ErrorMapper::register();
     DummyMapper::register();
@@ -806,5 +858,6 @@ redis_module!{
         ["lmrtest.maperror", lmr_map_error, "readonly", 0,0,0],
         ["lmrtest.filtererror", lmr_filter_error, "readonly", 0,0,0],
         ["lmrtest.accumulatererror", lmr_accumulate_error, "readonly", 0,0,0],
+        ["lmrtest.readerror", lmr_read_error, "readonly", 0,0,0],
     ],
 }
