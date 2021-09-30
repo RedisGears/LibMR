@@ -31,6 +31,8 @@ use crate::libmrraw::bindings::{
     MR_RegisterFilter,
     MR_ExecutionBuilderReshuffle,
     MR_ExecutionSetMaxIdle,
+    MR_RegisterAccumulator,
+    MR_ExecutionBuilderBuilAccumulate,
 };
 
 use serde::ser::{
@@ -262,6 +264,38 @@ pub trait FilterStep: BaseObject{
     
 }
 
+pub extern "C" fn rust_accumulate<Step:AccumulateStep>(ectx: *mut ExecutionCtx, accumulator: *mut crate::libmrraw::bindings::Record, r: *mut crate::libmrraw::bindings::Record, args: *mut c_void) -> *mut crate::libmrraw::bindings::Record {
+    let s = unsafe{&*(args as *mut Step)};
+    let accumulator = if accumulator.is_null() {
+        None
+    } else {
+        Some(unsafe{*Box::from_raw(accumulator as *mut Step::Accumulator)})
+    };
+    let r = unsafe{Box::from_raw(r as *mut Step::InRecord)};
+    match s.accumulate(accumulator, *r) {
+        Ok(res) => Box::into_raw(Box::new(res)) as *mut crate::libmrraw::bindings::Record,
+        Err(e) => {
+            unsafe{MR_ExecutionCtxSetError(ectx, e.as_ptr() as *mut c_char, e.len())};
+            0 as *mut crate::libmrraw::bindings::Record
+        }
+    }
+    
+}
+
+pub trait AccumulateStep: BaseObject{
+    type InRecord: Record;
+    type Accumulator: Record;
+
+    fn accumulate(&self, accumulator: Option<Self::Accumulator>, r: Self::InRecord) -> Result<Self::Accumulator, MRError>;
+
+    fn register() {
+        let obj = register::<Self>();
+        unsafe{
+            MR_RegisterAccumulator(Self::get_name().as_ptr() as *mut c_char, Some(rust_accumulate::<Self>), obj);
+        }
+    }   
+}
+
 pub struct Builder<R: Record> {
     inner_builder: Option<*mut ExecutionBuilder>,
     phantom: PhantomData<R>,
@@ -299,6 +333,17 @@ impl<R: Record> Builder<R> {
             MR_ExecutionBuilderFilter(self.inner_builder.unwrap(), Step::get_name().as_ptr() as *const c_char, Box::into_raw(Box::new(step)) as *const Step as *mut c_void)
         }
         self
+    }
+
+    pub fn accumulate<Step: AccumulateStep::<InRecord=R>>(mut self, step: Step) -> Builder<Step::Accumulator> {
+        let inner_builder = self.take();
+        unsafe {
+            MR_ExecutionBuilderBuilAccumulate(inner_builder, Step::get_name().as_ptr() as *const c_char, Box::into_raw(Box::new(step)) as *const Step as *mut c_void)
+        }
+        Builder::<Step::Accumulator> {
+            inner_builder: Some(inner_builder),
+            phantom: PhantomData,
+        }
     }
 
     pub fn collect(self) -> Self {

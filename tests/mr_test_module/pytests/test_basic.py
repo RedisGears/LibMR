@@ -32,6 +32,13 @@ def testBasicMRReshuffle(env, conn):
     for i in range(1000):
         env.assertTrue(conn.execute_command('exists', str(i)))
 
+@MRTestDecorator()
+def testBasicMRAccumulate(env, conn):
+    for i in range(1000):
+        conn.execute_command('set', 'key%d' % i, str(i))
+    env.expect('lmrtest.countkeys').equal([1000])
+
+
 @MRTestDecorator(skipOnSingleShard=True)
 def testMaxIdle(env, conn):
     env.expect('lmrtest.reachmaxidle').error().contains('execution max idle reached')

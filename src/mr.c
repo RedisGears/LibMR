@@ -101,6 +101,7 @@ struct MRCtx {
     mr_dict* readerDict;
     mr_dict* mappersDict;
     mr_dict* filtersDict;
+    mr_dict* accumulatorsDict;
 
     mr_threadpool executionsThreadPool;
 
@@ -138,13 +139,10 @@ typedef enum StepType {
     StepType_Reader,
     StepType_Mapper,
     StepType_Filter,
+    StepType_Accumulator,
     StepType_Reshuffle,
     StepType_Collect,
 }StepType;
-
-typedef enum StepRunResult {
-    StepRunResult_Ok, StepRunResult_Hold, StepRunResult_Error,
-}StepRunResult;
 
 typedef struct StepDefinition {
     char* name;
@@ -160,6 +158,11 @@ typedef struct MapStep {
     ExecutionMapper mapCallback;
 }MapStep;
 
+typedef struct AccumulateStep {
+    ExecutionAccumulator accumulateCallback;
+    Record* accumulator;
+}AccumulateStep;
+
 typedef struct FilterStep {
     ExecutionFilter filterCallback;
 }FilterStep;
@@ -172,7 +175,7 @@ typedef struct CollectStep {
 typedef struct ReshuffleStep {
     ARR(Record*) pendingRecords;
     size_t nDone;
-    int sentDoneMsg
+    int sentDoneMsg;
 }ReshuffleStep;
 
 typedef struct ExecutionBuilderStep {
@@ -193,6 +196,7 @@ struct Step {
         ReadStep read;
         CollectStep collect;
         ReshuffleStep reshuffle;
+        AccumulateStep accumulate;
     };
     size_t index;
     struct Step* child;
@@ -299,6 +303,18 @@ void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* name, void
     builder->steps = array_append(builder->steps, s);
 }
 
+void MR_ExecutionBuilderBuilAccumulate(ExecutionBuilder* builder, const char* name, void* args) {
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.accumulatorsDict, name);
+    RedisModule_Assert(sd);
+    ExecutionBuilderStep s = {
+            .args = args,
+            .argsType = sd->type,
+            .name = MR_STRDUP(name),
+            .type = StepType_Accumulator,
+    };
+    builder->steps = array_append(builder->steps, s);
+}
+
 void MR_ExecutionBuilderReshuffle(ExecutionBuilder* builder) {
     ExecutionBuilderStep s = (ExecutionBuilderStep){
             .args = NULL,
@@ -357,6 +373,10 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
         s->collect.collectedRecords = array_new(Record*, 20);
         s->collect.nDone = 0;
         break;
+    case StepType_Accumulator:
+        s->accumulate.accumulateCallback = sd->callback;
+        s->accumulate.accumulator = NULL;
+        break;
     default:
         RedisModule_Assert(false);
     }
@@ -373,6 +393,9 @@ static StepDefinition* MR_GetStepDefinition(StepType type, const char* name) {
         break;
     case StepType_Reader:
         sd = mr_dictFetchValue(mrCtx.readerDict, name);
+        break;
+    case StepType_Accumulator:
+        sd = mr_dictFetchValue(mrCtx.accumulatorsDict, name);
         break;
     default:
         sd = NULL;
@@ -671,6 +694,31 @@ static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
     }
 }
 
+static Record* MR_RunAccumulateStep(Execution* e, Step* s) {
+    while (1) {
+        Record* r = MR_RunStep(e, s->child);
+        if (MR_IsError(r) || MR_IsHold(r)) {
+            return r;
+        }
+
+        if (!r) {
+            r = s->accumulate.accumulator;
+            s->accumulate.accumulator = NULL;
+            s->flags &= StepFlag_Done;
+            return r;
+        }
+
+        ExecutionCtx eCtx = {
+            .e = e,
+            .err = NULL,
+        };
+        s->accumulate.accumulator = s->accumulate.accumulateCallback(&eCtx, s->accumulate.accumulator, r, s->bStep.args);
+        if (eCtx.err){
+            return eCtx.err;
+        }
+    }
+}
+
 static Record* MR_RunCollectStep(Execution* e, Step* s) {
     while (1) {
         Record* r = MR_RunStep(e, s->child);
@@ -731,7 +779,7 @@ static Record* MR_RunFilterStep(Execution* e, Step* s) {
         }
         if (!r) {
             s->flags &= StepFlag_Done;
-            return StepRunResult_Ok;
+            return NULL;
         }
         ExecutionCtx eCtx = {
             .e = e,
@@ -757,7 +805,7 @@ static Record* MR_RunMapStep(Execution* e, Step* s) {
     }
     if (!r) {
         s->flags &= StepFlag_Done;
-        return StepRunResult_Ok;
+        return NULL;
     }
     ExecutionCtx eCtx = {
         .e = e,
@@ -800,11 +848,13 @@ static Record* MR_RunStep(Execution* e, Step* s) {
         return MR_RunReshuffleStep(e, s);
     case StepType_Collect:
         return MR_RunCollectStep(e, s);
+    case StepType_Accumulator:
+        return MR_RunAccumulateStep(e, s);
     default:
         RedisModule_Assert(false);
     }
     RedisModule_Assert(false);
-    return StepRunResult_Ok;
+    return NULL;
 }
 
 static int MR_RunExecutionInternal(Execution* e) {
@@ -1222,6 +1272,11 @@ static void MR_StepDispose(Step* s) {
     case StepType_Filter:
     case StepType_Reader:
         break;
+    case StepType_Accumulator:
+        if (s->accumulate.accumulator) {
+            MR_RecordFree(s->accumulate.accumulator);
+        }
+        break;
     case StepType_Reshuffle:
         for (size_t i = 0 ; i < array_len(s->reshuffle.pendingRecords) ; ++i){
             MR_RecordFree(s->reshuffle.pendingRecords[i]);
@@ -1274,6 +1329,7 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads) {
     mrCtx.readerDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
     mrCtx.mappersDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
     mrCtx.filtersDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    mrCtx.accumulatorsDict = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     mrCtx.executionsThreadPool = mr_thpool_init(numThreads);
     mrCtx.stats = (MRStats){
@@ -1339,6 +1395,17 @@ void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* a
         .callback = filter,
     };
     mr_dictAdd(mrCtx.filtersDict, msd->name, msd);
+}
+
+LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator accumulator, MRObjectType* argType) {
+    RedisModule_Assert(!mr_dictFetchValue(mrCtx.accumulatorsDict, name));
+    StepDefinition* asd = MR_ALLOC(sizeof(*asd));
+    *asd = (StepDefinition) {
+        .name = MR_STRDUP(name),
+        .type = argType,
+        .callback = accumulator,
+    };
+    mr_dictAdd(mrCtx.accumulatorsDict, asd->name, asd);
 }
 
 long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx) {

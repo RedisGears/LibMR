@@ -40,6 +40,7 @@ use libmr::{
     RecordType,
     MRError,
     FilterStep,
+    AccumulateStep,
 };
 
 use libmrraw::bindings::{
@@ -92,6 +93,36 @@ fn strin_record_new(s: String) -> StringRecord {
     };
     r.s = Some(s);
     r
+}
+
+fn int_record_new(i: i64) -> IntRecord {
+    let mut r = unsafe{
+        INT_RECORD_TYPE.as_ref().unwrap().create()
+    };
+    r.i = i;
+    r
+}
+
+fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(KeysReader::new(None)).
+                    collect().
+                    accumulate(CountAccumulator).
+                    create_execution();
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|mut res, mut errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        if errs.len() > 0 {
+            let err = errs.pop().unwrap();
+            thread_ctx.reply(Err(RedisError::String(err.to_string())));
+        } else {
+            let res: Vec<RedisValue> = res.drain(..).map(|r| r.to_redis_value()).collect();
+            thread_ctx.reply(Ok(RedisValue::Array(res)));
+        }
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
 }
 
 fn lmr_reach_max_idle(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
@@ -251,6 +282,63 @@ impl Record for StringRecord {
 impl BaseObject for StringRecord {
     fn get_name() -> &'static str {
         "StringRecord\0"
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Serialize, Deserialize)]
+struct IntRecord {
+    #[serde(skip)]
+    base: crate::libmrraw::bindings::Record,
+    pub i: i64,
+}
+
+impl Record for IntRecord {
+    fn new(t: *mut MRRecordType) -> Self {
+        IntRecord {
+            base: crate::libmrraw::bindings::Record {
+                recordType: t,
+            },
+            i: 0,
+        }
+    }
+
+    fn to_redis_value(&mut self) -> RedisValue {
+        RedisValue::Integer(self.i)
+    }
+
+    fn hash_slot(&self) -> usize {
+        let s = self.i.to_string();
+        unsafe{MR_CalculateSlot(s.as_ptr() as *const c_char, s.len())}
+    }
+}
+
+impl BaseObject for IntRecord {
+    fn get_name() -> &'static str {
+        "IntRecord\0"
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct CountAccumulator;
+
+impl AccumulateStep for CountAccumulator {
+    type InRecord = StringRecord;
+    type Accumulator = IntRecord;
+
+    fn accumulate(&self, accumulator: Option<Self::Accumulator>, _r: Self::InRecord) -> Result<Self::Accumulator, MRError> {
+        let mut accumulator = match accumulator {
+            Some(a) => a,
+            None => int_record_new(0)
+        };
+        accumulator.i+=1;
+        Ok(accumulator)
+    }
+}
+
+impl BaseObject for CountAccumulator {
+    fn get_name() -> &'static str {
+        "CountAccumulator\0"
     }
 }
 
@@ -516,6 +604,7 @@ impl Drop for KeysReader {
 }
 
 static mut HASH_RECORD_TYPE: Option<RecordType<StringRecord>> = None;
+static mut INT_RECORD_TYPE: Option<RecordType<IntRecord>> = None;
 
 fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     unsafe{
@@ -525,7 +614,8 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     }
 
     unsafe{
-        HASH_RECORD_TYPE = Some(RecordType::new())
+        HASH_RECORD_TYPE = Some(RecordType::new());
+        INT_RECORD_TYPE = Some(RecordType::new());
     };
 	KeysReader::register();
     MaxIdleReader::register();
@@ -533,6 +623,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     TypeFilter::register();
     WriteDummyString::register();
     ReadStringMapper::register();
+    CountAccumulator::register();
 	Status::Ok
 }
 
@@ -547,5 +638,6 @@ redis_module!{
         ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0],
         ["lmrtest.replacekeysvalues", replace_keys_values, "readonly", 0,0,0],
         ["lmrtest.reachmaxidle", lmr_reach_max_idle, "readonly", 0,0,0],
+        ["lmrtest.countkeys", lmr_count_key, "readonly", 0,0,0],
     ],
 }

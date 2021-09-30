@@ -56,6 +56,7 @@ typedef void(*ExecutionCallback)(ExecutionCtx* ectx, void* pd);
 typedef Record* (*ExecutionReader)(ExecutionCtx* ectx, void* args);
 typedef Record* (*ExecutionMapper)(ExecutionCtx* ectx, Record* r, void* args);
 typedef int (*ExecutionFilter)(ExecutionCtx* ectx, Record* r, void* args);
+typedef Record* (*ExecutionAccumulator)(ExecutionCtx* ectx, Record* accumulator, Record* r, void* args);
 
 /* Creatign a new execution builder */
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
@@ -69,6 +70,11 @@ LIBMR_API void MR_ExecutionBuilderMap(ExecutionBuilder* builder, const char* nam
  * The function takes ownership on the given
  * args so the user is not allow to use it anymore. */
 LIBMR_API void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* name, void* args);
+
+/* Add accumulate step to the given builder.
+ * The function takes ownership on the given
+ * args so the user is not allow to use it anymore. */
+LIBMR_API void MR_ExecutionBuilderBuilAccumulate(ExecutionBuilder* builder, const char* name, void* args);
 
 /* Add a collect step to the builder.
  * Will return all the records to the initiator */
@@ -114,6 +120,7 @@ LIBMR_API MRObjectType* MR_GetObjectType(size_t id);
 LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType);
 LIBMR_API void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType);
 LIBMR_API void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* argType);
+LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator accumulator, MRObjectType* argType);
 
 /* Serialization Context functions */
 #define LONG_READ_ERROR LLONG_MAX
