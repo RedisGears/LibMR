@@ -103,6 +103,73 @@ fn int_record_new(i: i64) -> IntRecord {
     r
 }
 
+fn lmr_map_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(KeysReader::new(None)).
+                    map(ErrorMapper).
+                    filter(DummyFilter).
+                    reshuffle().
+                    collect().
+                    accumulate(CountAccumulator).
+                    create_execution().map_err(|e|RedisError::String(e))?;
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|res, errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        let mut final_res = Vec::new();
+        final_res.push(RedisValue::Integer(res.len() as i64));
+        final_res.push(RedisValue::Integer(errs.len() as i64));
+        thread_ctx.reply(Ok(RedisValue::Array(final_res)));
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
+fn lmr_filter_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(KeysReader::new(None)).
+                    filter(ErrorFilter).
+                    map(DummyMapper).
+                    reshuffle().
+                    collect().
+                    accumulate(CountAccumulator).
+                    create_execution().map_err(|e|RedisError::String(e))?;
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|res, errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        let mut final_res = Vec::new();
+        final_res.push(RedisValue::Integer(res.len() as i64));
+        final_res.push(RedisValue::Integer(errs.len() as i64));
+        thread_ctx.reply(Ok(RedisValue::Array(final_res)));
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
+fn lmr_accumulate_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(KeysReader::new(None)).
+                    accumulate(ErrorAccumulator).
+                    map(DummyMapper).
+                    filter(DummyFilter).
+                    reshuffle().
+                    collect().
+                    accumulate(CountAccumulator).
+                    create_execution().map_err(|e|RedisError::String(e))?;
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|res, errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        let mut final_res = Vec::new();
+        final_res.push(RedisValue::Integer(res.len() as i64));
+        final_res.push(RedisValue::Integer(errs.len() as i64));
+        thread_ctx.reply(Ok(RedisValue::Array(final_res)));
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None)).
                     collect().
@@ -342,6 +409,60 @@ impl BaseObject for CountAccumulator {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct ErrorAccumulator;
+
+impl AccumulateStep for ErrorAccumulator {
+    type InRecord = StringRecord;
+    type Accumulator = StringRecord;
+
+    fn accumulate(&self, _accumulator: Option<Self::Accumulator>, _r: Self::InRecord) -> Result<Self::Accumulator, RustMRError> {
+        Err("accumulate_error".to_string())
+    }
+}
+
+impl BaseObject for ErrorAccumulator {
+    fn get_name() -> &'static str {
+        "ErrorAccumulator\0"
+    }
+}
+
+/* filter by key type */
+#[derive(Clone, Serialize, Deserialize)]
+struct DummyFilter;
+
+impl FilterStep for DummyFilter {
+    type R = StringRecord;
+
+    fn filter(&self, _r: &Self::R) -> Result<bool, RustMRError> {
+        Ok(true)
+    }
+}
+
+impl BaseObject for DummyFilter {
+    fn get_name() -> &'static str {
+        "DummyFilter\0"
+    }
+}
+
+/* filter by key type */
+#[derive(Clone, Serialize, Deserialize)]
+struct ErrorFilter;
+
+impl FilterStep for ErrorFilter {
+    type R = StringRecord;
+
+    fn filter(&self, _r: &Self::R) -> Result<bool, RustMRError> {
+        Err("filter_error".to_string())
+    }
+}
+
+impl BaseObject for ErrorFilter {
+    fn get_name() -> &'static str {
+        "ErrorFilter\0"
+    }
+}
+
 /* filter by key type */
 #[derive(Clone, Serialize, Deserialize)]
 struct TypeFilter {
@@ -417,6 +538,44 @@ impl BaseObject for TypeMapper {
         "TypeMapper\0"
     }
 }
+
+/* map key name to its type */
+#[derive(Clone, Serialize, Deserialize)]
+struct ErrorMapper;
+
+impl MapStep for ErrorMapper {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn map(&self, mut _r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
+        Err("error".to_string())
+    }
+}
+
+impl BaseObject for ErrorMapper {
+    fn get_name() -> &'static str {
+        "ErrorMapper\0"
+    }
+}
+/* map key name to its type */
+#[derive(Clone, Serialize, Deserialize)]
+struct DummyMapper;
+
+impl MapStep for DummyMapper {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
+        Ok(r)
+    }
+}
+
+impl BaseObject for DummyMapper {
+    fn get_name() -> &'static str {
+        "DummyMapper\0"
+    }
+}
+
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ReadStringMapper;
@@ -620,10 +779,15 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
 	KeysReader::register();
     MaxIdleReader::register();
     TypeMapper::register();
+    ErrorMapper::register();
+    DummyMapper::register();
     TypeFilter::register();
+    DummyFilter::register();
+    ErrorFilter::register();
     WriteDummyString::register();
     ReadStringMapper::register();
     CountAccumulator::register();
+    ErrorAccumulator::register();
 	Status::Ok
 }
 
@@ -639,5 +803,8 @@ redis_module!{
         ["lmrtest.replacekeysvalues", replace_keys_values, "readonly", 0,0,0],
         ["lmrtest.reachmaxidle", lmr_reach_max_idle, "readonly", 0,0,0],
         ["lmrtest.countkeys", lmr_count_key, "readonly", 0,0,0],
+        ["lmrtest.maperror", lmr_map_error, "readonly", 0,0,0],
+        ["lmrtest.filtererror", lmr_filter_error, "readonly", 0,0,0],
+        ["lmrtest.accumulatererror", lmr_accumulate_error, "readonly", 0,0,0],
     ],
 }

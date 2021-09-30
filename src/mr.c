@@ -658,7 +658,7 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
 static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
     while (1) {
         Record* r = MR_RunStep(e, s->child);
-        if ((e->flags & ExecutionFlag_Local) || MR_IsHold(r)) {
+        if ((e->flags & ExecutionFlag_Local) || MR_IsError(r) || MR_IsHold(r)) {
             /* on local execution, reshuffle does nothing */
             return r;
         }
@@ -1275,6 +1275,7 @@ size_t MR_ExecutionCtxGetErrorsLen(ExecutionCtx* ectx){
 LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size_t len) {
     char error[len + 1];
     memcpy(error, err, len);
+    error[len] = '\0';
     ectx->err = MR_ErrorRecordCreate(error);
 }
 
@@ -1359,6 +1360,8 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads) {
         RemoteFunctionDef* rf = remoteFunctions + i;
         *(rf->funcIdPointer) = MR_ClusterRegisterMsgReceiver(rf->functionPointer);
     }
+
+    MR_RecorInitialize();
 
     MR_EventLoopStart();
 
