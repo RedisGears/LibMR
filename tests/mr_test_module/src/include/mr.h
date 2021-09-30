@@ -8,6 +8,8 @@
 
 typedef struct RedisModuleCtx RedisModuleCtx;
 
+typedef struct MRError MRError;
+
 extern RedisModuleCtx* mr_staticCtx;
 
 /* Opaque struct build an execution */
@@ -26,8 +28,8 @@ typedef struct mr_BufferWriter WriteSerializationCtx;
 /* MRObjectType callbacks definition */
 typedef void (*ObjectFree)(void* arg);
 typedef void* (*ObjectDuplicate)(void* arg);
-typedef int (*ObjectSerialize)(WriteSerializationCtx* sctx, void* arg);
-typedef void* (*ObjectDeserialize)(ReaderSerializationCtx* sctx);
+typedef void (*ObjectSerialize)(WriteSerializationCtx* sctx, void* arg, MRError** error);
+typedef void* (*ObjectDeserialize)(ReaderSerializationCtx* sctx, MRError** error);
 typedef char* (*ObjectToString)(void* arg);
 
 /* represent map reduce object type */
@@ -95,14 +97,18 @@ LIBMR_API void MR_FreeExecutionBuilder(ExecutionBuilder* builder);
  *
  * The function borrow the builder, which means that once returned
  * the user can still use the builder, change it, or create more executions
- * from it. */
-LIBMR_API Execution* MR_CreateExecution(ExecutionBuilder* builder);
+ * from it.
+ *
+ * Return NULL on error and set the error on err out param */
+LIBMR_API Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err);
 
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
 
+/* Set on execution done callbac */
 LIBMR_API void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDone, void* pd);
 
+/* Run the given execution, should at most once on each execution. */
 LIBMR_API void MR_Run(Execution* e);
 
 /* Free the given execution */
@@ -114,25 +120,25 @@ LIBMR_API int MR_Init(RedisModuleCtx* ctx, size_t numThreads);
 /* Register a new object type */
 LIBMR_API int MR_RegisterObject(MRObjectType* t);
 
-LIBMR_API MRObjectType* MR_GetObjectType(size_t id);
-
-/* Register a mapper step */
+/* Register a reader */
 LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType);
+
+/* Register a map step */
 LIBMR_API void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType);
+
+/* Register a filter step */
 LIBMR_API void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* argType);
+
+/* Register an accumulate step */
 LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator accumulator, MRObjectType* argType);
 
 /* Serialization Context functions */
-#define LONG_READ_ERROR LLONG_MAX
-#define BUFF_READ_ERROR NULL
-LIBMR_API long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx);
-LIBMR_API const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len);
-LIBMR_API double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx);
-LIBMR_API void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val);
-LIBMR_API void MR_SerializationCtxWriteBuffer(WriteSerializationCtx* sctx, const char* buff, size_t len);
-LIBMR_API void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val);
-LIBMR_API int MR_WriteSerializationCtxIsError(WriteSerializationCtx* sctx);
-LIBMR_API int MR_ReadSerializationCtxIsError(ReaderSerializationCtx* sctx);
+LIBMR_API long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx, MRError** err);
+LIBMR_API const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err);
+LIBMR_API double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx, MRError** err);
+LIBMR_API void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val, MRError** err);
+LIBMR_API void MR_SerializationCtxWriteBuffer(WriteSerializationCtx* sctx, const char* buff, size_t len, MRError** err);
+LIBMR_API void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val, MRError** err);
 
 /* records functions */
 typedef void (*SendAsRedisReply)(RedisModuleCtx*, void* record);
@@ -150,9 +156,26 @@ typedef struct MRRecordType{
 struct Record {
     MRRecordType* recordType;
 };
+
+/* Register a new Record type */
 LIBMR_API int MR_RegisterRecord(MRRecordType* t);
+
+/* Free the give Record */
 LIBMR_API void MR_RecordFree(Record* r);
 
+/* Calculate slot on the given buffer */
 LIBMR_API size_t MR_CalculateSlot(const char* buff, size_t len);
+
+/* Create a new error object */
+LIBMR_API MRError* MR_ErrorCreate(const char* msg, size_t len);
+
+/* Get error message from the error object */
+LIBMR_API const char* MR_ErrorGetMessage(MRError* err);
+
+/* Free the error object */
+LIBMR_API void MR_ErrorFree(MRError* err);
+
+/***************** no public API **********************/
+MRObjectType* MR_GetObjectType(size_t id);
 
 #endif /* SRC_MR_H_ */

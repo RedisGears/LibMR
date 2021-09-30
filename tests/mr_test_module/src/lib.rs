@@ -38,7 +38,7 @@ use libmr::{
     Reader,
     MapStep,
     RecordType,
-    MRError,
+    RustMRError,
     FilterStep,
     AccumulateStep,
 };
@@ -107,7 +107,7 @@ fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None)).
                     collect().
                     accumulate(CountAccumulator).
-                    create_execution();
+                    create_execution().map_err(|e|RedisError::String(e))?;
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs|{
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
@@ -128,7 +128,7 @@ fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 fn lmr_reach_max_idle(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(MaxIdleReader::new(50)).
                     collect().
-                    create_execution();
+                    create_execution().map_err(|e|RedisError::String(e))?;
     execution.set_max_idle(20);
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs|{
@@ -151,7 +151,7 @@ fn lmr_read_keys_type(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None)).
                     map(TypeMapper).
                     collect().
-                    create_execution();
+                    create_execution().map_err(|e|RedisError::String(e))?;
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs|{
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
@@ -178,7 +178,7 @@ fn replace_keys_values(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                     reshuffle().
                     map(WriteDummyString{}).
                     collect().
-                    create_execution();
+                    create_execution().map_err(|e|RedisError::String(e))?;
     
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs|{
@@ -201,7 +201,7 @@ fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None)).
                     filter(TypeFilter::new("string".to_string())).
                     collect().
-                    create_execution();
+                    create_execution().map_err(|e|RedisError::String(e))?;
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs|{
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
@@ -222,7 +222,7 @@ fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None)).
                     collect().
-                    create_execution();
+                    create_execution().map_err(|e|RedisError::String(e))?;
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs|{
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
@@ -326,7 +326,7 @@ impl AccumulateStep for CountAccumulator {
     type InRecord = StringRecord;
     type Accumulator = IntRecord;
 
-    fn accumulate(&self, accumulator: Option<Self::Accumulator>, _r: Self::InRecord) -> Result<Self::Accumulator, MRError> {
+    fn accumulate(&self, accumulator: Option<Self::Accumulator>, _r: Self::InRecord) -> Result<Self::Accumulator, RustMRError> {
         let mut accumulator = match accumulator {
             Some(a) => a,
             None => int_record_new(0)
@@ -359,7 +359,7 @@ impl TypeFilter {
 impl FilterStep for TypeFilter {
     type R = StringRecord;
 
-    fn filter(&self, r: &Self::R) -> Result<bool, MRError> {
+    fn filter(&self, r: &Self::R) -> Result<bool, RustMRError> {
         let ctx = get_ctx();
         ctx_lock();
         let res = ctx.call("type",&[r.s.as_ref().unwrap()]);
@@ -394,7 +394,7 @@ impl MapStep for TypeMapper {
     type InRecord = StringRecord;
     type OutRecord = StringRecord;
 
-    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, MRError> {
+    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         let ctx = get_ctx();
         ctx_lock();
         let res = ctx.call("type",&[r.s.as_ref().unwrap()]);
@@ -425,7 +425,7 @@ impl MapStep for ReadStringMapper {
     type InRecord = StringRecord;
     type OutRecord = StringRecord;
 
-    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, MRError> {
+    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         let ctx = get_ctx();
         ctx_lock();
         let res = ctx.call("get",&[r.s.as_ref().unwrap()]);
@@ -456,7 +456,7 @@ impl MapStep for WriteDummyString {
     type InRecord = StringRecord;
     type OutRecord = StringRecord;
 
-    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, MRError> {
+    fn map(&self, mut r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         let ctx = get_ctx();
         ctx_lock();
         let res = ctx.call("set",&[r.s.as_ref().unwrap(), "val"]);
@@ -496,7 +496,7 @@ impl MaxIdleReader {
 impl Reader for MaxIdleReader {
     type R = StringRecord;
 
-    fn read(&mut self) -> Option<Result<Self::R, MRError>> {
+    fn read(&mut self) -> Option<Result<Self::R, RustMRError>> {
         if self.is_done {
             return None;
         }
@@ -560,7 +560,7 @@ extern "C" fn cursor_callback(_ctx: *mut RedisModuleCtx,
 impl Reader for KeysReader {
     type R = StringRecord;
 
-    fn read(&mut self) -> Option<Result<Self::R, MRError>> {
+    fn read(&mut self) -> Option<Result<Self::R, RustMRError>> {
         let cursor = *self.cursor.as_ref()?;
         loop {
             if let Some(element) = self.pending.pop() {

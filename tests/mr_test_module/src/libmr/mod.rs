@@ -33,6 +33,8 @@ use crate::libmrraw::bindings::{
     MR_ExecutionSetMaxIdle,
     MR_RegisterAccumulator,
     MR_ExecutionBuilderBuilAccumulate,
+    MRError,
+    MR_ErrorGetMessage,
 };
 
 use serde::ser::{
@@ -65,7 +67,7 @@ use libc::{
     strlen,
 };
 
-pub type MRError = String;
+pub type RustMRError = String;
 
 pub extern "C" fn rust_obj_free<T: BaseObject>(ctx: *mut c_void) {
     unsafe{Box::from_raw(ctx as *mut T)};
@@ -78,20 +80,22 @@ pub extern "C" fn rust_obj_dup<T:BaseObject>(arg: *mut c_void) -> *mut c_void {
     Box::into_raw(Box::new(obj)) as *mut c_void
 }
 
-pub extern "C" fn rust_obj_serialize<T:BaseObject>(sctx: *mut WriteSerializationCtx, arg: *mut c_void) -> c_int {
+pub extern "C" fn rust_obj_serialize<T:BaseObject>(sctx: *mut WriteSerializationCtx, arg: *mut c_void, error: *mut *mut MRError) {
     let obj = unsafe{&mut *(arg as *mut T)};
     let s = to_string(obj).unwrap();
     unsafe{
-        MR_SerializationCtxWriteBuffer(sctx, s.as_ptr() as *const c_char, s.len());
+        MR_SerializationCtxWriteBuffer(sctx, s.as_ptr() as *const c_char, s.len(), error);
     }
-    0 as c_int
 }
 
-pub extern "C" fn rust_obj_deserialize<T:BaseObject>(sctx: *mut ReaderSerializationCtx) -> *mut c_void {
+pub extern "C" fn rust_obj_deserialize<T:BaseObject>(sctx: *mut ReaderSerializationCtx, error: *mut *mut MRError) -> *mut c_void {
     let mut len: usize = 0;
     let s = unsafe {
-        MR_SerializationCtxReadeBuffer(sctx, &mut len as *mut usize)
+        MR_SerializationCtxReadeBuffer(sctx, &mut len as *mut usize, error)
     };
+    if !(unsafe{*error}).is_null() {
+        return 0 as *mut c_void;
+    }
     let s = str::from_utf8(unsafe { slice::from_raw_parts(s as *const u8, len) }).unwrap();
     let mut obj: T = from_str(s).unwrap();
     obj.init();
@@ -200,7 +204,7 @@ pub extern "C" fn rust_reader<Step:Reader>(ectx: *mut ExecutionCtx, args: *mut :
 pub trait Reader : BaseObject{
     type R: Record;
 
-    fn read(&mut self) -> Option<Result<Self::R, MRError>>;
+    fn read(&mut self) -> Option<Result<Self::R, RustMRError>>;
 
     fn register() {
         let obj = register::<Self>();
@@ -227,7 +231,7 @@ pub trait MapStep: BaseObject{
     type InRecord: Record;
     type OutRecord: Record;
 
-    fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, MRError>;
+    fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError>;
 
     fn register() {
         let obj = register::<Self>();
@@ -253,7 +257,7 @@ pub extern "C" fn rust_filter<Step:FilterStep>(ectx: *mut ExecutionCtx, r: *mut 
 pub trait FilterStep: BaseObject{
     type R: Record;
 
-    fn filter(&self, r: &Self::R) -> Result<bool, MRError>;
+    fn filter(&self, r: &Self::R) -> Result<bool, RustMRError>;
 
     fn register() {
         let obj = register::<Self>();
@@ -286,7 +290,7 @@ pub trait AccumulateStep: BaseObject{
     type InRecord: Record;
     type Accumulator: Record;
 
-    fn accumulate(&self, accumulator: Option<Self::Accumulator>, r: Self::InRecord) -> Result<Self::Accumulator, MRError>;
+    fn accumulate(&self, accumulator: Option<Self::Accumulator>, r: Self::InRecord) -> Result<Self::Accumulator, RustMRError>;
 
     fn register() {
         let obj = register::<Self>();
@@ -360,11 +364,18 @@ impl<R: Record> Builder<R> {
         self
     }
 
-    pub fn create_execution(&self) -> ExecutionObj<R> {
+    pub fn create_execution(&self) -> Result<ExecutionObj<R>, RustMRError> {
         let execution = unsafe {
-            MR_CreateExecution(self.inner_builder.unwrap())
+            let mut err: *mut MRError = 0 as *mut MRError;
+            let res = MR_CreateExecution(self.inner_builder.unwrap(), &mut err);
+            if !err.is_null() {
+                let c_msg = MR_ErrorGetMessage(err);
+                let r_str = str::from_utf8(slice::from_raw_parts(c_msg.cast::<u8>(), strlen(c_msg))).unwrap();
+                return Err(r_str.to_string());
+            }
+            res
         };
-        ExecutionObj{inner_e: execution, phantom: PhantomData,}
+        Ok(ExecutionObj{inner_e: execution, phantom: PhantomData,})
     }
 }
 

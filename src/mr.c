@@ -252,6 +252,18 @@ typedef struct ExecutionTask {
     void* pd;
 }ExecutionTask;
 
+typedef enum MRErrorType {
+    MRErrorType_Static, MRErrorType_Dynamic,
+}MRErrorType;
+
+struct MRError {
+    MRErrorType type;
+    char* msg;
+};
+
+MRError UINITIALIZED_CLUSTER_ERROR = {.type = MRErrorType_Static, .msg = "uninitialized cluster"};
+MRError BUFFER_READ_ERROR = {.type = MRErrorType_Static, .msg = "failed reading data from buffer"};
+
 ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args) {
     ExecutionBuilder* ret = MR_ALLOC(sizeof(*ret));
     ret->steps = array_new(ExecutionBuilderStep, 10);
@@ -439,7 +451,7 @@ static Execution* MR_ExecutionAlloc() {
     return e;
 }
 
-Execution* MR_CreateExecution(ExecutionBuilder* builder) {
+Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err) {
     // todo: if cluster is not initialize, failed the execution creation.
     Execution* e = MR_ExecutionAlloc();
 
@@ -517,10 +529,10 @@ static void MR_StepDone(Execution* e, void* pd) {
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen);
+    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
 
-    size_t stepIndex = mr_BufferReaderReadLong(&reader);
+    size_t stepIndex = mr_BufferReaderReadLongLong(&reader, NULL);
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
     RedisModule_FreeString(NULL, payload);
@@ -547,10 +559,10 @@ static void MR_SetRecord(Execution* e, void* pd) {
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen);
+    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
 
-    size_t stepIndex = mr_BufferReaderReadLong(&reader);
+    size_t stepIndex = mr_BufferReaderReadLongLong(&reader, NULL);
 
     Record* r = MR_RecordDeSerialize(&reader);
 
@@ -576,7 +588,7 @@ static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen);
+    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
 
     Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
@@ -597,7 +609,7 @@ static void MR_SendRecordToSlot(Execution* e, Step* s, Record* r, size_t slot) {
     /* write the execution id */
     mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
     /* write the step index to add the record to */
-    mr_BufferWriterWriteLong(&buffWriter, s->index);
+    mr_BufferWriterWriteLongLong(&buffWriter, s->index);
     /* Write the record */
     MR_RecordSerialize(r, &buffWriter);
 
@@ -612,7 +624,7 @@ static void MR_SendRecord(Execution* e, Step* s, Record* r, const char* nodeId) 
     /* write the execution id */
     mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
     /* write the step index to add the record to */
-    mr_BufferWriterWriteLong(&buffWriter, s->index);
+    mr_BufferWriterWriteLongLong(&buffWriter, s->index);
     /* Write the record */
     MR_RecordSerialize(r, &buffWriter);
 
@@ -631,7 +643,7 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen);
+    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
     Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
     if (!e) {
@@ -673,7 +685,7 @@ static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
             /* write the execution id */
             mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
             /* write the step index */
-            mr_BufferWriterWriteLong(&buffWriter, s->index);
+            mr_BufferWriterWriteLongLong(&buffWriter, s->index);
             MR_ClusterSendMsg(NULL, NOTIFY_STEP_DONE_FUNCTION_ID, buff.buff, buff.size);
             s->reshuffle.sentDoneMsg = 1;
         }
@@ -748,7 +760,7 @@ static Record* MR_RunCollectStep(Execution* e, Step* s) {
             /* write the execution id */
             mr_BufferWriterWriteBuff(&buffWriter, e->id, ID_LEN);
             /* write the step index to add the record to */
-            mr_BufferWriterWriteLong(&buffWriter, s->index);
+            mr_BufferWriterWriteLongLong(&buffWriter, s->index);
             MR_ClusterSendMsg(e->id, NOTIFY_STEP_DONE_FUNCTION_ID, buff.buff, buff.size);
             /* we are not the initiator, we have nothing to give here */
             s->flags &= StepFlag_Done;
@@ -1010,10 +1022,10 @@ static void MR_RecievedExecution(void* ctx) {
 
 static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(buffReader, &executionIdLen);
+    const char* executionId = mr_BufferReaderReadBuff(buffReader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
-    size_t maxIdle = mr_BufferReaderReadLong(buffReader);
-    size_t nSteps = mr_BufferReaderReadLong(buffReader);
+    size_t maxIdle = mr_BufferReaderReadLongLong(buffReader, NULL);
+    size_t nSteps = mr_BufferReaderReadLongLong(buffReader, NULL);
 
     Execution* e = MR_ExecutionAlloc();
     memcpy(e->id, executionId, ID_LEN);
@@ -1023,10 +1035,10 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     Step* child = NULL;
     for (size_t i = 0 ; i < nSteps ; ++i) {
         Step s;
-        s.bStep.type = mr_BufferReaderReadLong(buffReader);
-        if (mr_BufferReaderReadLong(buffReader)) {
+        s.bStep.type = mr_BufferReaderReadLongLong(buffReader, NULL);
+        if (mr_BufferReaderReadLongLong(buffReader, NULL)) {
             /* read step name */
-            s.bStep.name = MR_STRDUP(mr_BufferReaderReadString(buffReader));
+            s.bStep.name = MR_STRDUP(mr_BufferReaderReadString(buffReader, NULL));
         } else {
             s.bStep.name = NULL;
         }
@@ -1038,9 +1050,12 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
             s.bStep.argsType = NULL;
         }
 
-        if (mr_BufferReaderReadLong(buffReader)) {
+        if (mr_BufferReaderReadLongLong(buffReader, NULL)) {
             /* read step args */
-            s.bStep.args = s.bStep.argsType->deserialize(buffReader);
+            MRError* err = NULL;
+            s.bStep.args = s.bStep.argsType->deserialize(buffReader, &err);
+            // todo: handle deserialization failure
+            RedisModule_Assert(!err);
         } else {
             s.bStep.args = NULL;
         }
@@ -1093,26 +1108,29 @@ static void MR_NewExecutionRecieved(RedisModuleCtx *ctx, const char *sender_id, 
 }
 
 static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
-    mr_BufferWriterWriteLong(buffWriter, s->bStep.type); /* write the step type */
+    mr_BufferWriterWriteLongLong(buffWriter, s->bStep.type); /* write the step type */
     if (s->bStep.name) {
-        mr_BufferWriterWriteLong(buffWriter, 1); /* name exists */
+        mr_BufferWriterWriteLongLong(buffWriter, 1); /* name exists */
         mr_BufferWriterWriteString(buffWriter, s->bStep.name); /* write the step name */
     } else {
-        mr_BufferWriterWriteLong(buffWriter, 0); /* name does not exists */
+        mr_BufferWriterWriteLongLong(buffWriter, 0); /* name does not exists */
     }
     /* serialize step args */
     if (s->bStep.args) {
-        mr_BufferWriterWriteLong(buffWriter, 1); /* args exists */
-        s->bStep.argsType->serialize(buffWriter, s->bStep.args);
+        mr_BufferWriterWriteLongLong(buffWriter, 1); /* args exists */
+        MRError* err = NULL;
+        s->bStep.argsType->serialize(buffWriter, s->bStep.args, &err);
+        // todo: handle serilization failure
+        RedisModule_Assert(!err);
     } else {
-        mr_BufferWriterWriteLong(buffWriter, 0); /* args does not exists */
+        mr_BufferWriterWriteLongLong(buffWriter, 0); /* args does not exists */
     }
 }
 
 static void MR_ExecutionSerialize(mr_BufferWriter* buffWriter, Execution* e) {
     mr_BufferWriterWriteBuff(buffWriter, e->id, ID_LEN); /* write the exectuion id */
-    mr_BufferWriterWriteLong(buffWriter, e->timeoutMS); /* max idle time */
-    mr_BufferWriterWriteLong(buffWriter, array_len(e->steps)); /* number of steps */
+    mr_BufferWriterWriteLongLong(buffWriter, e->timeoutMS); /* max idle time */
+    mr_BufferWriterWriteLongLong(buffWriter, array_len(e->steps)); /* number of steps */
     for (size_t i = 0 ; i < array_len(e->steps) ; ++i) {
         MR_ExecutionStepSerialize(buffWriter, e->steps + i);
     }
@@ -1408,38 +1426,60 @@ LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator acc
     mr_dictAdd(mrCtx.accumulatorsDict, asd->name, asd);
 }
 
-long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx) {
-    return mr_BufferReaderReadLong(sctx);
+long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx, MRError** err) {
+    int error = 0;
+    long res = mr_BufferReaderReadLongLong(sctx, &error);
+    if (error) {
+        *err = &BUFFER_READ_ERROR;
+    }
+    return res;
 }
 
-const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len) {
-    return mr_BufferReaderReadBuff(sctx, len);
+const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err) {
+    int error = 0;
+    const char* res = mr_BufferReaderReadBuff(sctx, len, &error);
+    if (error) {
+        *err = &BUFFER_READ_ERROR;
+    }
+    return res;
 }
 
-double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx) {
-    return (double)mr_BufferReaderReadLong(sctx);
+double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx, MRError** err) {
+    return (double)MR_SerializationCtxReadeLongLong(sctx, err);
 }
 
-void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val) {
-    mr_BufferWriterWriteLong(sctx, val);
+void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val, MRError** err) {
+    mr_BufferWriterWriteLongLong(sctx, val);
 }
 
-void MR_SerializationCtxWriteBuffer(WriteSerializationCtx* sctx, const char* buff, size_t len) {
+void MR_SerializationCtxWriteBuffer(WriteSerializationCtx* sctx, const char* buff, size_t len, MRError** err) {
     mr_BufferWriterWriteBuff(sctx, buff, len);
 }
 
-void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val) {
-    mr_BufferWriterWriteLong(sctx, (long) val);
-}
-
-int MR_WriteSerializationCtxIsError(WriteSerializationCtx* sctx) {
-    return 0;
-}
-
-int MR_ReadSerializationCtxIsError(ReaderSerializationCtx* sctx) {
-    return 0;
+void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val, MRError** err) {
+    mr_BufferWriterWriteLongLong(sctx, (long long) val);
 }
 
 size_t MR_CalculateSlot(const char* buff, size_t len) {
     return MR_ClusterGetSlotdByKey(buff, len);
+}
+
+MRError* MR_ErrorCreate(const char* msg, size_t len) {
+    MRError* ret = MR_ALLOC(sizeof(*ret));
+    ret->type = MRErrorType_Dynamic;
+    ret->msg = MR_ALLOC(len + 1);
+    memcpy(ret->msg, msg, len);
+    ret->msg[len] = '\0';
+    return ret;
+}
+
+const char* MR_ErrorGetMessage(MRError* err) {
+    return err->msg;
+}
+
+void MR_ErrorFree(MRError* err) {
+    if (err->type == MRErrorType_Dynamic) {
+        MR_FREE(err->msg);
+        MR_FREE(err);
+    }
 }

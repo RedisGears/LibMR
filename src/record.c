@@ -18,15 +18,17 @@ static void* ErrorRecord_ObjectDuplicate(void* arg) {
     ErrorRecord* errorRecord = arg;
     return MR_ErrorRecordCreate(errorRecord->error);
 }
-static int ErrorRecord_ObjectSerialize(WriteSerializationCtx* sctx, void* arg) {
+static void ErrorRecord_ObjectSerialize(WriteSerializationCtx* sctx, void* arg, MRError** err) {
     ErrorRecord* errorRecord = arg;
-    MR_SerializationCtxWriteBuffer(sctx, errorRecord->error, strlen(errorRecord->error) + 1);
-    return 0;
+    MR_SerializationCtxWriteBuffer(sctx, errorRecord->error, strlen(errorRecord->error) + 1, err);
 }
 
-static void* ErrorRecord_ObjectDeserialize(ReaderSerializationCtx* sctx) {
+static void* ErrorRecord_ObjectDeserialize(ReaderSerializationCtx* sctx, MRError** err) {
     size_t len;
-    const char* str = MR_SerializationCtxReadeBuffer(sctx, &len);
+    const char* str = MR_SerializationCtxReadeBuffer(sctx, &len, err);
+    if (*err) {
+        return NULL;
+    }
     return MR_ErrorRecordCreate(str);
 }
 
@@ -87,14 +89,21 @@ size_t MR_RecordGetHslot(Record* record) {
 }
 
 void MR_RecordSerialize(Record* r, mr_BufferWriter* writer){
-    mr_BufferWriterWriteLong(writer, r->recordType->type.id);
-    r->recordType->type.serialize(writer, r);
+    mr_BufferWriterWriteLongLong(writer, r->recordType->type.id);
+    MRError* err = NULL;
+    r->recordType->type.serialize(writer, r, &err);
+    // todo: handle serilization failure
+    RedisModule_Assert(!err);
+
 }
 
 Record* MR_RecordDeSerialize(mr_BufferReader* reader) {
-    size_t id = mr_BufferReaderReadLong(reader);
+    size_t id = mr_BufferReaderReadLongLong(reader, NULL);
     MRObjectType* type = MR_GetObjectType(id);
-    Record* r = type->deserialize(reader);
+    MRError* err = NULL;
+    Record* r = type->deserialize(reader, &err);
+    // todo: handle deserialization failure
+    RedisModule_Assert(!err);
     r->recordType = (MRRecordType*)type;
     return r;
 }

@@ -32,7 +32,7 @@ typedef struct mr_BufferWriter{
 }mr_BufferWriter;
 
 void mr_BufferWriterInit(mr_BufferWriter* bw, mr_Buffer* buff);
-void mr_BufferWriterWriteLong(mr_BufferWriter* bw, long val);
+void mr_BufferWriterWriteLongLong(mr_BufferWriter* bw, long long val);
 void mr_BufferWriterWriteString(mr_BufferWriter* bw, const char* str);
 void mr_BufferWriterWriteBuff(mr_BufferWriter* bw, const char* buff, size_t len);
 
@@ -42,9 +42,9 @@ typedef struct mr_BufferReader{
 }mr_BufferReader;
 
 void mr_BufferReaderInit(mr_BufferReader* br, mr_Buffer* buff);
-long mr_BufferReaderReadLong(mr_BufferReader* br);
-char* mr_BufferReaderReadBuff(mr_BufferReader* br, size_t* len);
-char* mr_BufferReaderReadString(mr_BufferReader* br);
+long long mr_BufferReaderReadLongLong(mr_BufferReader* br, int* error);
+char* mr_BufferReaderReadBuff(mr_BufferReader* br, size_t* len, int* error);
+char* mr_BufferReaderReadString(mr_BufferReader* br, int* error);
 
 
 
