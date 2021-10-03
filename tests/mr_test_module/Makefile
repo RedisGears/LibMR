@@ -40,10 +40,10 @@ test: build
 	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 3
 
 test_valgrind: build
-	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ -V
-	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 1 -V
-	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 2 -V
-	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 3 -V
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ -V --vg-suppressions ./leakcheck.supp
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 1 -V --vg-suppressions ./leakcheck.supp
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 2 -V --vg-suppressions ./leakcheck.supp
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 3 -V --vg-suppressions ./leakcheck.supp
 
 clean:
 	cargo clean
