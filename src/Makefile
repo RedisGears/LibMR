@@ -1,13 +1,20 @@
+GCC_FLAGS=-DREDISMODULE_EXPERIMENTAL_API
+LD_FLAGS=
 ifeq ($(DEBUG),1)
-	GCC_FLAGS=-O0 -g -DREDISMODULE_EXPERIMENTAL_API
+	GCC_FLAGS+=-O0 -g 
 else
-	GCC_FLAGS=-O2 -DREDISMODULE_EXPERIMENTAL_API
+	GCC_FLAGS+=-O2
 endif
 
 GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API \
 -I../deps/hiredis/ \
 -I../deps/hiredis/adapters/ \
 -I../deps/libevent/include/
+
+ifeq ($(COVERAGE),1)
+	GCC_FLAGS+=-fprofile-arcs -ftest-coverage
+	LD_FLAGS+=-fprofile-arcs -lgcov
+endif
 
 SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o
 
@@ -23,9 +30,14 @@ all: $(ARTIFACT_NAME)
 	gcc -c $(GCC_FLAGS) $< -o $@ -DMODULE_NAME=$(MODULE_NAME)
 
 $(ARTIFACT_NAME): $(SOURCES)
-	ld $(SOURCES) $(HIREDIS) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o
+	gcc $(SOURCES) $(HIREDIS) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
 	objcopy --localize-hidden $(ARTIFACT_NAME).o
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 
 clean:
-	rm $(ARTIFACT_NAME).a *.o utils/*.o
+	rm -f $(ARTIFACT_NAME).a *.o utils/*.o \
+	*.gcno utils/*.gcno \
+	*.gcda utils/*.gcda \
+	*.gcov utils/*.gcov \
+	*.out \
+	*.html utils/*.html

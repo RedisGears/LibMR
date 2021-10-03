@@ -1,7 +1,7 @@
 all: libmr
 clean: clean_libmr
 
-deps:
+build_deps:
 	make -C deps/
 	
 libmr:

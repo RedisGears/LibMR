@@ -11,12 +11,18 @@ else
 	DEBUG_RUN=0
 endif
 
+ifeq ($(COVERAGE),1)
+	COVERAGE_RUN=1
+else
+	COVERAGE_RUN=0
+endif
+
 RUSTFLAGS=-L$(ROOT)/src/
 
 all: build
 
 build_libmr:
-	DEBUG=$(DEBUG_RUN) MODULE_NAME=MRTESTS make -C $(ROOT)/src/
+	DEBUG=$(DEBUG_RUN) COVERAGE=$(COVERAGE_RUN) MODULE_NAME=MRTESTS make -C $(ROOT)/src/
 
 build: build_libmr
 	RUSTFLAGS="$(RUSTFLAGS)" cargo build $(EXTRA_ARGS)
