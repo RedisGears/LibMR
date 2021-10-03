@@ -27,6 +27,8 @@ bool MR_ClusterIsClusterMode();
 
 const char* MR_ClusterGetMyId();
 
+int MR_IsClusterInitialize();
+
 size_t MR_ClusterGetSize();
 
 int MR_ClusterInit(RedisModuleCtx* rctx);

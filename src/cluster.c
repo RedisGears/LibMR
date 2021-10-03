@@ -28,6 +28,8 @@
 #define CLUSTER_REFRESH_COMMAND             xstr(MODULE_NAME)".REFRESHCLUSTER"
 #define CLUSTER_SET_COMMAND                 xstr(MODULE_NAME)".CLUSTERSET"
 #define CLUSTER_SET_FROM_SHARD_COMMAND      xstr(MODULE_NAME)".CLUSTERSETFROMSHARD"
+#define CLUSTER_INFO_COMMAND                xstr(MODULE_NAME)".INFOCLUSTER"
+#define NETWORK_TEST_COMMAND                xstr(MODULE_NAME)".NETWORKTEST"
 
 typedef enum NodeStatus{
     NodeStatus_Connected, NodeStatus_Disconnected, NodeStatus_HelloSent, NodeStatus_Free
@@ -72,7 +74,6 @@ typedef struct Node{
 
 typedef struct Cluster {
     char* myId;
-    bool isClusterMode;
     mr_dict* nodes;
     Node* slots[MAX_SLOT];
     size_t clusterSetCommandSize;
@@ -88,6 +89,8 @@ struct ClusterCtx {
     size_t maxSlot;
     size_t clusterSize;
     char myId[REDISMODULE_NODE_ID_LEN + 1];
+    int isOss;
+    functionId networkTestMsgReciever;
 }clusterCtx;
 
 typedef struct ClusterSetCtx {
@@ -152,6 +155,11 @@ static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
 /* Runs on the event loop */
 static void MR_ClusterSendMsgTask(void* ctx) {
     SendMsg* sendMsg = ctx;
+    if (!clusterCtx.CurrCluster) {
+        RedisModule_Log(mr_staticCtx, "warning", "try to send a message on an uninitialize cluster, message will not be sent.");
+        MR_ClusterFreeMsg(sendMsg);
+        return;
+    }
     if (sendMsg->sendMsgType == SendMsgType_ById) {
         Node* n = MR_GetNode(sendMsg->idToSend);
         if(!n){
@@ -467,6 +475,10 @@ static void MR_ClusterFree(){
 
     MR_FREE(clusterCtx.CurrCluster);
     clusterCtx.CurrCluster = NULL;
+    clusterCtx.minSlot = 0;
+    clusterCtx.maxSlot = 0;
+    clusterCtx.clusterSize = 1;
+    memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 }
 
 static Node* MR_GetNode(const char* id){
@@ -514,6 +526,10 @@ static void MR_RefreshClusterData(){
 
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster refresh command");
 
+    if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
+        return;
+    }
+
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
 
     // generate runID
@@ -522,13 +538,6 @@ static void MR_RefreshClusterData(){
 
     clusterCtx.CurrCluster->clusterSetCommand = NULL;
     clusterCtx.CurrCluster->clusterSetCommandSize = 0;
-
-    if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
-        clusterCtx.CurrCluster->isClusterMode = false;
-        return;
-    }
-
-    clusterCtx.CurrCluster->isClusterMode = true;
 
     clusterCtx.CurrCluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
     memcpy(clusterCtx.CurrCluster->myId, RedisModule_GetMyClusterID(), REDISMODULE_NODE_ID_LEN);
@@ -637,8 +646,6 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     long long numOfRanges;
     RedisModule_Assert(RedisModule_StringToLongLong(argv[8], &numOfRanges) == REDISMODULE_OK);
 
-    clusterCtx.CurrCluster->isClusterMode = numOfRanges > 1;
-
     for(size_t i = 9, j = 0 ; j < numOfRanges ; i += 8, ++j){
         size_t shardIdLen;
         const char* shardId = RedisModule_StringPtrLen(argv[i + 1], &shardIdLen);
@@ -712,7 +719,9 @@ static void MR_ClusterRefreshFromCommand(void* ctx){
  * topology here */
 static void MR_ClusterSetFromCommand(void* ctx){
     ClusterSetCtx* csCtx = ctx;
-    MR_SetClusterData(csCtx->argv, csCtx->argc);
+    if (!clusterCtx.CurrCluster || csCtx->force) {
+        MR_SetClusterData(csCtx->argv, csCtx->argc);
+    }
     RedisModule_UnblockClient(csCtx->bc, csCtx);
 }
 
@@ -722,6 +731,7 @@ static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, i
         RedisModule_FreeString(NULL, csCtx->argv[i]);
     }
     MR_FREE(csCtx->argv);
+    MR_FREE(csCtx);
     RedisModule_ReplyWithSimpleString(ctx, "OK");
     return REDISMODULE_OK;
 }
@@ -789,11 +799,11 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         return;
     }
 
-//    if(!MR_ClusterIsInitialized()){
-//        RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
-//        msgCtx->reply = MessageReply_ClusterUninitialized;
-//        return;
-//    }
+    if(!MR_IsClusterInitialize()){
+        RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
+        msgCtx->reply = MessageReply_ClusterUninitialized;
+        return;
+    }
 
     RedisModuleString** argv = msgCtx->argv;
     size_t argc = msgCtx->argc;
@@ -846,7 +856,7 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     }
     if(msgId <= currId){
         RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
-        msgCtx->reply = MessageReply_BadFunctionId;
+        msgCtx->reply = MessageReply_DuplicateMsg;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
         return;
     }
@@ -877,7 +887,7 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
         RedisModule_ReplyWithError(ctx, "Err bad function id");
         break;
     case MessageReply_DuplicateMsg:
-        RedisModule_ReplyWithSimpleString(ctx, "Duplicate message");
+        RedisModule_ReplyWithSimpleString(ctx, "duplicate message ignored");
         break;
     default:
         RedisModule_Assert(0);
@@ -888,6 +898,73 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
     MR_FREE(msgCtx->argv);
     MR_FREE(msgCtx);
 
+    return REDISMODULE_OK;
+}
+
+int MR_NetworkTestCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    MR_ClusterCopyAndSendMsg(NULL, clusterCtx.networkTestMsgReciever, "test msg", strlen("test msg"));
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
+}
+
+static void MR_ClusterInfo(void* pd) {
+#define NO_CLUSTER_MODE_REPLY "no cluster mode"
+    RedisModuleBlockedClient* bc = pd;
+    RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(bc);
+    if(!clusterCtx.CurrCluster){
+        RedisModule_ReplyWithStringBuffer(ctx, NO_CLUSTER_MODE_REPLY, strlen(NO_CLUSTER_MODE_REPLY));
+        return;
+    }
+    RedisModule_ReplyWithArray(ctx, 5);
+    RedisModule_ReplyWithStringBuffer(ctx, "MyId", strlen("MyId"));
+    RedisModule_ReplyWithStringBuffer(ctx, clusterCtx.CurrCluster->myId, strlen(clusterCtx.CurrCluster->myId));
+    RedisModule_ReplyWithStringBuffer(ctx, "MyRunId", strlen("MyRunId"));
+    RedisModule_ReplyWithStringBuffer(ctx, clusterCtx.CurrCluster->runId, strlen(clusterCtx.CurrCluster->runId));
+    RedisModule_ReplyWithArray(ctx, mr_dictSize(clusterCtx.CurrCluster->nodes));
+    mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
+    mr_dictEntry *entry = NULL;
+    while((entry = mr_dictNext(iter))){
+        Node* n = mr_dictGetVal(entry);
+        RedisModule_ReplyWithArray(ctx, 16);
+        RedisModule_ReplyWithStringBuffer(ctx, "id", strlen("id"));
+        RedisModule_ReplyWithStringBuffer(ctx, n->id, strlen(n->id));
+        RedisModule_ReplyWithStringBuffer(ctx, "ip", strlen("ip"));
+        RedisModule_ReplyWithStringBuffer(ctx, n->ip, strlen(n->ip));
+        RedisModule_ReplyWithStringBuffer(ctx, "port", strlen("port"));
+        RedisModule_ReplyWithLongLong(ctx, n->port);
+        RedisModule_ReplyWithStringBuffer(ctx, "unixSocket", strlen("unixSocket"));
+        if(n->unixSocket){
+            RedisModule_ReplyWithStringBuffer(ctx, n->unixSocket, strlen(n->unixSocket));
+        }else{
+            RedisModule_ReplyWithStringBuffer(ctx, "None", strlen("None"));
+        }
+        RedisModule_ReplyWithStringBuffer(ctx, "runid", strlen("runid"));
+        if(n->runId){
+            RedisModule_ReplyWithStringBuffer(ctx, n->runId, strlen(n->runId));
+        }else{
+            if(n->isMe){
+                const char* runId = clusterCtx.CurrCluster->runId;
+                RedisModule_ReplyWithStringBuffer(ctx, runId, strlen(runId));
+            }else{
+                RedisModule_ReplyWithNull(ctx);
+            }
+        }
+        RedisModule_ReplyWithStringBuffer(ctx, "minHslot", strlen("minHslot"));
+        RedisModule_ReplyWithLongLong(ctx, n->minSlot);
+        RedisModule_ReplyWithStringBuffer(ctx, "maxHslot", strlen("maxHslot"));
+        RedisModule_ReplyWithLongLong(ctx, n->maxSlot);
+        RedisModule_ReplyWithStringBuffer(ctx, "pendingMessages", strlen("pendingMessages"));
+        RedisModule_ReplyWithLongLong(ctx, mr_listLength(n->pendingMessages));
+
+    }
+    mr_dictReleaseIterator(iter);
+    RedisModule_FreeThreadSafeContext(ctx);
+    RedisModule_UnblockClient(bc, NULL);
+}
+
+int MR_ClusterInfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    MR_EventLoopAddTask(MR_ClusterInfo, bc);
     return REDISMODULE_OK;
 }
 
@@ -942,6 +1019,10 @@ size_t MR_ClusterGetSlotdByKey(const char* key, size_t len) {
     return keyHashSlot(key, len);
 }
 
+static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
+    RedisModule_Log(ctx, "notice", "got a nextwork test msg");
+}
+
 int MR_ClusterInit(RedisModuleCtx* rctx) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
@@ -949,7 +1030,17 @@ int MR_ClusterInit(RedisModuleCtx* rctx) {
     clusterCtx.minSlot = 0;
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
+    clusterCtx.isOss = true;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
+
+    RedisModuleServerInfoData *info = RedisModule_GetServerInfo(rctx, "Server");
+    const char *rlecVersion = RedisModule_ServerInfoGetFieldC(info, "rlec_version");
+    if (rlecVersion) {
+        clusterCtx.isOss = false;
+    }
+    RedisModule_FreeServerInfo(rctx, info);
+
+    RedisModule_Log(rctx, "notice", "Detected redis %s", clusterCtx.isOss? "oss" : "enterprise");
 
     if (RedisModule_CreateCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh, "readonly", 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command " CLUSTER_REFRESH_COMMAND);
@@ -976,7 +1067,23 @@ int MR_ClusterInit(RedisModuleCtx* rctx) {
         return REDISMODULE_ERR;
     }
 
+    if (RedisModule_CreateCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand, "readonly", 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning", "could not register command "NETWORK_TEST_COMMAND);
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand, "readonly", 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_INFO_COMMAND);
+        return REDISMODULE_ERR;
+    }
+
+    clusterCtx.networkTestMsgReciever = MR_ClusterRegisterMsgReceiver(MR_NetworkTest);
+
     return REDISMODULE_OK;
+}
+
+int MR_IsClusterInitialize() {
+    return clusterCtx.isOss || clusterCtx.CurrCluster != NULL;
 }
 
 size_t MR_ClusterGetSize(){

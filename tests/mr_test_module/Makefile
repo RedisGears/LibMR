@@ -30,6 +30,9 @@ build: build_libmr
 run: build
 	redis-server --loadmodule $(MODULE_PATH)
 
+run_cluster: build
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-only --env oss-cluster --shards-count 3 -s
+
 test: build
 	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/
 	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 1

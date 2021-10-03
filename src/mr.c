@@ -452,7 +452,10 @@ static Execution* MR_ExecutionAlloc() {
 }
 
 Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err) {
-    // todo: if cluster is not initialize, failed the execution creation.
+    if (!MR_IsClusterInitialize()) {
+        *err = &UINITIALIZED_CLUSTER_ERROR;
+    }
+
     Execution* e = MR_ExecutionAlloc();
 
     /* Set execution id */
