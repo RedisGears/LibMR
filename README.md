@@ -30,6 +30,7 @@ Other then the build prerequisite, the following list must be installed to run t
 - RLTest - https://github.com/RedisLabsModules/RLTest
 - gevents
 - redis
+- rust
 
 ## Build
 Clone the repository and perform the following to build and run the tests:
