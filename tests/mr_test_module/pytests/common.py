@@ -94,7 +94,7 @@ def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False
                 if 'cluster' in env.env:
                     raise unittest.SkipTest()
             if skipOnValgrind:
-                if env.envRunner.debugger is not None:
+                if env.debugger is not None:
                     raise unittest.SkipTest()
             args = {
                 'env': env,
