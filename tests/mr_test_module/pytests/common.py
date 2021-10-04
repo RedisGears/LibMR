@@ -77,7 +77,7 @@ def runSkipTests():
 def waitBeforeTestStart():
     return True if os.environ.get('HOLD', False) else False
 
-def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False envArgs={}):
+def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
