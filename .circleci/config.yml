@@ -1,0 +1,85 @@
+version: 2.1
+
+jobs:
+  build-and-test-bionic:
+      docker:
+        - image: 'ubuntu:bionic'
+      steps:
+        - run:
+            name: Setup executor
+            command: |
+              apt-get -qq update
+              apt-get -q install -y git build-essential autoconf libtool libssl-dev curl valgrind clang
+        - checkout
+        - setup-automation
+        - run:
+            name: Submodule update
+            command: git submodule update --init --recursive
+        - run:
+            name: get readies
+            command: git clone https://github.com/RedisLabsModules/readies.git
+        - run:
+            name: Install gcc-9
+            command: ./readies/bin/getgcc --modern
+        - run:
+            name: Install python3
+            command: ./readies/bin/getpy3
+        - run:
+            name: Install rust
+            command: ./readies/bin/getrust
+        - run:
+            name: Install Redis
+            command: git clone https://github.com/redis/redis.git; cd redis; git checkout 6.2.6; make valgrind install
+        - run:
+            name: Install RLTest
+            command: python3 -m pip install --no-cache-dir git+https://github.com/RedisLabsModules/RLTest.git@master gevent
+        - run:
+            name: Build deps
+            command: make build_deps
+        - run:
+            name: Tests
+            command: make clean run_tests
+        - run:
+            name: Tests Valgrind
+            command: make clean run_tests_valgrind
+
+on-any-branch: &on-any-branch
+  filters:
+    branches:
+      only: /.*/
+    tags:
+      only: /.*/
+
+on-master: &on-master
+  filters:
+    branches:
+      only: master
+
+on-version-tags: &on-version-tags
+  filters:
+    branches:
+      ignore: /.*/
+    tags:
+      only: /^v[0-9].*/
+
+after-build-and-test: &after-build-and-test
+  requires:
+    - build-and-test-bionic
+
+workflows:
+  version: 2
+  commit:
+    jobs:
+      - build-and-test-bionic:
+          <<: *on-any-branch
+
+  nightly:
+      triggers:
+        - schedule:
+            cron: "0 0 * * *"
+            filters:
+              branches:
+                only:
+                  - master
+      jobs:
+        - build-and-test-bionic
