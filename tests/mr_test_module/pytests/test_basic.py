@@ -38,6 +38,11 @@ def testBasicMRAccumulate(env, conn):
         conn.execute_command('set', 'key%d' % i, str(i))
     env.expect('lmrtest.countkeys').equal([1000])
 
+@MRTestDecorator()
+def testBasicMRMassiveData(env, conn):
+    for i in range(100000):
+        conn.execute_command('set', 'key%d' % i, str(i))
+    env.expect('lmrtest.countkeys').equal([100000])
 
 @MRTestDecorator(skipOnSingleShard=True)
 def testMaxIdle(env, conn):

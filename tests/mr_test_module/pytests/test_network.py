@@ -269,6 +269,25 @@ def testErrorHelloResponse(env, conn):
         conn = shardMock.GetConnection()
 
 @MRTestDecorator(skipOnCluster=True)
+def testClusterErrorHelloResponse(env, conn):
+    with ShardMock(env) as shardMock:
+        conn = shardMock.GetCleanConnection()
+        env.assertEqual(conn.read_request(), ['AUTH', 'password'])
+        env.assertEqual(conn.read_request(), ['MRTESTS.HELLO'])
+        conn.send_status('OK')  # auth response
+        conn.send_error('ERRCLUSTER')  # sending error for the RG.HELLO request
+
+        # expect the topology rg.hello to be sent
+        env.assertEqual(conn.read_request(), ['MRTESTS.CLUSTERSETFROMSHARD', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', '0000000000000000000000000000000000000002', 'NO-USED', '2', 'NO-USED', '1', 'NO-USED', '0', '8192', 'NO-USED', 'password@localhost:6379', 'NO-USED', 'NO-USED', '2', 'NO-USED', '8193', '16383', 'NO-USED', 'password@localhost:10000'])
+        env.assertEqual(conn.read_request(), ['MRTESTS.HELLO'])
+
+        # closing the connection befor reply
+        conn.close()
+
+        # expect a new connection to arrive
+        conn = shardMock.GetConnection()
+
+@MRTestDecorator(skipOnCluster=True)
 def testMessageResentAfterDisconnect(env, conn):
     with ShardMock(env) as shardMock:
         conn = shardMock.GetConnection()
