@@ -37,10 +37,14 @@ jobs:
             command: make build_deps
         - run:
             name: Tests
-            command: make clean run_tests
+            command: |
+              PATH=$PATH:/root/.cargo/bin/
+              make clean run_tests
         - run:
             name: Tests Valgrind
-            command: make clean run_tests_valgrind
+            command: |
+              PATH=$PATH:/root/.cargo/bin/
+              make clean run_tests_valgrind
 
 on-any-branch: &on-any-branch
   filters:

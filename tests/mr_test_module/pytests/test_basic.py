@@ -38,7 +38,7 @@ def testBasicMRAccumulate(env, conn):
         conn.execute_command('set', 'key%d' % i, str(i))
     env.expect('lmrtest.countkeys').equal([1000])
 
-@MRTestDecorator()
+@MRTestDecorator(skipOnValgrind=True)
 def testBasicMRMassiveData(env, conn):
     for i in range(100000):
         conn.execute_command('set', 'key%d' % i, str(i))
