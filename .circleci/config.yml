@@ -11,7 +11,6 @@ jobs:
               apt-get -qq update
               apt-get -q install -y git build-essential autoconf libtool libssl-dev curl valgrind clang
         - checkout
-        - setup-automation
         - run:
             name: Submodule update
             command: git submodule update --init --recursive
