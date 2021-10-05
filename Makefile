@@ -4,7 +4,7 @@ clean: clean_libmr
 build_deps:
 	make -C deps/
 	
-libmr:
+libmr: build_deps
 	make -C src/
 	
 run_tests:
