@@ -1,5 +1,16 @@
+#include "redismodule.h"
 #include "record.h"
 #include "mr_memory.h"
+
+#ifdef VALGRIND
+#define MR_ALLOC malloc
+#define MR_STRDUP strdup
+#else
+#define MR_ALLOC RedisModule_Alloc
+#define MR_STRDUP RedisModule_Strdup
+#endif
+
+
 
 static Record holdRecord;
 
@@ -109,4 +120,37 @@ Record* MR_RecordDeSerialize(mr_BufferReader* reader) {
 }
 void MR_RecordFree(Record* r){
     r->recordType->type.free(r);
+}
+
+Record* MR_RecordCreate(MRRecordType* type, size_t size){
+    Record* ret = malloc(size);
+    ret->recordType = type;
+    return ret;
+}
+
+MRRecordType* MR_RecordTypeCreate(char* type,
+                                    size_t id,
+                                    ObjectFree free,
+                                    ObjectDuplicate dup,
+                                    ObjectSerialize serialize,
+                                    ObjectDeserialize deserialize,
+                                    ObjectToString tostring,
+                                    SendAsRedisReply sendReply,
+                                    HashTag hashTag
+){
+    MRRecordType* ret = malloc(sizeof(MRRecordType));
+    *ret = (MRRecordType) {
+        .type = (MRObjectType){
+            .type = MR_STRDUP(type),
+            .id = id,
+            .free = free,
+            .dup = dup,
+            .serialize = serialize,
+            .deserialize = deserialize,
+            .tostring = tostring,
+        },
+        .sendReply = sendReply,
+        .hashTag = hashTag
+    };
+    return ret;
 }

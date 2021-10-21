@@ -1,12 +1,13 @@
 #ifndef SRC_MR_H_
 #define SRC_MR_H_
 
+#include "redismodule.h"
+
+#include <stdbool.h>
 #include <limits.h>
 #include <stddef.h>
 
 #define LIBMR_API __attribute__ ((visibility("default")))
-
-typedef struct RedisModuleCtx RedisModuleCtx;
 
 typedef struct MRError MRError;
 
@@ -42,6 +43,10 @@ typedef struct MRObjectType{
     ObjectDeserialize deserialize;
     ObjectToString tostring;
 }MRObjectType;
+
+LIBMR_API bool MR_ClusterIsClusterMode();
+LIBMR_API size_t MR_ClusterGetSize();
+LIBMR_API const char* MR_ClusterGetMyId();
 
 /* Opaque struct that is given to execution steps */
 typedef struct ExecutionCtx ExecutionCtx;
@@ -177,5 +182,7 @@ LIBMR_API void MR_ErrorFree(MRError* err);
 
 /***************** no public API **********************/
 MRObjectType* MR_GetObjectType(size_t id);
+
+LIBMR_API MRObjectType* MR_CreateType(char* type, size_t id, ObjectFree free, ObjectDuplicate dup, ObjectSerialize serialize, ObjectDeserialize deserialize, ObjectToString tostring);
 
 #endif /* SRC_MR_H_ */

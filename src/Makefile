@@ -16,6 +16,21 @@ ifeq ($(COVERAGE),1)
 	LD_FLAGS+=-fprofile-arcs -lgcov
 endif
 
+
+ifeq ($(shell $(CC) -v 2>&1 | grep -c "clang version"), 1)
+THE_COMPILER = clang
+else
+THE_COMPILER = gcc
+endif
+
+ifeq ($(THE_COMPILER),gcc)
+OBJCOPY_FLAGS := llvm-objcopy
+$(info $(THE_COMPILER))
+else
+OBJCOPY_FLAGS := objcopy
+endif
+
+
 SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o utils/siphash.o
 
 HIREDIS=../deps/hiredis/libhiredis.a
@@ -29,9 +44,12 @@ all: $(ARTIFACT_NAME)
 %.o : %.c
 	gcc -c $(GCC_FLAGS) $< -o $@ -DMODULE_NAME=$(MODULE_NAME)
 
+
 $(ARTIFACT_NAME): $(SOURCES)
 	gcc $(SOURCES) $(HIREDIS) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
-	objcopy --localize-hidden $(ARTIFACT_NAME).o
+    ifeq ($(COMPILER),gcc)
+      objcopy --localize-hidden $(ARTIFACT_NAME).o
+    endif
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 
 clean:
