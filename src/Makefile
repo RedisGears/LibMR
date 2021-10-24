@@ -29,9 +29,12 @@ all: $(ARTIFACT_NAME)
 %.o : %.c
 	gcc -c $(GCC_FLAGS) $< -o $@ -DMODULE_NAME=$(MODULE_NAME)
 
+
 $(ARTIFACT_NAME): $(SOURCES)
 	gcc $(SOURCES) $(HIREDIS) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
-	objcopy --localize-hidden $(ARTIFACT_NAME).o
+    ifeq ($(COMPILER),gcc)
+		objcopy --localize-hidden $(ARTIFACT_NAME).o
+    endif
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 
 clean:

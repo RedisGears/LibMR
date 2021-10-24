@@ -23,7 +23,7 @@ void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg,
 
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver);
 
-bool MR_ClusterIsClusterMode();
+int MR_ClusterIsClusterMode();
 
 const char* MR_ClusterGetMyId();
 
