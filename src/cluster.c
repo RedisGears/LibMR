@@ -524,7 +524,7 @@ static void MR_RefreshClusterData(){
         MR_ClusterFree();
     }
 
-    RedisModule_Log(mr_staticCtx, "warning", "Got cluster refresh command");
+    RedisModule_Log(mr_staticCtx, "notice", "Got cluster refresh command");
 
     if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
         return;
@@ -1090,7 +1090,7 @@ size_t MR_ClusterGetSize(){
     return clusterCtx.clusterSize;
 }
 
-bool MR_ClusterIsClusterMode(){
+int MR_ClusterIsClusterMode(){
     return MR_ClusterGetSize() > 1;
 }
 

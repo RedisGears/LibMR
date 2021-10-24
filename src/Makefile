@@ -23,13 +23,6 @@ else
 THE_COMPILER = gcc
 endif
 
-ifeq ($(THE_COMPILER),gcc)
-OBJCOPY_FLAGS := llvm-objcopy
-$(info $(THE_COMPILER))
-else
-OBJCOPY_FLAGS := objcopy
-endif
-
 
 SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o utils/siphash.o
 
@@ -48,7 +41,7 @@ all: $(ARTIFACT_NAME)
 $(ARTIFACT_NAME): $(SOURCES)
 	gcc $(SOURCES) $(HIREDIS) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
     ifeq ($(COMPILER),gcc)
-      objcopy --localize-hidden $(ARTIFACT_NAME).o
+    	objcopy --localize-hidden $(ARTIFACT_NAME).o
     endif
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 

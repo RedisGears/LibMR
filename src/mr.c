@@ -1489,17 +1489,3 @@ void MR_ErrorFree(MRError* err) {
         MR_FREE(err);
     }
 }
-
-LIBMR_API MRObjectType* MR_CreateType(char* type, size_t id, ObjectFree free, ObjectDuplicate dup, ObjectSerialize serialize, ObjectDeserialize deserialize, ObjectToString tostring){
-    MRObjectType* ret = MR_ALLOC(sizeof(*ret));
-    *ret = (MRObjectType){
-        .type = MR_STRDUP(type),
-        .id = id,
-        .free = free,
-        .dup = dup,
-        .serialize = serialize,
-        .deserialize = deserialize,
-        .tostring = tostring,
-    };
-    return ret;
-}
