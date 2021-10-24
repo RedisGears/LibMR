@@ -4,9 +4,7 @@ build_hiredis:
 	make -C ./hiredis/
 
 build_libevent:
-	if !([ -f ./build_libevent_done ]) then \
-	cd libevent; autoreconf -v -i -f; CFLAGS=-fPIC ./configure; make; cd ../ ; touch ./build_libevent_done; \
-	fi
+	cd libevent; autoreconf -v -i -f; CFLAGS=-fPIC ./configure; make
 	
 clean:
 	make -C ./hiredis/ clean
