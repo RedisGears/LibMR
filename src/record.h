@@ -5,8 +5,8 @@
 #include "utils/buffer.h"
 
 void MR_RecorInitialize();
-LIBMR_API void MR_RecordSerialize(Record* r, mr_BufferWriter* writer);
-LIBMR_API Record* MR_RecordDeSerialize(mr_BufferReader* reader);
+void MR_RecordSerialize(Record* r, mr_BufferWriter* writer);
+Record* MR_RecordDeSerialize(mr_BufferReader* reader);
 
 Record* MR_ErrorRecordCreate(const char* err);
 int MR_IsError(Record* record);

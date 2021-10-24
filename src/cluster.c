@@ -1094,6 +1094,10 @@ int MR_ClusterIsClusterMode(){
     return MR_ClusterGetSize() > 1;
 }
 
+int MR_ClusterIsInClusterMode() {
+    return MR_ClusterIsClusterMode() && MR_IsClusterInitialize();
+}
+
 const char* MR_ClusterGetMyId(){
     return clusterCtx.myId;
 }

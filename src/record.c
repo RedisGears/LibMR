@@ -1,16 +1,6 @@
 #include "record.h"
 #include "mr_memory.h"
 
-#ifdef VALGRIND
-#define MR_ALLOC malloc
-#define MR_STRDUP strdup
-#else
-#define MR_ALLOC RedisModule_Alloc
-#define MR_STRDUP RedisModule_Strdup
-#endif
-
-
-
 static Record holdRecord;
 
 typedef struct ErrorRecord {

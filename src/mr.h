@@ -41,7 +41,7 @@ typedef struct MRObjectType{
     ObjectToString tostring;
 }MRObjectType;
 
-LIBMR_API int MR_ClusterIsClusterMode();
+LIBMR_API int MR_ClusterIsInClusterMode();
 
 /* Opaque struct that is given to execution steps */
 typedef struct ExecutionCtx ExecutionCtx;
@@ -162,6 +162,12 @@ LIBMR_API int MR_RegisterRecord(MRRecordType* t);
 
 /* Free the give Record */
 LIBMR_API void MR_RecordFree(Record* r);
+
+/* Serialize the given Record */
+LIBMR_API void MR_RecordSerialize(Record* r, WriteSerializationCtx* writer);
+
+/* Deserialize the given Record */
+LIBMR_API Record* MR_RecordDeSerialize(ReaderSerializationCtx* reader);
 
 /* Calculate slot on the given buffer */
 LIBMR_API size_t MR_CalculateSlot(const char* buff, size_t len);
