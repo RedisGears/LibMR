@@ -19,6 +19,7 @@ endif
 SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o utils/siphash.o
 
 HIREDIS=../deps/hiredis/libhiredis.a
+HIREDIS_SSL=../deps/hiredis/libhiredis_ssl.a
 LIBEVENT=../deps/libevent/.libs/libevent.a
 LIBEVENT_PTHREADS=../deps/libevent/.libs/libevent_pthreads.a
 
@@ -31,10 +32,8 @@ all: $(ARTIFACT_NAME)
 
 
 $(ARTIFACT_NAME): $(SOURCES)
-	gcc $(SOURCES) $(HIREDIS) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
-    ifeq ($(COMPILER),gcc)
-		objcopy --localize-hidden $(ARTIFACT_NAME).o
-    endif
+	gcc $(SOURCES) $(HIREDIS) $(HIREDIS_SSL) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
+	objcopy --localize-hidden $(ARTIFACT_NAME).o
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 
 clean:
