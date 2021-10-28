@@ -28,7 +28,7 @@ jobs:
             command: ./readies/bin/getrust
         - run:
             name: Install Redis
-            command: git clone https://github.com/redis/redis.git; cd redis; git checkout 6.2.6; make valgrind install
+            command: git clone https://github.com/redis/redis.git; cd redis; git checkout 6.2.6; BUILD_TLS=yes make valgrind install
         - run:
             name: Install RLTest
             command: python3 -m pip install --no-cache-dir git+https://github.com/RedisLabsModules/RLTest.git@master gevent
@@ -45,6 +45,11 @@ jobs:
             command: |
               PATH=$PATH:/root/.cargo/bin/
               make clean run_tests_valgrind
+        - run:
+            name: Tests ssl
+            command: |
+              PATH=$PATH:/root/.cargo/bin/
+              make clean run_tests_ssl
 
 on-any-branch: &on-any-branch
   filters:

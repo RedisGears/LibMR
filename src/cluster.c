@@ -6,6 +6,7 @@
 #include "utils/adlist.h"
 
 #include <hiredis.h>
+#include <hiredis_ssl.h>
 #include <async.h>
 #include <libevent.h>
 
@@ -344,6 +345,11 @@ static void MR_ClusterReconnect(void* ctx){
     MR_ConnectToShard(n);
 }
 
+static void MR_ClusterAsyncDisconnect(void* ctx){
+    Node* n = ctx;
+    redisAsyncFree(n->c);
+}
+
 static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, int status){
     RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, will try to reconnect.\r\n", c->c.tcp.host, c->c.tcp.port, status);
     if(!c->data){
@@ -353,6 +359,73 @@ static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, in
     n->status = NodeStatus_Disconnected;
     n->c = NULL;
     n->reconnectEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterReconnect, n, RETRY_INTERVAL);
+}
+
+char* getConfigValue(RedisModuleCtx *ctx, const char* confName){
+    RedisModuleCallReply *rep = RedisModule_Call(ctx, "config", "cc", "get",
+            confName);
+    RedisModule_Assert(
+            RedisModule_CallReplyType(rep) == REDISMODULE_REPLY_ARRAY);
+    if (RedisModule_CallReplyLength(rep) == 0) {
+        RedisModule_FreeCallReply(rep);
+        return NULL;
+    }
+    RedisModule_Assert(RedisModule_CallReplyLength(rep) == 2);
+    RedisModuleCallReply *valueRep = RedisModule_CallReplyArrayElement(rep, 1);
+    RedisModule_Assert(
+            RedisModule_CallReplyType(valueRep) == REDISMODULE_REPLY_STRING);
+    size_t len;
+    const char* valueRepCStr = RedisModule_CallReplyStringPtr(valueRep, &len);
+
+    char* res = MR_CALLOC(1, len + 1);
+    memcpy(res, valueRepCStr, len);
+
+    RedisModule_FreeCallReply(rep);
+
+    return res;
+}
+
+static int checkTLS(char** client_key, char** client_cert, char** ca_cert){
+    int ret = 1;
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    char* clusterTls = NULL;
+    char* tlsPort = NULL;
+
+    clusterTls = getConfigValue(mr_staticCtx, "tls-cluster");
+    if (!clusterTls || strcmp(clusterTls, "yes")) {
+        tlsPort = getConfigValue(mr_staticCtx, "tls-port");
+        if (!tlsPort || !strcmp(tlsPort, "0")) {
+            ret = 0;
+            goto done;
+        }
+    }
+
+    *client_key = getConfigValue(mr_staticCtx, "tls-key-file");
+    *client_cert = getConfigValue(mr_staticCtx, "tls-cert-file");
+    *ca_cert = getConfigValue(mr_staticCtx, "tls-ca-cert-file");
+
+    if (!*client_key || !*client_cert || !*ca_cert) {
+        ret = 0;
+        if (*client_key) {
+            MR_FREE(*client_key);
+        }
+        if (*client_cert) {
+            MR_FREE(*client_cert);
+        }
+        if (*ca_cert) {
+            MR_FREE(*client_cert);
+        }
+    }
+
+done:
+    if (clusterTls) {
+        MR_FREE(clusterTls);
+    }
+    if (tlsPort) {
+        MR_FREE(tlsPort);
+    }
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    return ret;
 }
 
 static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
@@ -365,6 +438,29 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         n->c = NULL;
         n->reconnectEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterReconnect, n, RETRY_INTERVAL);
     }else{
+        char* client_cert = NULL;
+        char* client_key = NULL;
+        char* ca_cert = NULL;
+        if(checkTLS(&client_key, &client_cert, &ca_cert)){
+            redisSSLContextError ssl_error = 0;
+            redisSSLContext *ssl_context = redisCreateSSLContext(ca_cert, NULL, client_cert, client_key, NULL, &ssl_error);
+            MR_FREE(client_key);
+            MR_FREE(client_cert);
+            MR_FREE(ca_cert);
+            if(ssl_context == NULL || ssl_error != 0) {
+                RedisModule_Log(mr_staticCtx, "warning", "SSL context generation to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
+                // disconnect async, its not possible to free redisAsyncContext here
+                MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
+                return;
+            }
+            if (redisInitiateSSLWithContext((redisContext *)(&c->c), ssl_context) != REDIS_OK) {
+                RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
+                // disconnect async, its not possible to free redisAsyncContext here
+                MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
+                return;
+            }
+        }
+
         RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d\r\n", c->c.tcp.host, c->c.tcp.port, status);
         if(n->password){
             redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
