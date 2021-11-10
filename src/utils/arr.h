@@ -133,6 +133,7 @@ static inline array_t array_grow(array_t arr) {
 
 /* Append an element to the array, returning the array which may have been reallocated */
 #define array_append(arr, x)   \
+  __extension__                \
   ({                           \
     (arr) = array_grow((arr)); \
     array_tail((arr)) = (x);   \
@@ -174,6 +175,7 @@ static void array_free(array_t arr) {
  *  array_foreach(arr, i, printf("%d\n", i));
  */
 #define array_foreach(arr, as, blk)                 \
+  __extension__                                     \
   ({                                                \
     for (uint32_t i = 0; i < array_len(arr); i++) { \
       typeof(*arr) as = arr[i];                     \

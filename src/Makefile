@@ -23,6 +23,12 @@ HIREDIS_SSL=../deps/hiredis/libhiredis_ssl.a
 LIBEVENT=../deps/libevent/.libs/libevent.a
 LIBEVENT_PTHREADS=../deps/libevent/.libs/libevent_pthreads.a
 
+ifeq ($(shell $(CC) -v 2>&1 | grep -c "clang version"), 1)
+COMPILER = clang
+else
+COMPILER = gcc
+endif
+
 ARTIFACT_NAME=libmr
 
 all: $(ARTIFACT_NAME)
@@ -33,7 +39,9 @@ all: $(ARTIFACT_NAME)
 
 $(ARTIFACT_NAME): $(SOURCES)
 	gcc $(SOURCES) $(HIREDIS) $(HIREDIS_SSL) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
-	objcopy --localize-hidden $(ARTIFACT_NAME).o
+    ifeq ($(COMPILER),gcc)
+		objcopy --localize-hidden $(ARTIFACT_NAME).o
+    endif
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 
 clean:
