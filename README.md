@@ -1,4 +1,12 @@
+[![Release](https://img.shields.io/github/release/RedisGears/LibMR.svg?sort=semver)](https://github.com/RedisGears/LibMR/releases)
+[![CircleCI](https://circleci.com/gh/RedisGears/LibMR/tree/master.svg?style=svg)](https://circleci.com/gh/RedisGears/LibMR/tree/master)
+[![Total alerts](https://img.shields.io/lgtm/alerts/g/RedisGears/LibMR.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/RedisGears/LibMR/alerts/)
+[![codecov](https://codecov.io/gh/RedisGears/LibMR/branch/master/graph/badge.svg)](https://codecov.io/gh/RedisGears/LibMRs)
+
 # LibMR
+[![Forum](https://img.shields.io/badge/Forum-RedisGears-blue)](https://forum.redislabs.com/c/modules/redisgears)
+[![Discord](https://img.shields.io/discord/697882427875393627?style=flat-square)](https://discord.gg/6yaVTtp)
+
 LibMR is a Map Reduce library that runs on top of Redis Cluster and agnostic to the deployment (oss/oss-cluster/enterpris-cluster). 
 
 # Build
