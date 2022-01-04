@@ -3,7 +3,7 @@ LD_FLAGS=
 ifeq ($(DEBUG),1)
 	GCC_FLAGS+=-O0 -g 
 else
-	GCC_FLAGS+=-O2
+	GCC_FLAGS+=-O3
 endif
 
 GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API \
