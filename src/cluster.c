@@ -442,7 +442,6 @@ static int MR_TlsPasswordCallback(char *buf, int size, int rwflag, void *u) {
     if (pass_len > (size_t) size) return -1;
     memcpy(buf, pass, pass_len);
 
-    RedisModule_Log(NULL, "warning", "inside password callback returned %s", buf);
     return (int) pass_len;
 }
 
@@ -462,9 +461,9 @@ SSL_CTX* MR_CreateSSLContext(const char *cacert_filename,
     SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
 
     /* always set the callback, otherwise if key is encrypted and password
-	 * was not given, we will be waiting on stdin. */
-	SSL_CTX_set_default_passwd_cb(ssl_ctx, MR_TlsPasswordCallback);
-	SSL_CTX_set_default_passwd_cb_userdata(ssl_ctx, (void *) private_key_pass);
+     * was not given, we will be waiting on stdin. */
+    SSL_CTX_set_default_passwd_cb(ssl_ctx, MR_TlsPasswordCallback);
+    SSL_CTX_set_default_passwd_cb_userdata(ssl_ctx, (void *) private_key_pass);
 
     if ((cert_filename != NULL && private_key_filename == NULL) ||
             (private_key_filename != NULL && cert_filename == NULL)) {
