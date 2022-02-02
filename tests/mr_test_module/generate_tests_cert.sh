@@ -18,8 +18,7 @@ openssl req \
 openssl genrsa -out redis.key 2048
 openssl req \
     -new -sha256 \
-    -key redis.key \
-    #-passin pass:foobar \
+    -key redis.key \ #-passin pass:foobar \
     -subj '/O=Redis Test/CN=Server' | \
     openssl x509 \
         -req -sha256 \
