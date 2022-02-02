@@ -1,4 +1,5 @@
 #!/bin/bash
+set -x
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ROOT=$(cd "$HERE" && pwd)
@@ -13,10 +14,12 @@ openssl req \
     -days 3650 \
     -subj '/O=Redis Test/CN=Certificate Authority' \
     -out ca.crt
+#openssl genrsa -out redis.key -aes256 -passout pass:foobar 2048
 openssl genrsa -out redis.key 2048
 openssl req \
     -new -sha256 \
     -key redis.key \
+    #-passin pass:foobar \
     -subj '/O=Redis Test/CN=Server' | \
     openssl x509 \
         -req -sha256 \
