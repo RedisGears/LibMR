@@ -41,10 +41,8 @@ test: build
 
 test_ssl: build
 	bash ./generate_tests_cert.sh
-	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 2 --tls --tls-cert-file ./tests/tls/redis.crt --tls-key-file ./tests/tls/redis.key --tls-ca-cert-file ./tests/tls/ca.crt
-	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 3 --tls --tls-cert-file ./tests/tls/redis.crt --tls-key-file ./tests/tls/redis.key --tls-ca-cert-file ./tests/tls/ca.crt
-	#DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 2 --tls --tls-cert-file ./tests/tls/redis.crt --tls-key-file ./tests/tls/redis.key --tls-ca-cert-file ./tests/tls/ca.crt --tls-passphrase foobar
-	#DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 3 --tls --tls-cert-file ./tests/tls/redis.crt --tls-key-file ./tests/tls/redis.key --tls-ca-cert-file ./tests/tls/ca.crt --tls-passphrase foobar
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 2 --tls --tls-cert-file ./tests/tls/redis.crt --tls-key-file ./tests/tls/redis.key --tls-ca-cert-file ./tests/tls/ca.crt --tls-passphrase foobar
+	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ --env oss-cluster --shards-count 3 --tls --tls-cert-file ./tests/tls/redis.crt --tls-key-file ./tests/tls/redis.key --tls-ca-cert-file ./tests/tls/ca.crt --tls-passphrase foobar
 
 test_valgrind: build
 	DEBUG=$(DEBUG_RUN) $(HERE)/pytests/run_tests.sh --env-reuse -t ./pytests/ -V --vg-suppressions ./leakcheck.supp
