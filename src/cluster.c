@@ -53,9 +53,13 @@ typedef struct SendMsg{
     functionId function;
     char* msg;
     size_t msgLen;
-    size_t retries;
-    size_t msgId;
 }SendMsg;
+
+typedef struct NodeSendMsg{
+    SendMsg* msg;
+    size_t msgId;
+    size_t retries;
+}NodeSendMsg;
 
 typedef struct Node{
     char* id;
@@ -135,25 +139,34 @@ static void MR_ClusterFreeMsg(void* ptr){
     MR_FREE(msg);
 }
 
-static void MR_ClusterSendMsgToNodeInternal(Node* node, SendMsg* msg){
+static void MR_ClusterFreeNodeMsg(void* ptr){
+    NodeSendMsg* nodeMsg = ptr;
+    MR_ClusterFreeMsg(nodeMsg->msg);
+    MR_FREE(nodeMsg);
+}
+
+static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
     // CLUSTER_INNER_COMMUNICATION_COMMAND <myid> <runid> <functionid> <msg> <msgId>
     redisAsyncCommand(node->c, MR_OnResponseArrived, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
             clusterCtx.CurrCluster->myId,
             clusterCtx.CurrCluster->runId,
-            msg->function,
-            msg->msg, msg->msgLen,
-            msg->msgId);
+            nodeMsg->msg->function,
+            nodeMsg->msg->msg, nodeMsg->msg->msgLen,
+            nodeMsg->msgId);
 }
 
 static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
-    msg->msgId = node->msgId++;
+    msg->refCount+=1;
+    NodeSendMsg* nodeMsg = MR_ALLOC(sizeof(*nodeMsg));
+    nodeMsg->msg = msg;
+    nodeMsg->retries = 0;
+    nodeMsg->msgId = node->msgId++;
     if(node->status == NodeStatus_Connected){
-        MR_ClusterSendMsgToNodeInternal(node, msg);
+        MR_ClusterSendMsgToNodeInternal(node, nodeMsg);
     }else{
         RedisModule_Log(mr_staticCtx, "warning", "message was not sent because status is not connected");
     }
-    msg->refCount+=1;
-    mr_listAddNodeTail(node->pendingMessages, msg);
+    mr_listAddNodeTail(node->pendingMessages, nodeMsg);
 }
 
 /* Runs on the event loop */
@@ -206,7 +219,6 @@ void MR_ClusterSendMsg(const char* nodeId, functionId function, char* msg, size_
     msgStruct->function = function;
     msgStruct->msg = msg;
     msgStruct->msgLen = len;
-    msgStruct->retries = 0;
     msgStruct->refCount = 1;
     MR_EventLoopAddTask(MR_ClusterSendMsgTask, msgStruct);
 }
@@ -224,7 +236,6 @@ void MR_ClusterSendMsgBySlot(size_t slot, functionId function, char* msg, size_t
     msgStruct->function = function;
     msgStruct->msg = msg;
     msgStruct->msgLen = len;
-    msgStruct->retries = 0;
     msgStruct->refCount = 1;
     MR_EventLoopAddTask(MR_ClusterSendMsgTask, msgStruct);
 }
@@ -327,7 +338,7 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
         mr_listIter* iter = mr_listGetIterator(n->pendingMessages, AL_START_HEAD);
         mr_listNode *node = NULL;
         while((node = mr_listNext(iter)) != NULL){
-            SendMsg* sentMsg = mr_listNodeValue(node);
+            NodeSendMsg* sentMsg = mr_listNodeValue(node);
             ++sentMsg->retries;
             if(MSG_MAX_RETRIES == 0 || sentMsg->retries < MSG_MAX_RETRIES){
                 MR_ClusterSendMsgToNodeInternal(n, sentMsg);
@@ -680,7 +691,7 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .reconnectEvent = NULL,
             .resendHelloEvent = NULL,
     };
-    mr_listSetFreeMethod(n->pendingMessages, MR_ClusterFreeMsg);
+    mr_listSetFreeMethod(n->pendingMessages, MR_ClusterFreeNodeMsg);
     mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
     if(strcmp(id, clusterCtx.CurrCluster->myId) == 0){
         n->isMe = true;
