@@ -31,7 +31,7 @@ jobs:
             command: ./readies/bin/getrust
         - run:
             name: Install Redis
-            command: git clone https://github.com/redis/redis.git; cd redis; git checkout <<parameters.redis_version>> BUILD_TLS=yes make valgrind install
+            command: git clone https://github.com/redis/redis.git; cd redis; git checkout <<parameters.redis_version>>; BUILD_TLS=yes make valgrind install
         - run:
             name: Install RLTest
             command: python3 -m pip install --no-cache-dir git+https://github.com/RedisLabsModules/RLTest.git@master gevent
