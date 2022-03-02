@@ -97,7 +97,8 @@ workflows:
                 only:
                   - master
       jobs:
-              - build-and-test-bionic:
-                  name: build-and-test-bionic-redis-unstable
-                  parameters:
-                    redis_version: "unstable"
+       - build-and-test-bionic:
+           name: build-and-test-bionic-redis-unstable
+           matrix:
+            parameters:
+              redis_version: ["unstable"]
