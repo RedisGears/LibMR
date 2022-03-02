@@ -2,6 +2,9 @@ version: 2.1
 
 jobs:
   build-and-test-bionic:
+      parameters:
+        redis_version:
+          type: string
       docker:
         - image: 'ubuntu:bionic'
       steps:
@@ -28,7 +31,7 @@ jobs:
             command: ./readies/bin/getrust
         - run:
             name: Install Redis
-            command: git clone https://github.com/redis/redis.git; cd redis; git checkout 6.2.6; BUILD_TLS=yes make valgrind install
+            command: git clone https://github.com/redis/redis.git; cd redis; git checkout <<parameters.redis_version>>; BUILD_TLS=yes make valgrind install
         - run:
             name: Install RLTest
             command: python3 -m pip install --no-cache-dir git+https://github.com/RedisLabsModules/RLTest.git@master gevent
@@ -79,7 +82,11 @@ workflows:
   commit:
     jobs:
       - build-and-test-bionic:
+          name: build-and-test-bionic-redis-<< matrix.redis_version >>
           <<: *on-any-branch
+          matrix:
+            parameters:
+              redis_version: ["6.2.6", "7.0-rc2"]
 
   nightly:
       triggers:
@@ -90,4 +97,8 @@ workflows:
                 only:
                   - master
       jobs:
-        - build-and-test-bionic
+       - build-and-test-bionic:
+           name: build-and-test-bionic-redis-unstable
+           matrix:
+            parameters:
+              redis_version: ["unstable"]
