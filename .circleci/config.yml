@@ -100,4 +100,4 @@ workflows:
               - build-and-test-bionic:
                   name: build-and-test-bionic-redis-unstable
                   parameters:
-                    redis_version: ["unstable"]
+                    redis_version: "unstable"
