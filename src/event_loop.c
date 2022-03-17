@@ -18,6 +18,7 @@ typedef struct MR_LoopTaskCtx{
 
 static void MR_NewTask(evutil_socket_t s, short what, void *arg){
     MR_LoopTaskCtx* taskCtx = arg;
+    taskCtx->callback(taskCtx->ctx);
     event_free(taskCtx->event);
     MR_FREE(taskCtx);
 }
