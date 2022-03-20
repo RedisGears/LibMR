@@ -14,14 +14,11 @@ typedef struct MR_LoopTaskCtx{
     EventLoopTaskCallback callback;
     void* ctx;
     struct event *event;
-    int isCanceled;
 }MR_LoopTaskCtx;
 
 static void MR_NewTask(evutil_socket_t s, short what, void *arg){
     MR_LoopTaskCtx* taskCtx = arg;
-    if (!taskCtx->isCanceled) {
-        taskCtx->callback(taskCtx->ctx);
-    }
+    taskCtx->callback(taskCtx->ctx);
     event_free(taskCtx->event);
     MR_FREE(taskCtx);
 }
@@ -30,7 +27,6 @@ MR_LoopTaskCtx* MR_EventLoopAddTaskWithDelay(EventLoopTaskCallback callback, voi
     MR_LoopTaskCtx* taskCtx = MR_ALLOC(sizeof(*taskCtx));
     taskCtx->callback = callback;
     taskCtx->ctx = ctx;
-    taskCtx->isCanceled = 0;
     taskCtx->event = event_new(evLoopCtx.loop,
                                     -1,
                                     0,
@@ -45,14 +41,14 @@ MR_LoopTaskCtx* MR_EventLoopAddTaskWithDelay(EventLoopTaskCallback callback, voi
 }
 
 void MR_EventLoopDelayTaskCancel(MR_LoopTaskCtx* dtCtx) {
-    dtCtx->isCanceled = 1;
+    event_free(dtCtx->event);
+    MR_FREE(dtCtx);
 }
 
 void MR_EventLoopAddTask(EventLoopTaskCallback callback, void* ctx) {
     MR_LoopTaskCtx* taskCtx = MR_ALLOC(sizeof(*taskCtx));
     taskCtx->callback = callback;
     taskCtx->ctx = ctx;
-    taskCtx->isCanceled = 0;
     taskCtx->event = event_new(evLoopCtx.loop,
                                     -1,
                                     0,
