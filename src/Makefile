@@ -1,5 +1,5 @@
 GCC_FLAGS=-DREDISMODULE_EXPERIMENTAL_API -g -ggdb
-LD_FLAGS=
+LD_FLAGS=-g -ggdb
 ifeq ($(DEBUG),1)
 	GCC_FLAGS+=-O0
 else
