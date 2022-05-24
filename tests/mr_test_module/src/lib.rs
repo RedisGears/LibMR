@@ -178,6 +178,28 @@ fn lmr_accumulate_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+fn lmr_uneven_work(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let execution = create_builder(MaxIdleReader::new(1)).
+                    map(UnevenWorkMapper::new()).
+                    create_execution().map_err(|e|RedisError::String(e))?;
+    execution.set_max_idle(2000);
+    let blocked_client = ctx.block_client();
+    execution.set_done_hanlder(|mut res, mut errs|{
+        let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+        if errs.len() > 0 {
+            let err = errs.pop().unwrap();
+            thread_ctx.reply(Err(RedisError::String(err.to_string())));
+        } else {
+            let res: Vec<RedisValue> = res.drain(..).map(|r| r.to_redis_value()).collect();
+            thread_ctx.reply(Ok(RedisValue::Array(res)));
+        }
+    });
+    execution.run();
+
+    // We will reply later, from the thread
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_read_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(ErrorReader::new()).
                     map(DummyMapper).
@@ -606,6 +628,38 @@ impl BaseObject for DummyMapper {
     }
 }
 
+/* map key name to its type */
+#[derive(Clone, Serialize, Deserialize)]
+struct UnevenWorkMapper {
+    #[serde(skip)]
+    is_initiator: bool
+}
+
+impl UnevenWorkMapper {
+    fn new() -> UnevenWorkMapper {
+        UnevenWorkMapper{ is_initiator: true }
+    }
+}
+
+impl MapStep for UnevenWorkMapper {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
+        if !self.is_initiator {
+            let millis = time::Duration::from_millis(30000 as u64);
+            thread::sleep(millis);
+        }
+        Ok(r)
+    }
+}
+
+impl BaseObject for UnevenWorkMapper {
+    fn get_name() -> &'static str {
+        "UnevenWorkMapper\0"
+    }
+}
+
 
 #[derive(Clone, Serialize, Deserialize)]
 struct ReadStringMapper;
@@ -848,6 +902,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     ReadStringMapper::register();
     CountAccumulator::register();
     ErrorAccumulator::register();
+    UnevenWorkMapper::register();
 	Status::Ok
 }
 
@@ -867,5 +922,6 @@ redis_module!{
         ["lmrtest.filtererror", lmr_filter_error, "readonly", 0,0,0],
         ["lmrtest.accumulatererror", lmr_accumulate_error, "readonly", 0,0,0],
         ["lmrtest.readerror", lmr_read_error, "readonly", 0,0,0],
+        ["lmrtest.unevenwork", lmr_uneven_work, "readonly", 0,0,0],
     ],
 }

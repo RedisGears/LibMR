@@ -1,4 +1,6 @@
 from common import MRTestDecorator
+from common import TimeLimit
+import time
 
 @MRTestDecorator()
 def testBasicMR(env, conn):
@@ -47,3 +49,17 @@ def testBasicMRMassiveData(env, conn):
 @MRTestDecorator(skipOnSingleShard=True)
 def testMaxIdle(env, conn):
     env.expect('lmrtest.reachmaxidle').error().contains('execution max idle reached')
+
+@MRTestDecorator()
+def testUnevenWork(env, conn):
+    env.expect('lmrtest.unevenwork').equal(['record'])
+    try:
+        with TimeLimit(2):
+            while True:
+                for i in range(1, env.shardsCount + 1):
+                    c = env.getConnection(i)
+                    env.assertTrue(c.ping())
+                time.sleep(0.1)
+    except Exception as e:
+        if str(e) != 'timeout':
+            raise e
