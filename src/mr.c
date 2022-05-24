@@ -960,6 +960,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
     if (MR_RunExecutionInternal(e)) {
         /* we are done, invoke on done callback and perform termination process. */
         MR_ExecutionInvokeCallback(e, &e->callbacks.done);
+        e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
         if (e->flags & ExecutionFlag_Local) {
             /* not need to wait to any shard, delete the execution */
             MR_EventLoopAddTask(MR_DeleteExecution, e);
@@ -1155,6 +1156,7 @@ static void MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution max idle reached"));
     /* we are done, invoke on done callback. */
     MR_ExecutionInvokeCallback(e, &e->callbacks.done);
+    e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
     MR_FreeExecution(e);
 }
 
