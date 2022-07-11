@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "rust_api",
+    "tests/mr_test_module"
+]

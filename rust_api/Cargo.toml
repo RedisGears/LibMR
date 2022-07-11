@@ -1,24 +1,20 @@
 [package]
-name = "mr_test_module"
+name = "lib_mr"
 version = "0.1.0"
-authors = ["meir@redislabs.com <meir@redislabs.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 redis-module = { version="0.22.0", features = ["experimental-api"]}
-# redis-module = { path="/home/meir/work/redismodule-rs", features = ["experimental-api"]}
 serde_json = "1.0"
 serde = "1.0"
 serde_derive = "1.0"
 libc = "0.2"
-lib_mr = { path = "../../rust_api"}
 
 [build-dependencies]
-bindgen = "0.57"
-cc = "1.0"
+bindgen = "0.59.2"
 
 [lib]
-name = "mr_test"
-crate_type = ["cdylib"]
+crate-type = ["rlib"]
+name = "mr"
