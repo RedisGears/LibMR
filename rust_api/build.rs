@@ -48,5 +48,5 @@ fn main() {
         .write_to_file(out_path.join("libmr_bindings.rs"))
         .expect("failed to write bindings to file");
 
-    println!("cargo:rustc-flags=-L{} -lmr", output_dir);
+    println!("cargo:rustc-flags=-L{} -lmr -lssl -lcrypto", output_dir);
 }

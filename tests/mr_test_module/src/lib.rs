@@ -25,18 +25,6 @@ use std::os::raw::c_void;
 
 use std::{thread, time};
 
-#[allow(improper_ctypes)]
-#[link(name = "mr", kind = "static")]
-extern "C" {}
-
-#[allow(improper_ctypes)]
-#[link(name = "ssl")]
-extern "C" {}
-
-#[allow(improper_ctypes)]
-#[link(name = "crypto")]
-extern "C" {}
-
 static mut DETACHED_CTX: *mut RedisModuleCtx = 0 as *mut RedisModuleCtx;
 
 fn get_redis_ctx() -> *mut RedisModuleCtx {
