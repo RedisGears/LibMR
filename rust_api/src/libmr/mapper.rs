@@ -17,7 +17,7 @@ pub extern "C" fn rust_map<Step: MapStep>(
     args: *mut c_void,
 ) -> *mut Record {
     let s = unsafe { &*(args as *mut Step) };
-    let r = unsafe { &mut *(r as *mut MRBaseRecord<Step::InRecord>) };
+    let mut r = unsafe { Box::from_raw(r as *mut MRBaseRecord<Step::InRecord>) };
     let res = match s.map(r.record.take().unwrap()) {
         Ok(res) => res,
         Err(e) => {
