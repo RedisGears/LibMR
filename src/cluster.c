@@ -1093,6 +1093,7 @@ static void MR_ClusterInfo(void* pd) {
     RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(bc);
     if(!clusterCtx.CurrCluster){
         RedisModule_ReplyWithStringBuffer(ctx, NO_CLUSTER_MODE_REPLY, strlen(NO_CLUSTER_MODE_REPLY));
+        RedisModule_UnblockClient(bc, NULL);
         return;
     }
     RedisModule_ReplyWithArray(ctx, 5);

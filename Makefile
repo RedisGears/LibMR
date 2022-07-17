@@ -4,9 +4,11 @@ clean: clean_libmr
 
 build_deps:
 	make -C deps/
-	
-libmr: build_deps
+
+libmr_only:
 	make -C src/
+
+libmr: build_deps libmr_only
 	
 run_tests:
 	make -C ./tests/mr_test_module/ test

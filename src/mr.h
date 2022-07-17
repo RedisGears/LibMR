@@ -59,6 +59,24 @@ typedef Record* (*ExecutionReader)(ExecutionCtx* ectx, void* args);
 typedef Record* (*ExecutionMapper)(ExecutionCtx* ectx, Record* r, void* args);
 typedef int (*ExecutionFilter)(ExecutionCtx* ectx, Record* r, void* args);
 typedef Record* (*ExecutionAccumulator)(ExecutionCtx* ectx, Record* accumulator, Record* r, void* args);
+typedef void (*RemoteTask)(Record* r, void* args, void (*onDone)(void* PD, Record *r), void (*onError)(void* PD, MRError *r), void *pd);
+
+/* Run a remote task on a shard responsible for a given key.
+ * There is not guarantee on which thread the task will run, if
+ * the current shard is responsible for the given key or if its
+ * a none cluster environment, then the callback will be called
+ * immediately (an so the onDone/onError) callbacks.
+ * If the key located on the remote shard, the task will
+ * be invoke on the thread pool of this remote shard, the onDone/onError
+ * callback will be invoke on the thread pool of the current shard. */
+LIBMR_API void MR_RunOnKey(const char* keyName,
+                           size_t keyNameSize,
+                           const char* remoteTaskName,
+                           void* args,
+                           Record* r,
+                           void (*onDone)(void *pd, Record* result),
+                           void (*onError)(void *pd, MRError* err),
+                           void *pd);
 
 /* Creatign a new execution builder */
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
@@ -131,6 +149,9 @@ LIBMR_API void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObj
 
 /* Register an accumulate step */
 LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator accumulator, MRObjectType* argType);
+
+/* Register a remote task */
+LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObjectType* argType);
 
 /* Serialization Context functions */
 LIBMR_API long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx, MRError** err);
