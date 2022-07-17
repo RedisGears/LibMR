@@ -14,8 +14,6 @@ use serde::de::Deserialize;
 use std::slice;
 use std::str;
 
-use std::ffi::CString;
-
 pub extern "C" fn rust_obj_free<T: BaseObject>(ctx: *mut c_void) {
     unsafe { Box::from_raw(ctx as *mut T) };
 }
@@ -64,11 +62,9 @@ pub trait BaseObject: Clone + Serialize + Deserialize<'static> {
 }
 
 pub(crate) fn register<T: BaseObject>() -> *mut MRObjectType {
-    let type_name = T::get_name();
-    let type_name_cstring = CString::new(type_name).unwrap();
     unsafe {
         let obj = Box::into_raw(Box::new(MRObjectType {
-            type_: type_name_cstring.into_raw(),
+            type_: T::get_name().as_ptr() as *mut c_char,
             id: 0,
             free: Some(rust_obj_free::<T>),
             dup: Some(rust_obj_dup::<T>),

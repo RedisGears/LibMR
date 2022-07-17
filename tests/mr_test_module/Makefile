@@ -3,11 +3,11 @@ HERE=$(realpath ./)
 
 ifeq ($(DEBUG),1)
 	EXTRA_ARGS=
-	MODULE_PATH=$(HERE)/target/debug/libmr_test.so
+	MODULE_PATH=$(ROOT)/target/debug/libmr_test.so
 	DEBUG_RUN=1
 else
 	EXTRA_ARGS=--release
-	MODULE_PATH=$(HERE)/target/release/libmr_test.so
+	MODULE_PATH=$(ROOT)/target/release/libmr_test.so
 	DEBUG_RUN=0
 endif
 

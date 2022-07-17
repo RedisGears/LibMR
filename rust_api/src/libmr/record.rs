@@ -13,8 +13,6 @@ use crate::libmr::base_object::BaseObject;
 
 use std::collections::HashMap;
 
-use std::ffi::CString;
-
 use std::slice;
 use std::str;
 
@@ -91,12 +89,10 @@ pub extern "C" fn rust_obj_hash_slot<T: Record>(record: *mut ::std::os::raw::c_v
 }
 
 fn register_record<T: Record>() -> *mut MRRecordType {
-    let type_name = T::get_name();
-    let type_name_cstring = CString::new(type_name).unwrap();
     unsafe {
         let obj = Box::into_raw(Box::new(MRRecordType {
             type_: MRObjectType {
-                type_: type_name_cstring.into_raw(),
+                type_: T::get_name().as_ptr() as *mut c_char,
                 id: 0,
                 free: Some(rust_obj_free::<T>),
                 dup: Some(rust_obj_dup::<T>),

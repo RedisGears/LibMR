@@ -18,7 +18,7 @@ use std::str;
 use mr::libmr::{
     accumulator::AccumulateStep, base_object::BaseObject, calc_slot,
     execution_builder::create_builder, filter::FilterStep, mapper::MapStep, mr_init,
-    reader::Reader, record::Record, RustMRError,
+    reader::Reader, record::Record, remote_task::run_on_key, remote_task::RemoteTask, RustMRError,
 };
 
 use std::os::raw::c_void;
@@ -298,6 +298,33 @@ fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+fn lmr_get(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    let mut args = args.into_iter().skip(1);
+    let ke_redis_string = args.next().ok_or(RedisError::Str("not prefix was given"))?;
+    let key = ke_redis_string.try_as_str()?;
+    let blocked_client = ctx.block_client();
+    thread::spawn(move || {
+        let record = strin_record_new(key.to_string());
+        run_on_key(
+            key,
+            RemoteTaskGet,
+            record,
+            move |res: Result<StringRecord, RustMRError>| {
+                let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+                match res {
+                    Ok(mut r) => {
+                        thread_ctx.reply(Ok(r.to_redis_value()));
+                    }
+                    Err(e) => {
+                        thread_ctx.reply(Err(RedisError::String(e)));
+                    }
+                }
+            },
+        );
+    });
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(KeysReader::new(None))
         .collect()
@@ -321,6 +348,43 @@ fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+struct RemoteTaskGet;
+
+impl RemoteTask for RemoteTaskGet {
+    type InRecord = StringRecord;
+    type OutRecord = StringRecord;
+
+    fn task(
+        &self,
+        mut r: Self::InRecord,
+        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>)>,
+    ) {
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call("get", &[r.s.as_ref().unwrap()]);
+        ctx_unlock();
+        if let Ok(res) = res {
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
+                on_done(Ok(r));
+            } else {
+                on_done(Err("bad result returned from `get` command".to_string()))
+            }
+        } else {
+            on_done(Err("bad result returned from `get` command".to_string()))
+        }
+    }
+}
+
+impl BaseObject for RemoteTaskGet {
+    fn get_name() -> &'static str {
+        "RemoteTaskGet\0"
+    }
+
+    fn init(&mut self) {}
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 struct StringRecord {
     pub s: Option<String>,
 }
@@ -340,7 +404,7 @@ impl Record for StringRecord {
 
 impl BaseObject for StringRecord {
     fn get_name() -> &'static str {
-        "StringRecord"
+        "StringRecord\0"
     }
 }
 
@@ -362,7 +426,7 @@ impl Record for IntRecord {
 
 impl BaseObject for IntRecord {
     fn get_name() -> &'static str {
-        "IntRecord"
+        "IntRecord\0"
     }
 }
 
@@ -389,7 +453,7 @@ impl AccumulateStep for CountAccumulator {
 
 impl BaseObject for CountAccumulator {
     fn get_name() -> &'static str {
-        "CountAccumulator"
+        "CountAccumulator\0"
     }
 }
 
@@ -411,7 +475,7 @@ impl AccumulateStep for ErrorAccumulator {
 
 impl BaseObject for ErrorAccumulator {
     fn get_name() -> &'static str {
-        "ErrorAccumulator"
+        "ErrorAccumulator\0"
     }
 }
 
@@ -429,7 +493,7 @@ impl FilterStep for DummyFilter {
 
 impl BaseObject for DummyFilter {
     fn get_name() -> &'static str {
-        "DummyFilter"
+        "DummyFilter\0"
     }
 }
 
@@ -447,7 +511,7 @@ impl FilterStep for ErrorFilter {
 
 impl BaseObject for ErrorFilter {
     fn get_name() -> &'static str {
-        "ErrorFilter"
+        "ErrorFilter\0"
     }
 }
 
@@ -489,7 +553,7 @@ impl FilterStep for TypeFilter {
 
 impl BaseObject for TypeFilter {
     fn get_name() -> &'static str {
-        "TypeFilter"
+        "TypeFilter\0"
     }
 }
 
@@ -521,7 +585,7 @@ impl MapStep for TypeMapper {
 
 impl BaseObject for TypeMapper {
     fn get_name() -> &'static str {
-        "TypeMapper"
+        "TypeMapper\0"
     }
 }
 
@@ -540,7 +604,7 @@ impl MapStep for ErrorMapper {
 
 impl BaseObject for ErrorMapper {
     fn get_name() -> &'static str {
-        "ErrorMapper"
+        "ErrorMapper\0"
     }
 }
 /* map key name to its type */
@@ -558,7 +622,7 @@ impl MapStep for DummyMapper {
 
 impl BaseObject for DummyMapper {
     fn get_name() -> &'static str {
-        "DummyMapper"
+        "DummyMapper\0"
     }
 }
 
@@ -590,7 +654,7 @@ impl MapStep for UnevenWorkMapper {
 
 impl BaseObject for UnevenWorkMapper {
     fn get_name() -> &'static str {
-        "UnevenWorkMapper"
+        "UnevenWorkMapper\0"
     }
 }
 
@@ -621,7 +685,7 @@ impl MapStep for ReadStringMapper {
 
 impl BaseObject for ReadStringMapper {
     fn get_name() -> &'static str {
-        "ReadStringMapper"
+        "ReadStringMapper\0"
     }
 }
 
@@ -652,7 +716,7 @@ impl MapStep for WriteDummyString {
 
 impl BaseObject for WriteDummyString {
     fn get_name() -> &'static str {
-        "WriteDummyString"
+        "WriteDummyString\0"
     }
 }
 
@@ -691,7 +755,7 @@ impl Reader for MaxIdleReader {
 
 impl BaseObject for MaxIdleReader {
     fn get_name() -> &'static str {
-        "MaxIdleReader"
+        "MaxIdleReader\0"
     }
 }
 
@@ -720,7 +784,7 @@ impl Reader for ErrorReader {
 
 impl BaseObject for ErrorReader {
     fn get_name() -> &'static str {
-        "ErrorReader"
+        "ErrorReader\0"
     }
 }
 
@@ -803,7 +867,7 @@ impl Reader for KeysReader {
 
 impl BaseObject for KeysReader {
     fn get_name() -> &'static str {
-        "KeysReader"
+        "KeysReader\0"
     }
 
     fn init(&mut self) {
@@ -843,6 +907,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     CountAccumulator::register();
     ErrorAccumulator::register();
     UnevenWorkMapper::register();
+    RemoteTaskGet::register();
     Status::Ok
 }
 
@@ -852,6 +917,7 @@ redis_module! {
     data_types: [],
     init: init_func,
     commands: [
+        ["lmrtest.get", lmr_get, "readonly", 0,0,0],
         ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0],
         ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0],
         ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0],

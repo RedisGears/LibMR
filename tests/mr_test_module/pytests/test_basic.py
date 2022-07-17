@@ -63,3 +63,9 @@ def testUnevenWork(env, conn):
     except Exception as e:
         if str(e) != 'timeout':
             raise e
+
+@MRTestDecorator()
+def testRemoteTaskOnKey(env, conn):
+    conn.execute_command('set', 'x', '1')
+    env.expect('lmrtest.get', 'x').equal('1')
+    env.expect('lmrtest.get', 'y').error().contains('bad result returned from')

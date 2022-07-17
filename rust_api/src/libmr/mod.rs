@@ -12,6 +12,7 @@ pub mod filter;
 pub mod mapper;
 pub mod reader;
 pub mod record;
+pub mod remote_task;
 
 impl Default for crate::libmr_c_raw::bindings::Record {
     fn default() -> Self {
