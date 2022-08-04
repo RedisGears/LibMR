@@ -355,7 +355,7 @@ impl RemoteTask for RemoteTaskGet {
     type OutRecord = StringRecord;
 
     fn task(
-        &self,
+        self,
         mut r: Self::InRecord,
         on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>)>,
     ) {
@@ -364,8 +364,8 @@ impl RemoteTask for RemoteTaskGet {
         let res = ctx.call("get", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::SimpleString(res) = res {
-                r.s = Some(res);
+            if let RedisValue::StringBuffer(res) = res {
+                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
                 on_done(Ok(r));
             } else {
                 on_done(Err("bad result returned from `get` command".to_string()))
@@ -536,8 +536,8 @@ impl FilterStep for TypeFilter {
         let res = ctx.call("type", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::SimpleString(res) = res {
-                if res == self.t {
+            if let RedisValue::StringBuffer(res) = res {
+                if std::str::from_utf8(&res).unwrap() == self.t {
                     Ok(true)
                 } else {
                     Ok(false)
@@ -571,8 +571,8 @@ impl MapStep for TypeMapper {
         let res = ctx.call("type", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::SimpleString(res) = res {
-                r.s = Some(res);
+            if let RedisValue::StringBuffer(res) = res {
+                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
                 Ok(r)
             } else {
                 Err("bad result returned from type command".to_string())
@@ -671,8 +671,8 @@ impl MapStep for ReadStringMapper {
         let res = ctx.call("get", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::SimpleString(res) = res {
-                r.s = Some(res);
+            if let RedisValue::StringBuffer(res) = res {
+                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
                 Ok(r)
             } else {
                 Err("bad result returned from type command".to_string())
@@ -702,8 +702,8 @@ impl MapStep for WriteDummyString {
         let res = ctx.call("set", &[r.s.as_ref().unwrap(), "val"]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::SimpleString(res) = res {
-                r.s = Some(res);
+            if let RedisValue::StringBuffer(res) = res {
+                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
                 Ok(r)
             } else {
                 Err("bad result returned from type command".to_string())

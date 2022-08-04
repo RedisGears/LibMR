@@ -13,7 +13,7 @@ fn main() {
     if !Command::new("make")
         .env(
             "MODULE_NAME",
-            std::env::var("MODULE_NAME").unwrap_or_default(),
+            std::env::var("MODULE_NAME").expect("module name was not given"),
         )
         .status()
         .expect("failed to compile libmr")

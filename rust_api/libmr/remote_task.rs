@@ -44,7 +44,7 @@ pub trait RemoteTask: BaseObject {
     type OutRecord: record::Record;
 
     fn task(
-        &self,
+        self,
         r: Self::InRecord,
         on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>)>,
     );
