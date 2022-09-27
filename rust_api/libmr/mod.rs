@@ -29,6 +29,6 @@ pub fn mr_init(ctx: &Context, num_threads: usize) {
     record::init();
 }
 
-pub fn calc_slot(s: &str) -> usize {
+pub fn calc_slot(s: &[u8]) -> usize {
     unsafe { MR_CalculateSlot(s.as_ptr() as *const c_char, s.len()) }
 }

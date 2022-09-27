@@ -11,6 +11,18 @@ use crate::libmr::RustMRError;
 use libc::strlen;
 use std::os::raw::{c_char, c_void};
 
+struct VoidHolder {
+    pd: *mut ::std::os::raw::c_void,
+}
+
+impl VoidHolder {
+    fn get(&self) ->  *mut ::std::os::raw::c_void {
+        self.pd
+    }
+}
+
+unsafe impl Send for VoidHolder {}
+
 extern "C" fn rust_remote_task<Step: RemoteTask>(
     r: *mut Record,
     args: *mut ::std::os::raw::c_void,
@@ -22,18 +34,22 @@ extern "C" fn rust_remote_task<Step: RemoteTask>(
     >,
     pd: *mut ::std::os::raw::c_void,
 ) {
+    let void_holder = VoidHolder{pd};
     let s = unsafe { Box::from_raw(args as *mut Step) };
     let mut r = unsafe { Box::from_raw(r as *mut MRBaseRecord<Step::InRecord>) };
     s.task(
         r.record.take().unwrap(),
-        Box::new(move |res| match res {
-            Ok(r) => {
-                let record = Box::new(MRBaseRecord::new(r));
-                unsafe { on_done.unwrap()(pd, Box::into_raw(record) as *mut Record) }
-            }
-            Err(e) => {
-                let error = unsafe { MR_ErrorCreate(e.as_ptr() as *const c_char, e.len()) };
-                unsafe { on_error.unwrap()(pd, error) };
+        Box::new(move |res| {
+            let pd = void_holder.get();
+            match res {
+                Ok(r) => {
+                    let record = Box::new(MRBaseRecord::new(r));
+                    unsafe { on_done.unwrap()(pd, Box::into_raw(record) as *mut Record) }
+                }
+                Err(e) => {
+                    let error = unsafe { MR_ErrorCreate(e.as_ptr() as *const c_char, e.len()) };
+                    unsafe { on_error.unwrap()(pd, error) };
+                }
             }
         }),
     );
@@ -46,7 +62,7 @@ pub trait RemoteTask: BaseObject {
     fn task(
         self,
         r: Self::InRecord,
-        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>)>,
+        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>) + Send>,
     );
 
     fn register() {
@@ -96,7 +112,7 @@ pub fn run_on_key<
     OutRecord: record::Record,
     DoneCallback: FnOnce(Result<OutRecord, RustMRError>),
 >(
-    key_name: &str,
+    key_name: &[u8],
     remote_task: Remote,
     r: InRecord,
     done: DoneCallback,

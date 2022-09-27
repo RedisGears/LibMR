@@ -306,7 +306,7 @@ fn lmr_get(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     thread::spawn(move || {
         let record = strin_record_new(key.to_string());
         run_on_key(
-            key,
+            key.as_bytes(),
             RemoteTaskGet,
             record,
             move |res: Result<StringRecord, RustMRError>| {
@@ -357,7 +357,7 @@ impl RemoteTask for RemoteTaskGet {
     fn task(
         self,
         mut r: Self::InRecord,
-        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>)>,
+        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>) + Send>,
     ) {
         let ctx = get_ctx();
         ctx_lock();
@@ -398,7 +398,7 @@ impl Record for StringRecord {
     }
 
     fn hash_slot(&self) -> usize {
-        calc_slot(self.s.as_ref().unwrap())
+        calc_slot(self.s.as_ref().unwrap().as_bytes())
     }
 }
 
@@ -420,7 +420,7 @@ impl Record for IntRecord {
 
     fn hash_slot(&self) -> usize {
         let s = self.i.to_string();
-        calc_slot(&s)
+        calc_slot(s.as_bytes())
     }
 }
 
