@@ -5,10 +5,18 @@
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ROOT=$(cd $HERE/../../../ && pwd)
-if [[ $DEBUG == 1 ]]; then
-    MODULE_PATH=$HERE/../target/debug/libmr_test.so
+OS=$(uname -s 2>/dev/null)
+echo $OS
+if [[ $OS == Darwin ]]; then
+    LIB_EXTENTION=dylib
 else
-    MODULE_PATH=$HERE/../target/release/libmr_test.so
+    LIB_EXTENTION=so
+fi
+
+if [[ $DEBUG == 1 ]]; then
+    MODULE_PATH=$HERE/../target/debug/libmr_test.$LIB_EXTENTION
+else
+    MODULE_PATH=$HERE/../target/release/libmr_test.$LIB_EXTENTION
 fi
 
 

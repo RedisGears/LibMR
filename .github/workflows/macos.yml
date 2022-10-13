@@ -36,4 +36,4 @@ jobs:
     - name: Run tests
       run: |
         cd tests/mr_test_module/pytests/
-        DEBUG=1 ./run_tests.sh -s
+        DEBUG=1 ./run_tests.sh
