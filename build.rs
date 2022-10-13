@@ -51,6 +51,9 @@ fn main() {
         "macos" => "-L/usr/local/opt/openssl@1.1/lib/",
         _ => "",
     };
-    
-    println!("cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto", output_dir, open_ssl_lib_path);
+
+    println!(
+        "cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto",
+        output_dir, open_ssl_lib_path
+    );
 }
