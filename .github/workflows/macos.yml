@@ -27,10 +27,11 @@ jobs:
     - name: install automake
       run: brew install automake
     - name: install openssl
-      run: brew install openssl
+      run: brew install openssl@1.1
     - name: Build
       run: |
         cd tests/mr_test_module/
+        export PKG_CONFIG_PATH=/usr/local/opt/openssl@1.1/lib/pkgconfig/
         cargo build --verbose
     - name: Run tests
       run: |
