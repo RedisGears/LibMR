@@ -47,5 +47,10 @@ fn main() {
         .write_to_file(out_path.join("libmr_bindings.rs"))
         .expect("failed to write bindings to file");
 
-    println!("cargo:rustc-flags=-L{} -lmr -lssl -lcrypto", output_dir);
+    let open_ssl_lib_path = match std::env::consts::OS {
+        "macos" => "-L/usr/local/opt/openssl@1.1/lib/",
+        _ => "",
+    };
+    
+    println!("cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto", output_dir, open_ssl_lib_path);
 }
