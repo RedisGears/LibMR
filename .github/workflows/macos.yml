@@ -23,7 +23,7 @@ jobs:
     - name: install rltest
       run: python3 -m pip install RLTest gevent
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; make install
+      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; BUILD_TLS=yes make install
     - name: install automake
       run: brew install automake
     - name: install openssl
@@ -36,4 +36,4 @@ jobs:
     - name: Run tests
       run: |
         cd tests/mr_test_module/pytests/
-        DEBUG=1 ./run_tests.sh
+        DEBUG=1 ./run_full_tests.sh

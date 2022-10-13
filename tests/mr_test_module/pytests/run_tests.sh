@@ -6,7 +6,6 @@
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 ROOT=$(cd $HERE/../../../ && pwd)
 OS=$(uname -s 2>/dev/null)
-echo $OS
 if [[ $OS == Darwin ]]; then
     LIB_EXTENTION=dylib
 else
