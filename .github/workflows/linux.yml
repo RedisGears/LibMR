@@ -16,10 +16,14 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - name: Checkout submodules
+      run: git submodule update --init --recursive
     - name: format
       run: cargo fmt -- --check
     - name: install rltest
       run: pip install RLTest
+    - name: install redis
+      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.3; make install
     - name: Build
       run: |
         cd tests/mr_test_module/
