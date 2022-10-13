@@ -26,6 +26,8 @@ jobs:
       run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; make install
     - name: install automake
       run: brew install automake
+    - name: install openssl
+      run: brew install openssl
     - name: Build
       run: |
         cd tests/mr_test_module/
