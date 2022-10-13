@@ -16,7 +16,7 @@ struct VoidHolder {
 }
 
 impl VoidHolder {
-    fn get(&self) ->  *mut ::std::os::raw::c_void {
+    fn get(&self) -> *mut ::std::os::raw::c_void {
         self.pd
     }
 }
@@ -34,7 +34,7 @@ extern "C" fn rust_remote_task<Step: RemoteTask>(
     >,
     pd: *mut ::std::os::raw::c_void,
 ) {
-    let void_holder = VoidHolder{pd};
+    let void_holder = VoidHolder { pd };
     let s = unsafe { Box::from_raw(args as *mut Step) };
     let mut r = unsafe { Box::from_raw(r as *mut MRBaseRecord<Step::InRecord>) };
     s.task(
