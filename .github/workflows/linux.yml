@@ -23,7 +23,7 @@ jobs:
     - name: install rltest
       run: pip install RLTest
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.3; make install
+      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; make install
     - name: Build
       run: |
         cd tests/mr_test_module/
@@ -31,4 +31,4 @@ jobs:
     - name: Run tests
       run: |
         cd tests/mr_test_module/pytests/
-        ./run_tests.sh
+        ./run_tests.sh -s
