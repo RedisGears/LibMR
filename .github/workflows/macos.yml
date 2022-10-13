@@ -1,0 +1,32 @@
+name: Test Macos
+
+on:
+  push:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Checkout submodules
+      run: git submodule update --init --recursive
+    - name: format
+      run: cargo fmt -- --check
+    - name: install rltest
+      run: pip install RLTest
+    - name: install redis
+      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; make install
+    - name: Build
+      run: |
+        cd tests/mr_test_module/
+        cargo build --verbose
+    - name: Run tests
+      run: |
+        cd tests/mr_test_module/pytests/
+        DEBUG=1 ./run_tests.sh
