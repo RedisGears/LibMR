@@ -1,0 +1,30 @@
+name: Linux
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: format
+      run: cargo fmt -- --check
+    - name: install rltest
+      run: pip install RLTest
+    - name: Build
+      run: |
+        cd tests/mr_test_module/
+        cargo build --verbose
+    - name: Run tests
+      run: |
+        cd tests/mr_test_module/pytests/
+        ./run_tests.sh
