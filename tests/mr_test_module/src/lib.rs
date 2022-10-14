@@ -198,11 +198,11 @@ fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 }
 
 fn lmr_reach_max_idle(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    let execution = create_builder(MaxIdleReader::new(100))
+    let execution = create_builder(MaxIdleReader::new(200))
         .collect()
         .create_execution()
         .map_err(|e| RedisError::String(e))?;
-    execution.set_max_idle(20);
+    execution.set_max_idle(10);
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
