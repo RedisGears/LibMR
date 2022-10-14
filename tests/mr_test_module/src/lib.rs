@@ -198,7 +198,7 @@ fn lmr_count_key(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 }
 
 fn lmr_reach_max_idle(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
-    let execution = create_builder(MaxIdleReader::new(50))
+    let execution = create_builder(MaxIdleReader::new(100))
         .collect()
         .create_execution()
         .map_err(|e| RedisError::String(e))?;
