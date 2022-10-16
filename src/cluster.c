@@ -537,6 +537,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
                 return;
             }
             SSL *ssl = SSL_new(ssl_context);
+            SSL_CTX_free(ssl_context);
             if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
                 RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
                 // disconnect async, its not possible to free redisAsyncContext here
