@@ -1592,8 +1592,10 @@ static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
         msg->replyType = ReplyType_ERROR;
     }
 
-    MR_EventLoopDelayTaskCancel(msg->timeoutTask);
-    msg->timeoutTask = NULL;
+    if (msg->timeoutTask) {
+        MR_EventLoopDelayTaskCancel(msg->timeoutTask);
+        msg->timeoutTask = NULL;
+    }
 
     /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
     mr_dictDelete(mrCtx.remoteDict, id);
@@ -1705,6 +1707,7 @@ static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskInternal, RedisModule_HoldString(NULL, payload));
 }
 
+/* Invoked on the event look */
 static void MR_RemoteTaskTimeoutOut(void* ctx) {
     RunOnKeyMsg *msg = ctx;
     msg->timeoutTask = NULL;
@@ -1761,6 +1764,7 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
     msg->onError = onError;
     msg->pd = pd;
     msg->timeout = timeout;
+    msg->timeoutTask = NULL;
     /* Set id */
     size_t id = __atomic_add_fetch(&mrCtx.lastExecutionId, 1, __ATOMIC_RELAXED);
     SetId(msg->id, msg->idStr, id);
