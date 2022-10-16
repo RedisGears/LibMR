@@ -1107,7 +1107,7 @@ static void MR_ClusterInfo(void* pd) {
     mr_dictEntry *entry = NULL;
     while((entry = mr_dictNext(iter))){
         Node* n = mr_dictGetVal(entry);
-        RedisModule_ReplyWithArray(ctx, 16);
+        RedisModule_ReplyWithArray(ctx, 18);
         RedisModule_ReplyWithStringBuffer(ctx, "id", strlen("id"));
         RedisModule_ReplyWithStringBuffer(ctx, n->id, strlen(n->id));
         RedisModule_ReplyWithStringBuffer(ctx, "ip", strlen("ip"));
@@ -1138,6 +1138,18 @@ static void MR_ClusterInfo(void* pd) {
         RedisModule_ReplyWithStringBuffer(ctx, "pendingMessages", strlen("pendingMessages"));
         RedisModule_ReplyWithLongLong(ctx, mr_listLength(n->pendingMessages));
 
+        RedisModule_ReplyWithStringBuffer(ctx, "status", strlen("status"));
+        if (n->isMe) {
+            RedisModule_ReplyWithStringBuffer(ctx, "connected", strlen("connected"));
+        } else if (n->status == NodeStatus_Connected) {
+            RedisModule_ReplyWithStringBuffer(ctx, "connected", strlen("connected"));
+        } else if (n->status == NodeStatus_Disconnected) {
+            RedisModule_ReplyWithStringBuffer(ctx, "disconnected", strlen("disconnected"));
+        } else if (n->status == NodeStatus_HelloSent) {
+            RedisModule_ReplyWithStringBuffer(ctx, "hello_sent", strlen("hello_sent"));
+        } else if (n->status == NodeStatus_Free) {
+            RedisModule_ReplyWithStringBuffer(ctx, "free", strlen("free"));
+        }
     }
     mr_dictReleaseIterator(iter);
     RedisModule_FreeThreadSafeContext(ctx);

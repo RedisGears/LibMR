@@ -1544,6 +1544,8 @@ typedef struct RunOnKeyMsg {
         MRError *error;
     };
     ReplyType replyType;
+    size_t timeout;
+    MR_LoopTaskCtx* timeoutTask;
 } RunOnKeyMsg;
 
 /* Run on thread pool */
@@ -1589,6 +1591,9 @@ static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
         msg->error = MR_ErrorCreate(errMsg, strlen(errMsg));
         msg->replyType = ReplyType_ERROR;
     }
+
+    MR_EventLoopDelayTaskCancel(msg->timeoutTask);
+    msg->timeoutTask = NULL;
 
     /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
     mr_dictDelete(mrCtx.remoteDict, id);
@@ -1700,6 +1705,21 @@ static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskInternal, RedisModule_HoldString(NULL, payload));
 }
 
+static void MR_RemoteTaskTimeoutOut(void* ctx) {
+    RunOnKeyMsg *msg = ctx;
+    msg->timeoutTask = NULL;
+
+    msg->error = MR_ErrorCreate("Timeout", 7);
+    msg->replyType = ReplyType_ERROR;
+
+    /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
+    int res = mr_dictDelete(mrCtx.remoteDict, msg->id);
+    RedisModule_Assert(res == DICT_OK);
+
+    /* Run the callback on the thread pool */
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskDoneInternal, msg);
+}
+
 /* Invoked on the event look */
 static void MR_RunOnKeyInternal(void* ctx) {
     RunOnKeyMsg *msg = ctx;
@@ -1713,6 +1733,8 @@ static void MR_RunOnKeyInternal(void* ctx) {
     /* ownership on the message was moved to MR_ClusterSendMsgBySlot function */
     msg->msg = NULL;
     msg->msgLen = 0;
+
+    msg->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskTimeoutOut, msg, msg->timeout);
 }
 
 LIBMR_API void MR_RunOnKey(const char* keyName,
@@ -1722,7 +1744,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            Record* r,
                            void (*onDone)(void *pd, Record* result),
                            void (*onError)(void *pd, MRError* err),
-                           void *pd)
+                           void *pd,
+                           size_t timeout)
 {
     StepDefinition* msd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
     RedisModule_Assert(msd);
@@ -1737,6 +1760,7 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
     msg->onDone = onDone;
     msg->onError = onError;
     msg->pd = pd;
+    msg->timeout = timeout;
     /* Set id */
     size_t id = __atomic_add_fetch(&mrCtx.lastExecutionId, 1, __ATOMIC_RELAXED);
     SetId(msg->id, msg->idStr, id);
@@ -1762,7 +1786,6 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
 
     msg->msg = buff.buff;
     msg->msgLen = buff.size;
-
 
     /* The remove mapper dictionary is protected by the event look so we must move to the event loop.*/
     MR_EventLoopAddTask(MR_RunOnKeyInternal, msg);

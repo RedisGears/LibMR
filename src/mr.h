@@ -76,7 +76,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            Record* r,
                            void (*onDone)(void *pd, Record* result),
                            void (*onError)(void *pd, MRError* err),
-                           void *pd);
+                           void *pd,
+                           size_t timeout);
 
 /* Creatign a new execution builder */
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);

@@ -116,6 +116,7 @@ pub fn run_on_key<
     remote_task: Remote,
     r: InRecord,
     done: DoneCallback,
+    timeout: usize,
 ) {
     unsafe {
         MR_RunOnKey(
@@ -127,6 +128,7 @@ pub fn run_on_key<
             Some(on_done::<OutRecord, DoneCallback>),
             Some(on_error::<OutRecord, DoneCallback>),
             Box::into_raw(Box::new(done)) as *mut c_void,
+            timeout,
         )
     }
 }
