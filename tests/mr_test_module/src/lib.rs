@@ -320,6 +320,7 @@ fn lmr_get(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                     }
                 }
             },
+            usize::MAX,
         );
     });
     Ok(RedisValue::NoReply)
