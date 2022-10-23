@@ -1737,7 +1737,9 @@ static void MR_RunOnKeyInternal(void* ctx) {
     msg->msg = NULL;
     msg->msgLen = 0;
 
-    msg->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskTimeoutOut, msg, msg->timeout);
+    if (msg->timeout != SIZE_MAX) {
+        msg->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskTimeoutOut, msg, msg->timeout);
+    }
 }
 
 LIBMR_API void MR_RunOnKey(const char* keyName,
