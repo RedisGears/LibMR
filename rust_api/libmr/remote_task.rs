@@ -1,6 +1,6 @@
 use crate::libmr_c_raw::bindings::{
-    MRError, MR_ErrorCreate, MR_ErrorFree, MR_ErrorGetMessage, MR_RegisterRemoteTask, MR_RunOnKey, MR_RunOnAllShards,
-    Record,
+    MRError, MR_ErrorCreate, MR_ErrorFree, MR_ErrorGetMessage, MR_RegisterRemoteTask,
+    MR_RunOnAllShards, MR_RunOnKey, Record,
 };
 
 use crate::libmr::base_object::{register, BaseObject};
@@ -101,13 +101,18 @@ extern "C" fn on_done_on_all_shards<
 ) {
     let callback = unsafe { Box::<DoneCallback>::from_raw(pd as *mut DoneCallback) };
 
-    let results_slice = unsafe{std::slice::from_raw_parts(results, n_results)};
+    let results_slice = unsafe { std::slice::from_raw_parts(results, n_results) };
     let mut results_vec = Vec::new();
     for res in results_slice {
-        results_vec.push(unsafe { Box::from_raw(*res as *mut MRBaseRecord<OutRecord>) }.record.take().unwrap())
+        results_vec.push(
+            unsafe { Box::from_raw(*res as *mut MRBaseRecord<OutRecord>) }
+                .record
+                .take()
+                .unwrap(),
+        )
     }
 
-    let errs_slice = unsafe{std::slice::from_raw_parts(errs, n_errs)};
+    let errs_slice = unsafe { std::slice::from_raw_parts(errs, n_errs) };
     let mut errs_vec = Vec::new();
     for err in errs_slice {
         let err_msg = unsafe { MR_ErrorGetMessage(*err) };
