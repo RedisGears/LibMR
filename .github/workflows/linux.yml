@@ -27,7 +27,7 @@ jobs:
     - name: install rltest
       run: python3 -m pip install RLTest gevent
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; BUILD_TLS=yes make install
+      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; BUILD_TLS=yes make valgrind install
     - name: install valgrind
       run: sudo apt-get install valgrind
     - name: Build
