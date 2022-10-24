@@ -69,3 +69,9 @@ def testRemoteTaskOnKey(env, conn):
     conn.execute_command('set', 'x', '1')
     env.expect('lmrtest.get', 'x').equal('1')
     env.expect('lmrtest.get', 'y').error().contains('bad result returned from')
+
+@MRTestDecorator()
+def testRemoteTaskOnAllShards(env, conn):
+    for i in range(1000):
+        conn.execute_command('set', 'doc%d' % i, '1')
+    env.expect('lmrtest.dbsize').equal(1000)

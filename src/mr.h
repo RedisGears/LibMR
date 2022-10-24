@@ -79,6 +79,13 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            void *pd,
                            size_t timeout);
 
+LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
+                                 void* args,
+                                 Record* r,
+                                 void (*onDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs),
+                                 void *pd,
+                                 size_t timeout);
+
 /* Creatign a new execution builder */
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
 

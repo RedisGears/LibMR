@@ -1530,35 +1530,120 @@ typedef enum ReplyType {
     ReplyType_OK, ReplyType_ERROR,
 }ReplyType;
 
-typedef struct RunOnKeyMsg {
-    char id[ID_LEN];
+typedef enum RemoteTaksMsgType {
+    RemoteTaksMsgType_OnKey, RemoteTaksMsgType_OnAllShards,
+} RemoteTaksMsgType;
+
+typedef struct RemoteTaksMsg {
     char idStr[STR_ID_LEN];
-    size_t slot;
+    char id[ID_LEN];
     char *msg;
     size_t msgLen;
-    void (*onDone)(void *pd, Record* result);
-    void (*onError)(void *pd, MRError* err);
-    void *pd;
+    size_t timeout;
+    MR_LoopTaskCtx* timeoutTask;
+    RemoteTaksMsgType remoteTaskType;
+} RemoteTaksMsg;
+
+typedef struct RemoteTaskResult {
     union {
         Record *res;
         MRError *error;
     };
     ReplyType replyType;
-    size_t timeout;
-    MR_LoopTaskCtx* timeoutTask;
+} RemoteTaskResult;
+
+typedef struct RunOnKeyMsg {
+    RemoteTaksMsg remoteTaskBase;
+    size_t slot;
+    void (*onDone)(void *pd, Record* result);
+    void (*onError)(void *pd, MRError* err);
+    void *pd;
+    RemoteTaskResult remoteTaskRes;
 } RunOnKeyMsg;
 
+typedef struct RunOnShardsMsg {
+    RemoteTaksMsg remoteTaskBase;
+    void (*onDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs);
+    void *pd;
+    ReplyType replyType;
+    void* args;
+    Record* r;
+    ARR(Record*) results;
+    ARR(MRError*) errs;
+    size_t expectedNResults;
+    size_t nResultsArrived;
+    StepDefinition* msd;
+} RunOnShardsMsg;
+
 /* Run on thread pool */
-static void MR_RemoteTaskDoneInternal(void* pd) {
+static void MR_RemoteTaskOnShardsDoneInternal(void* pd) {
+    RunOnShardsMsg *msg = pd;
+    msg->onDone(msg->pd, msg->results, array_len(msg->results), msg->errs, array_len(msg->errs));
+
+    array_free(msg->results);
+    array_free(msg->errs);
+    MR_FREE(msg);
+}
+
+/* Run on thread pool */
+static void MR_RemoteTaskOnKeyDoneInternal(void* pd) {
     RunOnKeyMsg *msg = pd;
 
-    if (msg->replyType == ReplyType_OK) {
-        msg->onDone(msg->pd, msg->res);
+    if (msg->remoteTaskRes.replyType == ReplyType_OK) {
+        msg->onDone(msg->pd, msg->remoteTaskRes.res);
     } else {
-        msg->onError(msg->pd, msg->error);
+        msg->onError(msg->pd, msg->remoteTaskRes.error);
     }
 
     MR_FREE(msg);
+}
+
+/* Run on the event loop */
+static void MR_RemoteTaskDoneProcessesResult(const char *id, RemoteTaskResult remoteTaskRes) {
+    RemoteTaksMsg *msgBase = mr_dictFetchValue(mrCtx.remoteDict, id);
+    if (!msgBase) {
+        RedisModule_Log(NULL, "warning", "Got a remote task done on none existing ID %.*s", REDISMODULE_NODE_ID_LEN, id);
+        return;
+    }
+
+    if (msgBase->remoteTaskType == RemoteTaksMsgType_OnKey) {
+        RunOnKeyMsg *msg = (RunOnKeyMsg*)msgBase;
+        msg->remoteTaskRes = remoteTaskRes;
+
+        if (msg->remoteTaskBase.timeoutTask) {
+            MR_EventLoopDelayTaskCancel(msg->remoteTaskBase.timeoutTask);
+            msg->remoteTaskBase.timeoutTask = NULL;
+        }
+
+        /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
+        mr_dictDelete(mrCtx.remoteDict, msgBase->id);
+
+        /* Run the callback on the thread pool */
+        mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskOnKeyDoneInternal, msg);
+    } else {
+        RedisModule_Assert(msgBase->remoteTaskType == RemoteTaksMsgType_OnAllShards);
+        RunOnShardsMsg *msg = (RunOnShardsMsg*)msgBase;
+        if (remoteTaskRes.replyType == ReplyType_OK) {
+            msg->results = array_append(msg->results, remoteTaskRes.res);
+        } else {
+            msg->errs = array_append(msg->errs, remoteTaskRes.error);
+        }
+        ++msg->nResultsArrived;
+        if (msg->nResultsArrived == msg->expectedNResults) {
+            /* Got all the results */
+
+            if (msg->remoteTaskBase.timeoutTask) {
+                MR_EventLoopDelayTaskCancel(msg->remoteTaskBase.timeoutTask);
+                msg->remoteTaskBase.timeoutTask = NULL;
+            }
+
+            /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
+            mr_dictDelete(mrCtx.remoteDict, msgBase->id);
+
+            /* Run the callback on the thread pool */
+            mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskOnShardsDoneInternal, msg);
+        }
+    }
 }
 
 /* Run on the event loop */
@@ -1577,31 +1662,18 @@ static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
     const char *id = mr_BufferReaderReadBuff(&buffReader, &idLen, NULL);
     RedisModule_Assert(idLen == ID_LEN);
 
-    RunOnKeyMsg *msg = mr_dictFetchValue(mrCtx.remoteDict, id);
-    if (!msg) {
-        RedisModule_Log(NULL, "warning", "Got a remote task done on none existing ID %.*s", REDISMODULE_NODE_ID_LEN, id);
-        return;
-    }
+    RemoteTaskResult remoteTaskRes;
 
     if (mr_BufferReaderReadLongLong(&buffReader, NULL)) {
-        msg->res = MR_RecordDeSerialize(&buffReader);
-        msg->replyType = ReplyType_OK;
+        remoteTaskRes.res = MR_RecordDeSerialize(&buffReader);
+        remoteTaskRes.replyType = ReplyType_OK;
     } else {
         const char* errMsg = mr_BufferReaderReadString(&buffReader, NULL);
-        msg->error = MR_ErrorCreate(errMsg, strlen(errMsg));
-        msg->replyType = ReplyType_ERROR;
+        remoteTaskRes.error = MR_ErrorCreate(errMsg, strlen(errMsg));
+        remoteTaskRes.replyType = ReplyType_ERROR;
     }
 
-    if (msg->timeoutTask) {
-        MR_EventLoopDelayTaskCancel(msg->timeoutTask);
-        msg->timeoutTask = NULL;
-    }
-
-    /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
-    mr_dictDelete(mrCtx.remoteDict, id);
-
-    /* Run the callback on the thread pool */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskDoneInternal, msg);
+    MR_RemoteTaskDoneProcessesResult(id, remoteTaskRes);
 }
 
 static void MR_RemoteTaskErrorOnRemote(void *pd, MRError *error) {
@@ -1708,19 +1780,19 @@ static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
 }
 
 /* Invoked on the event look */
-static void MR_RemoteTaskTimeoutOut(void* ctx) {
+static void MR_RemoteTaskOnKeyTimeoutOut(void* ctx) {
     RunOnKeyMsg *msg = ctx;
-    msg->timeoutTask = NULL;
+    msg->remoteTaskBase.timeoutTask = NULL;
 
-    msg->error = MR_ErrorCreate("Timeout", 7);
-    msg->replyType = ReplyType_ERROR;
+    msg->remoteTaskRes.error = MR_ErrorCreate("Timeout", 7);
+    msg->remoteTaskRes.replyType = ReplyType_ERROR;
 
     /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
-    int res = mr_dictDelete(mrCtx.remoteDict, msg->id);
+    int res = mr_dictDelete(mrCtx.remoteDict, msg->remoteTaskBase.id);
     RedisModule_Assert(res == DICT_OK);
 
     /* Run the callback on the thread pool */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskDoneInternal, msg);
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskOnKeyDoneInternal, msg);
 }
 
 /* Invoked on the event look */
@@ -1728,17 +1800,17 @@ static void MR_RunOnKeyInternal(void* ctx) {
     RunOnKeyMsg *msg = ctx;
 
     /* add the task to the remote mappers dictionary */
-    mr_dictAdd(mrCtx.remoteDict, msg->id, msg);
+    mr_dictAdd(mrCtx.remoteDict, msg->remoteTaskBase.id, msg);
 
     /* send the message to the shard */
-    MR_ClusterSendMsgBySlot(msg->slot, REMOTE_TASK_FUNCTION_ID, msg->msg, msg->msgLen);
+    MR_ClusterSendMsgBySlot(msg->slot, REMOTE_TASK_FUNCTION_ID, msg->remoteTaskBase.msg, msg->remoteTaskBase.msgLen);
 
     /* ownership on the message was moved to MR_ClusterSendMsgBySlot function */
-    msg->msg = NULL;
-    msg->msgLen = 0;
+    msg->remoteTaskBase.msg = NULL;
+    msg->remoteTaskBase.msgLen = 0;
 
-    if (msg->timeout != SIZE_MAX) {
-        msg->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskTimeoutOut, msg, msg->timeout);
+    if (msg->remoteTaskBase.timeout != SIZE_MAX) {
+        msg->remoteTaskBase.timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskOnKeyTimeoutOut, msg, msg->remoteTaskBase.timeout);
     }
 }
 
@@ -1765,11 +1837,12 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
     msg->onDone = onDone;
     msg->onError = onError;
     msg->pd = pd;
-    msg->timeout = timeout;
-    msg->timeoutTask = NULL;
+    msg->remoteTaskBase.timeout = timeout;
+    msg->remoteTaskBase.timeoutTask = NULL;
+    msg->remoteTaskBase.remoteTaskType = RemoteTaksMsgType_OnKey;
     /* Set id */
     size_t id = __atomic_add_fetch(&mrCtx.lastExecutionId, 1, __ATOMIC_RELAXED);
-    SetId(msg->id, msg->idStr, id);
+    SetId(msg->remoteTaskBase.id, msg->remoteTaskBase.idStr, id);
 
     MRError* error = NULL;
     mr_Buffer buff;
@@ -1779,7 +1852,7 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
     /* write sender */
     mr_BufferWriterWriteString(&buffWriter, MR_ClusterGetMyId());
     /* write id */
-    mr_BufferWriterWriteBuff(&buffWriter, msg->id, ID_LEN);
+    mr_BufferWriterWriteBuff(&buffWriter, msg->remoteTaskBase.id, ID_LEN);
     /* mapped name to invoke */
     mr_BufferWriterWriteString(&buffWriter, remoteTaskName);
     /* Serialize args */
@@ -1790,9 +1863,144 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
     MR_RecordSerialize(r, &buffWriter);
     MR_RecordFree(r);
 
-    msg->msg = buff.buff;
-    msg->msgLen = buff.size;
+    msg->remoteTaskBase.msg = buff.buff;
+    msg->remoteTaskBase.msgLen = buff.size;
 
-    /* The remove mapper dictionary is protected by the event look so we must move to the event loop.*/
     MR_EventLoopAddTask(MR_RunOnKeyInternal, msg);
+}
+
+typedef struct RemoteTaskLocalRun{
+    char id[ID_LEN];
+    StepDefinition* msd;
+    void* args;
+    Record* r;
+    RemoteTaskResult result;
+} RemoteTaskLocalRun;
+
+
+static void MR_RemoteTaskDoneOnLocalEVLoop(void* ctx) {
+    RemoteTaskLocalRun* localRun = ctx;
+
+    MR_RemoteTaskDoneProcessesResult(localRun->id, localRun->result);
+
+    MR_FREE(localRun);
+}
+
+static void MR_RemoteTaskErrorOnLocal(void *pd, MRError *error) {
+    RemoteTaskLocalRun* localRun = pd;
+    localRun->result.replyType = ReplyType_ERROR;
+    localRun->result.error = error;
+    MR_EventLoopAddTask(MR_RemoteTaskDoneOnLocalEVLoop, localRun);
+}
+
+static void MR_RemoteTaskDoneOnLocal(void *pd, Record *res) {
+    RemoteTaskLocalRun* localRun = pd;
+    localRun->result.replyType = ReplyType_OK;
+    localRun->result.res = res;
+    MR_EventLoopAddTask(MR_RemoteTaskDoneOnLocalEVLoop, localRun);
+}
+
+static void MR_RemoteTaskRunOnLocal(void *pd) {
+    RemoteTaskLocalRun* localRun = pd;
+    void* args = localRun->args;
+    Record* r = localRun->r;
+    localRun->args = NULL;
+    localRun->r = NULL;
+    ((RemoteTask)localRun->msd->callback)(r, args, MR_RemoteTaskDoneOnLocal, MR_RemoteTaskErrorOnLocal, localRun);
+}
+
+/* Invoked on the event look */
+static void MR_RemoteTaskOnAllShardsTimeoutOut(void* ctx) {
+    RunOnShardsMsg *msg = ctx;
+    msg->remoteTaskBase.timeoutTask = NULL;
+
+    msg->errs = array_append(msg->errs, MR_ErrorCreate("Timeout", 7));
+
+    /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
+    int res = mr_dictDelete(mrCtx.remoteDict, msg->remoteTaskBase.id);
+    RedisModule_Assert(res == DICT_OK);
+
+    /* Run the callback on the thread pool */
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskOnKeyDoneInternal, msg);
+}
+
+/* Invoked on the event loop */
+static void MR_RunOnAllShardsInternal(void* ctx) {
+    RunOnShardsMsg *msg = ctx;
+
+    /* add the task to the remote mappers dictionary */
+    mr_dictAdd(mrCtx.remoteDict, msg->remoteTaskBase.id, msg);
+
+    if (MR_ClusterIsInClusterMode()) {
+        /* send the message to the shard */
+        MR_ClusterSendMsg(NULL, REMOTE_TASK_FUNCTION_ID, msg->remoteTaskBase.msg, msg->remoteTaskBase.msgLen);
+    }
+
+    /* Create local run */
+    RemoteTaskLocalRun* localRun = MR_ALLOC(sizeof(*localRun));
+    memcpy(localRun->id, msg->remoteTaskBase.id, ID_LEN);
+    localRun->args = msg->args;
+    localRun->r = msg->r;
+    localRun->msd = msg->msd;
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskRunOnLocal, localRun);
+    msg->args = NULL;
+    msg->r = NULL;
+
+    /* ownership on the message was moved to MR_ClusterSendMsgBySlot function */
+    msg->remoteTaskBase.msg = NULL;
+    msg->remoteTaskBase.msgLen = 0;
+
+    if (msg->remoteTaskBase.timeout != SIZE_MAX) {
+        msg->remoteTaskBase.timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskOnAllShardsTimeoutOut, msg, msg->remoteTaskBase.timeout);
+    }
+}
+
+LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
+                                 void* args,
+                                 Record* r,
+                                 void (*onDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs),
+                                 void *pd,
+                                 size_t timeout) {
+    StepDefinition* msd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
+    RedisModule_Assert(msd);
+
+    RunOnShardsMsg *msg = MR_ALLOC(sizeof(*msg));
+    msg->onDone = onDone;
+    msg->pd = pd;
+    msg->remoteTaskBase.timeout = timeout;
+    msg->remoteTaskBase.timeoutTask = NULL;
+    msg->remoteTaskBase.remoteTaskType = RemoteTaksMsgType_OnAllShards;
+    msg->args = args;
+    msg->r = r;
+    msg->expectedNResults = MR_ClusterGetSize();
+    msg->nResultsArrived = 0;
+    msg->results = array_new(Record*, 10);
+    msg->errs = array_new(MRError*, 10);
+    msg->msd = msd;
+
+            /* Set id */
+    size_t id = __atomic_add_fetch(&mrCtx.lastExecutionId, 1, __ATOMIC_RELAXED);
+    SetId(msg->remoteTaskBase.id, msg->remoteTaskBase.idStr, id);
+
+    MRError* error = NULL;
+    mr_Buffer buff;
+    mr_BufferInitialize(&buff);
+    mr_BufferWriter buffWriter;
+    mr_BufferWriterInit(&buffWriter, &buff);
+    /* write sender */
+    mr_BufferWriterWriteString(&buffWriter, MR_ClusterGetMyId());
+    /* write id */
+    mr_BufferWriterWriteBuff(&buffWriter, msg->remoteTaskBase.id, ID_LEN);
+    /* mapped name to invoke */
+    mr_BufferWriterWriteString(&buffWriter, remoteTaskName);
+    /* Serialize args */
+    msd->type->serialize(&buffWriter, args, &error);
+    /* todo: handler serialization failure */
+    /* serialize the record */
+    MR_RecordSerialize(r, &buffWriter);
+
+    msg->remoteTaskBase.msg = buff.buff;
+    msg->remoteTaskBase.msgLen = buff.size;
+
+    MR_EventLoopAddTask(MR_RunOnAllShardsInternal, msg);
 }

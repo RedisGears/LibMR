@@ -18,7 +18,7 @@ use std::str;
 use mr::libmr::{
     accumulator::AccumulateStep, base_object::BaseObject, calc_slot,
     execution_builder::create_builder, filter::FilterStep, mapper::MapStep, mr_init,
-    reader::Reader, record::Record, remote_task::run_on_key, remote_task::RemoteTask, RustMRError,
+    reader::Reader, record::Record, remote_task::run_on_key, remote_task::run_on_all_shards, remote_task::RemoteTask, RustMRError,
 };
 
 use std::os::raw::c_void;
@@ -298,6 +298,26 @@ fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+fn lmr_dbsize(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    let blocked_client = ctx.block_client();
+    run_on_all_shards(
+        RemoteTaskDBSize,
+        int_record_new(0),
+        move |results: Vec<IntRecord>, mut errs: Vec<RustMRError>| {
+            let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+            if errs.len() > 0 {
+                let err = errs.pop().unwrap();
+                thread_ctx.reply(Err(RedisError::String(err)));
+            } else {
+                let sum: i64 = results.into_iter().map(|e| e.i).sum();
+                thread_ctx.reply(Ok(RedisValue::Integer(sum)));
+            }
+        },
+        usize::MAX,
+    );
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_get(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let mut args = args.into_iter().skip(1);
     let ke_redis_string = args.next().ok_or(RedisError::Str("not prefix was given"))?;
@@ -380,6 +400,43 @@ impl RemoteTask for RemoteTaskGet {
 impl BaseObject for RemoteTaskGet {
     fn get_name() -> &'static str {
         "RemoteTaskGet\0"
+    }
+
+    fn init(&mut self) {}
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RemoteTaskDBSize;
+
+impl RemoteTask for RemoteTaskDBSize {
+    type InRecord = IntRecord;
+    type OutRecord = IntRecord;
+
+    fn task(
+        self,
+        mut r: Self::InRecord,
+        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>) + Send>,
+    ) {
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call("dbsize", &[]);
+        ctx_unlock();
+        if let Ok(res) = res {
+            if let RedisValue::Integer(res) = res {
+                r.i = res;
+                on_done(Ok(r));
+            } else {
+                on_done(Err("bad result returned from `dbsize` command".to_string()))
+            }
+        } else {
+            on_done(Err("bad result returned from `dbsize` command".to_string()))
+        }
+    }
+}
+
+impl BaseObject for RemoteTaskDBSize {
+    fn get_name() -> &'static str {
+        "RemoteTaskDBSize\0"
     }
 
     fn init(&mut self) {}
@@ -909,6 +966,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     ErrorAccumulator::register();
     UnevenWorkMapper::register();
     RemoteTaskGet::register();
+    RemoteTaskDBSize::register();
     Status::Ok
 }
 
@@ -918,6 +976,7 @@ redis_module! {
     data_types: [],
     init: init_func,
     commands: [
+        ["lmrtest.dbsize", lmr_dbsize, "readonly", 0,0,0],
         ["lmrtest.get", lmr_get, "readonly", 0,0,0],
         ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0],
         ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0],

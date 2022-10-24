@@ -1,5 +1,5 @@
 use crate::libmr_c_raw::bindings::{
-    MRError, MR_ErrorCreate, MR_ErrorFree, MR_ErrorGetMessage, MR_RegisterRemoteTask, MR_RunOnKey,
+    MRError, MR_ErrorCreate, MR_ErrorFree, MR_ErrorGetMessage, MR_RegisterRemoteTask, MR_RunOnKey, MR_RunOnAllShards,
     Record,
 };
 
@@ -89,6 +89,38 @@ extern "C" fn on_done<
     callback(Ok(r.record.take().unwrap()));
 }
 
+extern "C" fn on_done_on_all_shards<
+    OutRecord: record::Record,
+    DoneCallback: FnOnce(Vec<OutRecord>, Vec<RustMRError>),
+>(
+    pd: *mut ::std::os::raw::c_void,
+    results: *mut *mut Record,
+    n_results: usize,
+    errs: *mut *mut MRError,
+    n_errs: usize,
+) {
+    let callback = unsafe { Box::<DoneCallback>::from_raw(pd as *mut DoneCallback) };
+
+    let results_slice = unsafe{std::slice::from_raw_parts(results, n_results)};
+    let mut results_vec = Vec::new();
+    for res in results_slice {
+        results_vec.push(unsafe { Box::from_raw(*res as *mut MRBaseRecord<OutRecord>) }.record.take().unwrap())
+    }
+
+    let errs_slice = unsafe{std::slice::from_raw_parts(errs, n_errs)};
+    let mut errs_vec = Vec::new();
+    for err in errs_slice {
+        let err_msg = unsafe { MR_ErrorGetMessage(*err) };
+        let r_str = std::str::from_utf8(unsafe {
+            std::slice::from_raw_parts(err_msg.cast::<u8>(), strlen(err_msg))
+        })
+        .unwrap();
+        errs_vec.push(r_str.to_string())
+    }
+
+    callback(results_vec, errs_vec);
+}
+
 extern "C" fn on_error<
     OutRecord: record::Record,
     DoneCallback: FnOnce(Result<OutRecord, RustMRError>),
@@ -127,6 +159,29 @@ pub fn run_on_key<
             Box::into_raw(Box::new(MRBaseRecord::new(r))) as *mut Record,
             Some(on_done::<OutRecord, DoneCallback>),
             Some(on_error::<OutRecord, DoneCallback>),
+            Box::into_raw(Box::new(done)) as *mut c_void,
+            timeout,
+        )
+    }
+}
+
+pub fn run_on_all_shards<
+    Remote: RemoteTask,
+    InRecord: record::Record,
+    OutRecord: record::Record,
+    DoneCallback: FnOnce(Vec<OutRecord>, Vec<RustMRError>),
+>(
+    remote_task: Remote,
+    r: InRecord,
+    done: DoneCallback,
+    timeout: usize,
+) {
+    unsafe {
+        MR_RunOnAllShards(
+            Remote::get_name().as_ptr() as *mut c_char,
+            Box::into_raw(Box::new(remote_task)) as *mut c_void,
+            Box::into_raw(Box::new(MRBaseRecord::new(r))) as *mut Record,
+            Some(on_done_on_all_shards::<OutRecord, DoneCallback>),
             Box::into_raw(Box::new(done)) as *mut c_void,
             timeout,
         )
