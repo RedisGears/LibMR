@@ -1934,7 +1934,13 @@ static void MR_RunOnAllShardsInternal(void* ctx) {
     if (MR_ClusterIsInClusterMode()) {
         /* send the message to the shard */
         MR_ClusterSendMsg(NULL, REMOTE_TASK_FUNCTION_ID, msg->remoteTaskBase.msg, msg->remoteTaskBase.msgLen);
+    } else {
+        MR_FREE(msg->remoteTaskBase.msg);
     }
+
+    /* ownership on the message was moved to MR_ClusterSendMsgBySlot function */
+    msg->remoteTaskBase.msg = NULL;
+    msg->remoteTaskBase.msgLen = 0;
 
     /* Create local run */
     RemoteTaskLocalRun* localRun = MR_ALLOC(sizeof(*localRun));
@@ -1945,10 +1951,6 @@ static void MR_RunOnAllShardsInternal(void* ctx) {
     mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskRunOnLocal, localRun);
     msg->args = NULL;
     msg->r = NULL;
-
-    /* ownership on the message was moved to MR_ClusterSendMsgBySlot function */
-    msg->remoteTaskBase.msg = NULL;
-    msg->remoteTaskBase.msgLen = 0;
 
     if (msg->remoteTaskBase.timeout != SIZE_MAX) {
         msg->remoteTaskBase.timeoutTask = MR_EventLoopAddTaskWithDelay(MR_RemoteTaskOnAllShardsTimeoutOut, msg, msg->remoteTaskBase.timeout);
