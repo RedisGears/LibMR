@@ -72,6 +72,9 @@ def testRemoteTaskOnKey(env, conn):
 
 @MRTestDecorator()
 def testRemoteTaskOnAllShards(env, conn):
-    for i in range(1000):
+    for i in range(100):
         conn.execute_command('set', 'doc%d' % i, '1')
-    env.expect('lmrtest.dbsize').equal(1000)
+    env.expect('lmrtest.dbsize').equal(100)
+    for i in range(100):
+        conn.execute_command('del', 'doc%d' % i)
+    env.expect('lmrtest.dbsize').equal(0)
