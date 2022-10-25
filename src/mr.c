@@ -1921,7 +1921,7 @@ static void MR_RemoteTaskOnAllShardsTimeoutOut(void* ctx) {
     RedisModule_Assert(res == DICT_OK);
 
     /* Run the callback on the thread pool */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskOnKeyDoneInternal, msg);
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskOnShardsDoneInternal, msg);
 }
 
 /* Invoked on the event loop */
