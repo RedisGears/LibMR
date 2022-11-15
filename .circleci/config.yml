@@ -18,13 +18,13 @@ jobs:
             name: Submodule update
             command: git submodule update --init --recursive
         - run:
-            name: get readies
+            name: Get readies
             command: git clone https://github.com/RedisLabsModules/readies.git
         - run:
             name: Install python3
             command: ./readies/bin/getpy3
         - run:
-            name: Install gcc-9
+            name: Install modern gcc
             command: ./readies/bin/getgcc --modern
         - run:
             name: Install rust
@@ -34,7 +34,9 @@ jobs:
             command: ./readies/bin/getredis -v <<parameters.redis_version>> --valgrind
         - run:
             name: Install RLTest
-            command: ./readies/bin/getrmpytools --modern
+            command: |
+              ./readies/bin/getrmpytools --modern
+              python3 -m pip install gevent
         - run:
             name: Build deps
             command: make build_deps
