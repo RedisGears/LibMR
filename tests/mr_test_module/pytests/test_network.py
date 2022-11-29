@@ -4,6 +4,7 @@ import gevent.queue
 import gevent.socket
 import time
 from common import TimeLimit
+import socket
 
 class Connection(object):
     def __init__(self, sock, bufsize=4096, underlying_sock=None):
@@ -236,9 +237,12 @@ class ShardMock():
         self.stream_server = gevent.server.StreamServer((self.host, 10000), self._handle_conn)
         self.stream_server.start()
 
+def _get_hosts():
+    return ['localhost', '::1'] if socket.has_ipv6 else ['localhost']
+
 @MRTestDecorator(skipOnCluster=True)
 def testMessageIdCorrectness(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection()
 
@@ -254,7 +258,7 @@ def testMessageIdCorrectness(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testErrorHelloResponse(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetCleanConnection()
             env.assertEqual(conn.read_request(), ['AUTH', 'password'])
@@ -273,7 +277,7 @@ def testErrorHelloResponse(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testClusterErrorHelloResponse(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetCleanConnection()
             env.assertEqual(conn.read_request(), ['AUTH', 'password'])
@@ -293,7 +297,7 @@ def testClusterErrorHelloResponse(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testMessageResentAfterDisconnect(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection()
 
@@ -329,7 +333,7 @@ def testMessageResentAfterDisconnect(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testMessageNotResentAfterCrash(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection()
 
@@ -356,7 +360,7 @@ def testMessageNotResentAfterCrash(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testSendRetriesMechanizm(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection()
 
@@ -402,7 +406,7 @@ def testSendRetriesMechanizm(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testSendTopology(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection()
 
@@ -422,7 +426,7 @@ def testSendTopology(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testStopListening(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection()
 
@@ -448,7 +452,7 @@ def testStopListening(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testDuplicateMessagesAreIgnored(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             shardMock.GetConnection()
             env.expect('MRTESTS.INNERCOMMUNICATION', '0000000000000000000000000000000000000002', '0000000000000000000000000000000000000000' , '0', 'test msg', '0').equal('OK')
@@ -456,7 +460,7 @@ def testDuplicateMessagesAreIgnored(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testMessagesResentAfterHelloResponse(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection(sendHelloResponse=False)
 
@@ -489,7 +493,7 @@ def testClusterRefreshOnOnlySingleNode(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testClusterSetAfterHelloResponseFailure(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection(sendHelloResponse=False)
 
@@ -523,7 +527,7 @@ def testClusterSetAfterHelloResponseFailure(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testClusterSetAfterDisconnect(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             conn = shardMock.GetConnection(sendHelloResponse=False)
 
@@ -561,7 +565,7 @@ def testClusterSetAfterDisconnect(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testMassiveClusterSet(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             for i in range(1000):
                 conn = shardMock.GetConnection(sendHelloResponse=False)
@@ -569,7 +573,7 @@ def testMassiveClusterSet(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testMassiveClusterSetFromShard(env, conn):
-    for host in ['localhost', '::0']:
+    for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
             for i in range(1000):
                 env.cmd('MRTESTS.CLUSTERSETFROMSHARD',
