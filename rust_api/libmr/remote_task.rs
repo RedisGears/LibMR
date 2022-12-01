@@ -1,3 +1,9 @@
+/*
+ * Copyright Redis Ltd. 2021 - present
+ * Licensed under your choice of the Redis Source Available License 2.0 (RSALv2) or
+ * the Server Side Public License v1 (SSPLv1).
+ */
+
 use crate::libmr_c_raw::bindings::{
     MRError, MR_ErrorCreate, MR_ErrorFree, MR_ErrorGetMessage, MR_RegisterRemoteTask,
     MR_RunOnAllShards, MR_RunOnKey, Record,
