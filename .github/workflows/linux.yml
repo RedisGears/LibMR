@@ -16,7 +16,7 @@ jobs:
 
     strategy:
       matrix:
-        test_args: ["", "-V --vg-suppressions ../leakcheck.supp -s"]
+        test_args: ["", "-V --vg-suppressions ../leakcheck.supp"]
 
     steps:
     - uses: actions/checkout@v3
