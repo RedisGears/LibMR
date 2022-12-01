@@ -1,0 +1,16 @@
+[package]
+name = "lib_mr_derive"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+syn = "1.0"
+quote = "1.0"
+
+[lib]
+name = "mr_derive"
+path = "src/lib.rs"
+crate-type = ["proc-macro"]
+proc-macro = true

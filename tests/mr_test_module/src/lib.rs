@@ -31,6 +31,8 @@ use std::os::raw::c_void;
 
 use std::{thread, time};
 
+use mr_derive::BaseObject;
+
 static mut DETACHED_CTX: *mut RedisModuleCtx = 0 as *mut RedisModuleCtx;
 
 fn get_redis_ctx() -> *mut RedisModuleCtx {
@@ -374,7 +376,7 @@ fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct RemoteTaskGet;
 
 impl RemoteTask for RemoteTaskGet {
@@ -403,15 +405,7 @@ impl RemoteTask for RemoteTaskGet {
     }
 }
 
-impl BaseObject for RemoteTaskGet {
-    fn get_name() -> &'static str {
-        "RemoteTaskGet\0"
-    }
-
-    fn init(&mut self) {}
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct RemoteTaskDBSize;
 
 impl RemoteTask for RemoteTaskDBSize {
@@ -440,15 +434,7 @@ impl RemoteTask for RemoteTaskDBSize {
     }
 }
 
-impl BaseObject for RemoteTaskDBSize {
-    fn get_name() -> &'static str {
-        "RemoteTaskDBSize\0"
-    }
-
-    fn init(&mut self) {}
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct StringRecord {
     pub s: Option<String>,
 }
@@ -466,13 +452,7 @@ impl Record for StringRecord {
     }
 }
 
-impl BaseObject for StringRecord {
-    fn get_name() -> &'static str {
-        "StringRecord\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct IntRecord {
     pub i: i64,
 }
@@ -488,13 +468,7 @@ impl Record for IntRecord {
     }
 }
 
-impl BaseObject for IntRecord {
-    fn get_name() -> &'static str {
-        "IntRecord\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct CountAccumulator;
 
 impl AccumulateStep for CountAccumulator {
@@ -515,13 +489,7 @@ impl AccumulateStep for CountAccumulator {
     }
 }
 
-impl BaseObject for CountAccumulator {
-    fn get_name() -> &'static str {
-        "CountAccumulator\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct ErrorAccumulator;
 
 impl AccumulateStep for ErrorAccumulator {
@@ -537,14 +505,8 @@ impl AccumulateStep for ErrorAccumulator {
     }
 }
 
-impl BaseObject for ErrorAccumulator {
-    fn get_name() -> &'static str {
-        "ErrorAccumulator\0"
-    }
-}
-
 /* filter by key type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct DummyFilter;
 
 impl FilterStep for DummyFilter {
@@ -555,14 +517,8 @@ impl FilterStep for DummyFilter {
     }
 }
 
-impl BaseObject for DummyFilter {
-    fn get_name() -> &'static str {
-        "DummyFilter\0"
-    }
-}
-
 /* filter by key type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct ErrorFilter;
 
 impl FilterStep for ErrorFilter {
@@ -573,14 +529,8 @@ impl FilterStep for ErrorFilter {
     }
 }
 
-impl BaseObject for ErrorFilter {
-    fn get_name() -> &'static str {
-        "ErrorFilter\0"
-    }
-}
-
 /* filter by key type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct TypeFilter {
     t: String,
 }
@@ -615,14 +565,8 @@ impl FilterStep for TypeFilter {
     }
 }
 
-impl BaseObject for TypeFilter {
-    fn get_name() -> &'static str {
-        "TypeFilter\0"
-    }
-}
-
 /* map key name to its type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct TypeMapper;
 
 impl MapStep for TypeMapper {
@@ -647,14 +591,8 @@ impl MapStep for TypeMapper {
     }
 }
 
-impl BaseObject for TypeMapper {
-    fn get_name() -> &'static str {
-        "TypeMapper\0"
-    }
-}
-
 /* map key name to its type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct ErrorMapper;
 
 impl MapStep for ErrorMapper {
@@ -666,13 +604,8 @@ impl MapStep for ErrorMapper {
     }
 }
 
-impl BaseObject for ErrorMapper {
-    fn get_name() -> &'static str {
-        "ErrorMapper\0"
-    }
-}
 /* map key name to its type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct DummyMapper;
 
 impl MapStep for DummyMapper {
@@ -684,14 +617,8 @@ impl MapStep for DummyMapper {
     }
 }
 
-impl BaseObject for DummyMapper {
-    fn get_name() -> &'static str {
-        "DummyMapper\0"
-    }
-}
-
 /* map key name to its type */
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct UnevenWorkMapper {
     #[serde(skip)]
     is_initiator: bool,
@@ -716,13 +643,7 @@ impl MapStep for UnevenWorkMapper {
     }
 }
 
-impl BaseObject for UnevenWorkMapper {
-    fn get_name() -> &'static str {
-        "UnevenWorkMapper\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct ReadStringMapper;
 
 impl MapStep for ReadStringMapper {
@@ -747,13 +668,7 @@ impl MapStep for ReadStringMapper {
     }
 }
 
-impl BaseObject for ReadStringMapper {
-    fn get_name() -> &'static str {
-        "ReadStringMapper\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct WriteDummyString;
 
 impl MapStep for WriteDummyString {
@@ -778,13 +693,7 @@ impl MapStep for WriteDummyString {
     }
 }
 
-impl BaseObject for WriteDummyString {
-    fn get_name() -> &'static str {
-        "WriteDummyString\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct MaxIdleReader {
     #[serde(skip)]
     is_initiator: bool,
@@ -817,13 +726,7 @@ impl Reader for MaxIdleReader {
     }
 }
 
-impl BaseObject for MaxIdleReader {
-    fn get_name() -> &'static str {
-        "MaxIdleReader\0"
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct ErrorReader {
     is_done: bool,
 }
@@ -843,12 +746,6 @@ impl Reader for ErrorReader {
         }
         self.is_done = true;
         Err("read_error".to_string())
-    }
-}
-
-impl BaseObject for ErrorReader {
-    fn get_name() -> &'static str {
-        "ErrorReader\0"
     }
 }
 
