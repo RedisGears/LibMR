@@ -848,28 +848,12 @@ impl Drop for KeysReader {
 fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
-
-        mr_init(ctx, 3);
     }
 
-    StringRecord::register();
-    IntRecord::register();
+    mr_init(ctx, 3);
+
     KeysReader::register();
-    MaxIdleReader::register();
-    ErrorReader::register();
-    TypeMapper::register();
-    ErrorMapper::register();
-    DummyMapper::register();
-    TypeFilter::register();
-    DummyFilter::register();
-    ErrorFilter::register();
-    WriteDummyString::register();
-    ReadStringMapper::register();
-    CountAccumulator::register();
-    ErrorAccumulator::register();
-    UnevenWorkMapper::register();
-    RemoteTaskGet::register();
-    RemoteTaskDBSize::register();
+    
     Status::Ok
 }
 
