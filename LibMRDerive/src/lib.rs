@@ -12,7 +12,7 @@ pub fn base_object_derive(item: TokenStream) -> TokenStream {
     let func_name = format_ident!("register_{}", name.to_string().to_lowercase());
 
     let gen = quote! {
-        impl BaseObject for #name {
+        impl mr::libmr::base_object::BaseObject for #name {
             fn get_name() -> &'static str {
                 concat!(stringify!(#name), "\0")
             }

@@ -12,5 +12,4 @@ quote = "1.0"
 [lib]
 name = "mr_derive"
 path = "src/lib.rs"
-crate-type = ["proc-macro"]
 proc-macro = true
