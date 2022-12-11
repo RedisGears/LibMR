@@ -543,6 +543,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
                 return;
             }
             SSL *ssl = SSL_new(ssl_context);
+            SSL_CTX_free(ssl_context);
             if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
                 RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
                 // disconnect async, its not possible to free redisAsyncContext here
@@ -1118,6 +1119,7 @@ static void MR_ClusterInfo(void* pd) {
     RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(bc);
     if(!clusterCtx.CurrCluster){
         RedisModule_ReplyWithStringBuffer(ctx, NO_CLUSTER_MODE_REPLY, strlen(NO_CLUSTER_MODE_REPLY));
+        RedisModule_UnblockClient(bc, NULL);
         return;
     }
     RedisModule_ReplyWithArray(ctx, 5);
@@ -1130,7 +1132,7 @@ static void MR_ClusterInfo(void* pd) {
     mr_dictEntry *entry = NULL;
     while((entry = mr_dictNext(iter))){
         Node* n = mr_dictGetVal(entry);
-        RedisModule_ReplyWithArray(ctx, 16);
+        RedisModule_ReplyWithArray(ctx, 18);
         RedisModule_ReplyWithStringBuffer(ctx, "id", strlen("id"));
         RedisModule_ReplyWithStringBuffer(ctx, n->id, strlen(n->id));
         RedisModule_ReplyWithStringBuffer(ctx, "ip", strlen("ip"));
@@ -1161,6 +1163,18 @@ static void MR_ClusterInfo(void* pd) {
         RedisModule_ReplyWithStringBuffer(ctx, "pendingMessages", strlen("pendingMessages"));
         RedisModule_ReplyWithLongLong(ctx, mr_listLength(n->pendingMessages));
 
+        RedisModule_ReplyWithStringBuffer(ctx, "status", strlen("status"));
+        if (n->isMe) {
+            RedisModule_ReplyWithStringBuffer(ctx, "connected", strlen("connected"));
+        } else if (n->status == NodeStatus_Connected) {
+            RedisModule_ReplyWithStringBuffer(ctx, "connected", strlen("connected"));
+        } else if (n->status == NodeStatus_Disconnected) {
+            RedisModule_ReplyWithStringBuffer(ctx, "disconnected", strlen("disconnected"));
+        } else if (n->status == NodeStatus_HelloSent) {
+            RedisModule_ReplyWithStringBuffer(ctx, "hello_sent", strlen("hello_sent"));
+        } else if (n->status == NodeStatus_Free) {
+            RedisModule_ReplyWithStringBuffer(ctx, "free", strlen("free"));
+        }
     }
     mr_dictReleaseIterator(iter);
     RedisModule_FreeThreadSafeContext(ctx);
