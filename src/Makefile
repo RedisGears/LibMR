@@ -33,6 +33,12 @@ ARTIFACT_NAME=libmr
 
 all: $(ARTIFACT_NAME)
 
+uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
+ifeq ($(uname_S),Darwin)
+	OPENSSL_PREFIX?=/usr/local/opt/openssl@1.1
+	GCC_FLAGS+=-I$(OPENSSL_PREFIX)/include/
+endif
+
 %.o : %.c
 	gcc -c $(GCC_FLAGS) $< -o $@ -DMODULE_NAME=$(MODULE_NAME)
 

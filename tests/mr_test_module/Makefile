@@ -18,14 +18,15 @@ else
 endif
 
 RUSTFLAGS=-L$(ROOT)/src/
+MODULE_NAME=MRTESTS
 
 all: build
 
 build_libmr:
-	DEBUG=$(DEBUG_RUN) COVERAGE=$(COVERAGE_RUN) MODULE_NAME=MRTESTS make -C $(ROOT)/src/
+	DEBUG=$(DEBUG_RUN) COVERAGE=$(COVERAGE_RUN) MODULE_NAME=$(MODULE_NAME) make -C $(ROOT)/src/
 
 build: build_libmr
-	RUSTFLAGS="$(RUSTFLAGS)" cargo build $(EXTRA_ARGS)
+	RUSTFLAGS="$(RUSTFLAGS)" MODULE_NAME==$(MODULE_NAME) cargo build $(EXTRA_ARGS)
 
 run: build
 	redis-server --loadmodule $(MODULE_PATH)
