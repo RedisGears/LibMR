@@ -12,4 +12,4 @@ else
 fi
 
 
-python3 -m RLTest --module $MODULE_PATH --clear-logs "$@" --module-args --oss_password "my_password"
+python3 -m RLTest --module $MODULE_PATH --clear-logs "$@" --module-args "my_password" --oss_password "my_password"
