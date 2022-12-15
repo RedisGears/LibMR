@@ -884,10 +884,11 @@ impl Drop for KeysReader {
 static mut HASH_RECORD_TYPE: Option<RecordType<StringRecord>> = None;
 static mut INT_RECORD_TYPE: Option<RecordType<IntRecord>> = None;
 
-fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
+fn init_func(ctx: &Context, args: &Vec<RedisString>) -> Status {
     unsafe{
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
-        MR_Init(ctx.ctx as *mut libmrraw::bindings::RedisModuleCtx, 3, RedisModule_StringPtrLen(_args[0], ptr::null_mut()));
+        let passwd = if args.len() > 0 {RedisModule_StringPtrLen(args[0], ptr::null_mut())} else {ptr::null_mut()};
+        MR_Init(ctx.ctx as *mut libmrraw::bindings::RedisModuleCtx, 3, passwd);
     }
 
     unsafe{
