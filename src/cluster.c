@@ -105,6 +105,7 @@ struct ClusterCtx {
     char myId[REDISMODULE_NODE_ID_LEN + 1];
     int isOss;
     functionId networkTestMsgReciever;
+    char *password;
 }clusterCtx;
 
 typedef struct ClusterSetCtx {
@@ -770,7 +771,7 @@ static void MR_RefreshClusterData(){
 
         Node* n = MR_GetNode(nodeId);
         if(!n){
-            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, NULL, NULL, minslot, maxslot);
+            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, clusterCtx.password, NULL, minslot, maxslot);
         }
 
         if (n->isMe) {
@@ -1242,7 +1243,7 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
     RedisModule_Log(ctx, "notice", "got a nextwork test msg");
 }
 
-int MR_ClusterInit(RedisModuleCtx* rctx) {
+int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
@@ -1250,6 +1251,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx) {
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
     clusterCtx.isOss = true;
+    clusterCtx.password = MR_STRDUP(password);
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
     RedisModuleServerInfoData *info = RedisModule_GetServerInfo(rctx, "Server");
