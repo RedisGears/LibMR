@@ -889,8 +889,8 @@ static mut INT_RECORD_TYPE: Option<RecordType<IntRecord>> = None;
 fn init_func(ctx: &Context, args: &Vec<RedisString>) -> Status {
     unsafe{
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
-        let mut passwd = args.get(0).map(|v| RedisModule_StringPtrLen.unwrap()(v.inner, ptr::null_mut())).unwrap_or(ptr::null_mut());
-        MR_Init(ctx.ctx as *mut libmrraw::bindings::RedisModuleCtx, 3, passwd);
+        let passwd = args.get(0).map(|v| RedisModule_StringPtrLen.unwrap()(v.inner, ptr::null_mut())).unwrap_or(ptr::null_mut());
+        MR_Init(ctx.ctx as *mut libmrraw::bindings::RedisModuleCtx, 3, passwd as *mut c_char);
     }
 
     unsafe{
