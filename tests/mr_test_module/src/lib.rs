@@ -18,6 +18,7 @@ use redis_module::redisraw::bindings::{
     RedisModule_ThreadSafeContextLock,
     RedisModule_ThreadSafeContextUnlock,
     RedisModule_ScanCursorDestroy,
+    RedisModule_StringPtrLen
 };
 
 use redis_module::{
