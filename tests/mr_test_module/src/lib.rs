@@ -18,6 +18,7 @@ use redis_module::redisraw::bindings::{
     RedisModule_ThreadSafeContextLock,
     RedisModule_ThreadSafeContextUnlock,
     RedisModule_ScanCursorDestroy,
+    RedisModule_StringPtrLen,
 };
 
 use redis_module::{
@@ -32,6 +33,7 @@ use redis_module::{
     ThreadSafeContext,
 };
 
+use std::ptr;
 use std::str;
 
 mod libmrraw;
@@ -884,11 +886,11 @@ impl Drop for KeysReader {
 static mut HASH_RECORD_TYPE: Option<RecordType<StringRecord>> = None;
 static mut INT_RECORD_TYPE: Option<RecordType<IntRecord>> = None;
 
-fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
+fn init_func(ctx: &Context, args: &Vec<RedisString>) -> Status {
     unsafe{
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
-
-        MR_Init(ctx.ctx as *mut libmrraw::bindings::RedisModuleCtx, 3);
+        let passwd = args.get(0).map(|v| RedisModule_StringPtrLen.unwrap()(v.inner, ptr::null_mut())).unwrap_or(ptr::null_mut());
+        MR_Init(ctx.ctx as *mut libmrraw::bindings::RedisModuleCtx, 3, passwd as *mut c_char);
     }
 
     unsafe{

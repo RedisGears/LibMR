@@ -1344,10 +1344,10 @@ void MR_FreeExecution(Execution* e) {
     MR_FREE(e);
 }
 
-int MR_Init(RedisModuleCtx* ctx, size_t numThreads) {
+int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
 
-    if (MR_ClusterInit(ctx) != REDISMODULE_OK) {
+    if (MR_ClusterInit(ctx, password) != REDISMODULE_OK) {
         return REDISMODULE_ERR;
     }
 
