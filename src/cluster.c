@@ -1251,7 +1251,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
     clusterCtx.isOss = true;
-    clusterCtx.password = MR_STRDUP(password);
+    clusterCtx.password = password ? MR_STRDUP(password) : NULL;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
     RedisModuleServerInfoData *info = RedisModule_GetServerInfo(rctx, "Server");
