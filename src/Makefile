@@ -6,10 +6,13 @@ else
 	GCC_FLAGS+=-O3
 endif
 
+OPENSSL_PREFIX?=/usr/local/opt/openssl
+
 GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API \
 -I../deps/hiredis/ \
 -I../deps/hiredis/adapters/ \
--I../deps/libevent/include/
+-I../deps/libevent/include/ \
+-I$(OPENSSL_PREFIX)/include
 
 ifeq ($(COVERAGE),1)
 	GCC_FLAGS+=-fprofile-arcs -ftest-coverage
@@ -44,7 +47,7 @@ endif
 
 
 $(ARTIFACT_NAME): $(SOURCES)
-	gcc $(SOURCES) $(HIREDIS) $(HIREDIS_SSL) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS) 
+	gcc $(SOURCES) $(HIREDIS) $(HIREDIS_SSL) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS)
     ifeq ($(COMPILER),gcc)
 		objcopy --localize-hidden $(ARTIFACT_NAME).o
     endif
