@@ -12,7 +12,7 @@ build_libevent:
 ifneq ("$(wildcard built_libevent)","")
 	echo libevent already built
 else
-	cd libevent; autoreconf -v -i -f; CFLAGS=-fPIC ./configure; make
+	cd libevent; autoreconf -v -i -f; CFLAGS=-fPIC ./configure PKG_CONFIG_PATH=$(PKG_CONFIG_PATH); make
 endif
 	touch built_libevent
 	
