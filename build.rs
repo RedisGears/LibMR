@@ -1,8 +1,21 @@
 extern crate bindgen;
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+fn probe_paths<'a>(paths: &'a [&'a str]) -> Option<&'a str> {
+    paths.iter().find(|path| Path::new(path).exists()).copied()
+}
+
+fn find_macos_openssl_prefix_path() -> &'static str {
+    const PATHS: [&str; 3] = [
+        "/usr/local/opt/openssl",
+        "/usr/local/opt/openssl@1.1",
+        "/opt/homebrew/opt/openssl@1.1",
+    ];
+    probe_paths(&PATHS).unwrap_or("")
+}
 
 fn main() {
     println!("cargo:rerun-if-changed=src/*.c");
@@ -25,7 +38,7 @@ fn main() {
     let output_dir = env::var("OUT_DIR").expect("Can not find out directory");
 
     if !Command::new("cp")
-        .args(&["src/libmr.a", &output_dir])
+        .args(["src/libmr.a", &output_dir])
         .status()
         .expect("failed copy libmr.a to output directory")
         .success()
@@ -47,13 +60,20 @@ fn main() {
         .write_to_file(out_path.join("libmr_bindings.rs"))
         .expect("failed to write bindings to file");
 
-    let open_ssl_lib_path = match std::env::consts::OS {
-        "macos" => "-L/usr/local/opt/openssl@1.1/lib/",
+    let open_ssl_prefix_path = match std::option_env!("OPENSSL_PREFIX") {
+        Some(p) => p,
+        None if std::env::consts::OS == "macos" => find_macos_openssl_prefix_path(),
         _ => "",
+    };
+
+    let open_ssl_lib_path_link_argument = if open_ssl_prefix_path.is_empty() {
+        "".to_owned()
+    } else {
+        format!("-L{open_ssl_prefix_path}/lib/")
     };
 
     println!(
         "cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto",
-        output_dir, open_ssl_lib_path
+        output_dir, open_ssl_lib_path_link_argument
     );
 }
