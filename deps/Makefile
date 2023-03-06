@@ -1,6 +1,6 @@
 all: build_hiredis build_libevent
 
-build_hiredis: 
+build_hiredis:
 ifneq ("$(wildcard built_hiredis)","")
 	echo hiredis already built
 else
@@ -15,7 +15,7 @@ else
 	cd libevent; autoreconf -v -i -f; CFLAGS=-fPIC ./configure PKG_CONFIG_PATH=$(PKG_CONFIG_PATH); make
 endif
 	touch built_libevent
-	
+
 clean:
 	make -C ./hiredis/ clean
 	make -C ./libevent/ clean
