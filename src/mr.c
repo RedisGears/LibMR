@@ -1787,10 +1787,11 @@ static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
 
 /* Invoked on the event look */
 static void MR_RemoteTaskOnKeyTimeoutOut(void* ctx) {
+    static const char TIMEOUT_TEXT[] = "Remote task timeout";
     RunOnKeyMsg *msg = ctx;
     msg->remoteTaskBase.timeoutTask = NULL;
 
-    msg->remoteTaskRes.error = MR_ErrorCreate("Timeout", 7);
+    msg->remoteTaskRes.error = MR_ErrorCreate(TIMEOUT_TEXT, sizeof(TIMEOUT_TEXT) - 1);
     msg->remoteTaskRes.replyType = ReplyType_ERROR;
 
     /* Remove msg from remoteDict, we will be done with it once we fire the done callback */
