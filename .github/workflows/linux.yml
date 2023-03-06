@@ -2,9 +2,9 @@ name: Test ubuntu latest
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, refactoring_rust_api ]
   pull_request:
-    branches: [ master ]
+    branches: [ master, refactoring_rust_api ]
 
 env:
   CARGO_TERM_COLOR: always
