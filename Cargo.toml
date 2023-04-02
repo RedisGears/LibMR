@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 #redis-module = { version="0.22.0", features = ["experimental-api"]}
-redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "api_extentions", features = ["experimental-api"]}
+redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "ap_fixes_changes", features = ["experimental-api"]}
 serde_json = "1.0"
 serde = "1.0"
 serde_derive = "1.0"
