@@ -847,7 +847,7 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
-    mr_init(ctx, 1, Some("password"));
+    mr_init(ctx, 5, Some("password"));
 
 	KeysReader::register();
 	Status::Ok

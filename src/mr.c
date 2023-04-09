@@ -1478,7 +1478,7 @@ long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError*
     return res;
 }
 
-const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err) {
+const char* MR_SerializationCtxReadBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err) {
     int error = 0;
     const char* res = mr_BufferReaderReadBuff(sctx, len, &error);
     if (error) {
@@ -1487,8 +1487,8 @@ const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t*
     return res;
 }
 
-double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx, MRError** err) {
-    return (double)MR_SerializationCtxReadeLongLong(sctx, err);
+double MR_SerializationCtxReadDouble(ReaderSerializationCtx* sctx, MRError** err) {
+    return (double)MR_SerializationCtxReadLongLong(sctx, err);
 }
 
 void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val, MRError** err) {

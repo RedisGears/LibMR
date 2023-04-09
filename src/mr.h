@@ -169,8 +169,8 @@ LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObje
 
 /* Serialization Context functions */
 LIBMR_API long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError** err);
-LIBMR_API const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err);
-LIBMR_API double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx, MRError** err);
+LIBMR_API const char* MR_SerializationCtxReadBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err);
+LIBMR_API double MR_SerializationCtxReadDouble(ReaderSerializationCtx* sctx, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteBuffer(WriteSerializationCtx* sctx, const char* buff, size_t len, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val, MRError** err);

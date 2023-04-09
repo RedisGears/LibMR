@@ -5,7 +5,7 @@
  */
 
 use crate::libmr_c_raw::bindings::{
-    MRError, MRObjectType, MR_RegisterObject, MR_SerializationCtxReadeBuffer,
+    MRError, MRObjectType, MR_RegisterObject, MR_SerializationCtxReadBuffer,
     MR_SerializationCtxWriteBuffer, ReaderSerializationCtx, WriteSerializationCtx,
 };
 
@@ -48,7 +48,7 @@ pub extern "C" fn rust_obj_deserialize<T: BaseObject>(
     error: *mut *mut MRError,
 ) -> *mut c_void {
     let mut len: usize = 0;
-    let s = unsafe { MR_SerializationCtxReadeBuffer(sctx, &mut len as *mut usize, error) };
+    let s = unsafe { MR_SerializationCtxReadBuffer(sctx, &mut len as *mut usize, error) };
     if !(unsafe { *error }).is_null() {
         return 0 as *mut c_void;
     }

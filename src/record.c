@@ -31,7 +31,7 @@ static void ErrorRecord_ObjectSerialize(WriteSerializationCtx* sctx, void* arg, 
 
 static void* ErrorRecord_ObjectDeserialize(ReaderSerializationCtx* sctx, MRError** err) {
     size_t len;
-    const char* str = MR_SerializationCtxReadeBuffer(sctx, &len, err);
+    const char* str = MR_SerializationCtxReadBuffer(sctx, &len, err);
     if (*err) {
         return NULL;
     }
