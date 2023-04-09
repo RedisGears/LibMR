@@ -105,6 +105,7 @@ struct ClusterCtx {
     char myId[REDISMODULE_NODE_ID_LEN + 1];
     int isOss;
     functionId networkTestMsgReciever;
+    char *password;
 }clusterCtx;
 
 typedef struct ClusterSetCtx {
@@ -319,7 +320,7 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             RedisModule_Log(mr_staticCtx, "warning", "Got uninitialize cluster error on hello response from %s (%s:%d), will resend cluster topology in next try in 1 second.", n->id, n->ip, n->port);
             n->sendClusterTopologyOnNextConnect = true;
         }else{
-            RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second", n->id, n->ip, n->port);
+            RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second, %s.", n->id, n->ip, n->port, reply->str);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
         return;
@@ -770,7 +771,7 @@ static void MR_RefreshClusterData(){
 
         Node* n = MR_GetNode(nodeId);
         if(!n){
-            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, NULL, NULL, minslot, maxslot);
+            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, clusterCtx.password, NULL, minslot, maxslot);
         }
 
         if (n->isMe) {
@@ -1242,7 +1243,7 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
     RedisModule_Log(ctx, "notice", "got a nextwork test msg");
 }
 
-int MR_ClusterInit(RedisModuleCtx* rctx) {
+int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
@@ -1250,6 +1251,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx) {
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
     clusterCtx.isOss = true;
+    clusterCtx.password = password ? MR_STRDUP(password) : NULL;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
     RedisModuleServerInfoData *info = RedisModule_GetServerInfo(rctx, "Server");

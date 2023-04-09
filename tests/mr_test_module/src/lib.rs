@@ -19,11 +19,9 @@ use redis_module::{
     ThreadSafeContext,
 };
 
-use std::str;
-
 use mr::libmr::{
-    accumulator::AccumulateStep, base_object::BaseObject, calc_slot,
-    execution_builder::create_builder, filter::FilterStep, mapper::MapStep, mr_init,
+    accumulator::AccumulateStep, base_object::BaseObject, calc_slot, mr_init,
+    execution_builder::create_builder, filter::FilterStep, mapper::MapStep,
     reader::Reader, record::Record, remote_task::run_on_key, remote_task::run_on_all_shards, remote_task::RemoteTask, RustMRError,
 };
 
@@ -393,8 +391,8 @@ impl RemoteTask for RemoteTaskGet {
         let res = ctx.call("get", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::StringBuffer(res) = res {
-                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
                 on_done(Ok(r));
             } else {
                 on_done(Err("bad result returned from `get` command".to_string()))
@@ -419,7 +417,7 @@ impl RemoteTask for RemoteTaskDBSize {
     ) {
         let ctx = get_ctx();
         ctx_lock();
-        let res = ctx.call("dbsize", &[]);
+        let res = ctx.call::<&[&str; 0]>("dbsize", &[]);
         ctx_unlock();
         if let Ok(res) = res {
             if let RedisValue::Integer(res) = res {
@@ -550,8 +548,8 @@ impl FilterStep for TypeFilter {
         let res = ctx.call("type", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::StringBuffer(res) = res {
-                if std::str::from_utf8(&res).unwrap() == self.t {
+            if let RedisValue::SimpleString(s) = res {
+                if s == self.t {
                     Ok(true)
                 } else {
                     Ok(false)
@@ -579,8 +577,8 @@ impl MapStep for TypeMapper {
         let res = ctx.call("type", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::StringBuffer(res) = res {
-                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
                 Ok(r)
             } else {
                 Err("bad result returned from type command".to_string())
@@ -656,8 +654,8 @@ impl MapStep for ReadStringMapper {
         let res = ctx.call("get", &[r.s.as_ref().unwrap()]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::StringBuffer(res) = res {
-                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
                 Ok(r)
             } else {
                 Err("bad result returned from type command".to_string())
@@ -681,8 +679,8 @@ impl MapStep for WriteDummyString {
         let res = ctx.call("set", &[r.s.as_ref().unwrap(), "val"]);
         ctx_unlock();
         if let Ok(res) = res {
-            if let RedisValue::StringBuffer(res) = res {
-                r.s = Some(std::str::from_utf8(&res).unwrap().to_string());
+            if let RedisValue::SimpleString(res) = res {
+                r.s = Some(res);
                 Ok(r)
             } else {
                 Err("bad result returned from type command".to_string())
@@ -849,12 +847,10 @@ fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
+    mr_init(ctx, 1, Some("password"));
 
-    mr_init(ctx, 3);
-
-    KeysReader::register();
-    
-    Status::Ok
+	KeysReader::register();
+	Status::Ok
 }
 
 redis_module! {
