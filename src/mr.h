@@ -168,7 +168,7 @@ LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator acc
 LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObjectType* argType);
 
 /* Serialization Context functions */
-LIBMR_API long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx, MRError** err);
+LIBMR_API long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError** err);
 LIBMR_API const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err);
 LIBMR_API double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val, MRError** err);

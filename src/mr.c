@@ -1469,7 +1469,7 @@ LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObje
     mr_dictAdd(mrCtx.remoteTasksDict, asd->name, asd);
 }
 
-long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx, MRError** err) {
+long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError** err) {
     int error = 0;
     long res = mr_BufferReaderReadLongLong(sctx, &error);
     if (error) {

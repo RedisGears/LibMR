@@ -7,7 +7,7 @@
 use crate::libmr_c_raw::bindings::{MRRecordType, MR_CalculateSlot, MR_Init, RedisModuleCtx};
 use redis_module::Context;
 
-use std::{os::raw::c_char, ptr, ffi::CString};
+use std::{ffi::CString, os::raw::c_char, ptr};
 
 use linkme::distributed_slice;
 
@@ -36,7 +36,16 @@ pub type RustMRError = String;
 
 pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>) {
     let password = password.map(|v| CString::new(v).unwrap());
-    unsafe { MR_Init(ctx.ctx as *mut RedisModuleCtx, num_threads, password.as_ref().map(|v| v.as_ptr()).unwrap_or(ptr::null_mut()) as *mut i8) };
+    unsafe {
+        MR_Init(
+            ctx.ctx as *mut RedisModuleCtx,
+            num_threads,
+            password
+                .as_ref()
+                .map(|v| v.as_ptr())
+                .unwrap_or(ptr::null_mut()) as *mut i8,
+        )
+    };
     record::init();
 
     for register in REGISTER_LIST {
