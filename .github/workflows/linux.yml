@@ -37,4 +37,4 @@ jobs:
     - name: Run tests
       run: |
         cd tests/mr_test_module/pytests/
-        DEBUG=1 ./run_full_tests.sh ${{ matrix.test_args }}
+        DEBUG=1 ./run_full_tests.sh -s ${{ matrix.test_args }}
