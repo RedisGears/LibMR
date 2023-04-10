@@ -17,6 +17,7 @@ jobs:
     strategy:
       matrix:
         test_args: ["", "-V --vg-suppressions ../leakcheck.supp"]
+        redis_version: ["7.0.10", "7.2-rc1"]
 
     steps:
     - uses: actions/checkout@v3
@@ -27,7 +28,7 @@ jobs:
     - name: install rltest
       run: python3 -m pip install RLTest gevent
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; BUILD_TLS=yes make valgrind install
+      run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make valgrind install
     - name: install valgrind
       run: sudo apt-get install valgrind
     - name: Build
@@ -37,4 +38,4 @@ jobs:
     - name: Run tests
       run: |
         cd tests/mr_test_module/pytests/
-        DEBUG=1 ./run_full_tests.sh -s ${{ matrix.test_args }}
+        DEBUG=1 ./run_full_tests.sh ${{ matrix.test_args }}
