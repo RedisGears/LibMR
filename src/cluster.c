@@ -1076,6 +1076,15 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     return;
 }
 
+static void MR_ClusterInnerCommunicationMsgFreePD(RedisModuleCtx* ctx, void* pd){
+    MessageCtx* msgCtx = pd;
+    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
+        RedisModule_FreeString(NULL, msgCtx->argv[i]);
+    }
+    MR_FREE(msgCtx->argv);
+    MR_FREE(msgCtx);
+}
+
 static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     MessageCtx* msgCtx = RedisModule_GetBlockedClientPrivateData(ctx);
     switch(msgCtx->reply) {
@@ -1100,11 +1109,6 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
     default:
         RedisModule_Assert(0);
     }
-    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, msgCtx->argv[i]);
-    }
-    MR_FREE(msgCtx->argv);
-    MR_FREE(msgCtx);
 
     return REDISMODULE_OK;
 }
@@ -1201,7 +1205,7 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     }
 
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
-    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, NULL, 0);
+    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, MR_ClusterInnerCommunicationMsgFreePD, 0);
     msgCtx->argv = argvNew;
     msgCtx->argc = argc;
     msgCtx->reply = MessageReply_Undefined;
