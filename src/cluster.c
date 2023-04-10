@@ -1009,6 +1009,7 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     if(!MR_IsClusterInitialize()){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
         msgCtx->reply = MessageReply_ClusterUninitialized;
+        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
         return;
     }
 
