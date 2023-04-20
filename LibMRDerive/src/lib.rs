@@ -1,9 +1,10 @@
-extern crate proc_macro;
 use proc_macro::TokenStream;
-use quote::quote;
 use quote::format_ident;
-use syn;
+use quote::quote;
 
+/// Provides an implementation of the [BaseObject] trait, and registers
+/// a function in the registry for the type annotated.
+/// See [mr::libmr::base_object::BaseObject].
 #[proc_macro_derive(BaseObject)]
 pub fn base_object_derive(item: TokenStream) -> TokenStream {
     let ast: syn::DeriveInput = syn::parse(item).unwrap();
@@ -20,7 +21,7 @@ pub fn base_object_derive(item: TokenStream) -> TokenStream {
 
         #[linkme::distributed_slice(mr::libmr::REGISTER_LIST)]
         fn #func_name() {
-            #name::register();        
+            #name::register();
         }
     };
 

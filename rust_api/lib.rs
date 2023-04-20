@@ -4,8 +4,8 @@
  * the Server Side Public License v1 (SSPLv1).
  */
 
-#[macro_use]
-extern crate serde_derive;
+// For now warn, but should be #![deny(missing_docs)].
+#![warn(missing_docs)]
 
 pub mod libmr;
 pub mod libmr_c_raw;

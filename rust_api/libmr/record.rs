@@ -23,7 +23,7 @@ use std::slice;
 use std::str;
 
 #[repr(C)]
-#[derive(Clone, Serialize)]
+#[derive(Clone, serde::Serialize)]
 pub(crate) struct MRBaseRecord<T: Record> {
     #[serde(skip)]
     base: crate::libmr_c_raw::bindings::Record,

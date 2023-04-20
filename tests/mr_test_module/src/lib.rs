@@ -4,9 +4,6 @@
  * the Server Side Public License v1 (SSPLv1).
  */
 
-#[macro_use]
-extern crate serde_derive;
-
 use redis_module::redisraw::bindings::{
     RedisModuleCtx, RedisModuleKey, RedisModuleScanCursor, RedisModuleString,
     RedisModule_GetDetachedThreadSafeContext, RedisModule_Scan, RedisModule_ScanCursorCreate,
@@ -15,15 +12,17 @@ use redis_module::redisraw::bindings::{
 };
 
 use redis_module::{
-    redis_command, redis_module, Context, RedisError, RedisResult, RedisString, RedisValue, Status,
-    ThreadSafeContext,
+    alloc::RedisAlloc, redis_command, redis_module, Context, RedisError, RedisResult, RedisString,
+    RedisValue, Status, ThreadSafeContext,
 };
 
 use mr::libmr::{
-    accumulator::AccumulateStep, base_object::BaseObject, calc_slot, mr_init,
-    execution_builder::create_builder, filter::FilterStep, mapper::MapStep,
-    reader::Reader, record::Record, remote_task::run_on_key, remote_task::run_on_all_shards, remote_task::RemoteTask, RustMRError,
+    accumulator::AccumulateStep, base_object::BaseObject, calc_slot,
+    execution_builder::create_builder, filter::FilterStep, mapper::MapStep, mr_init,
+    reader::Reader, record::Record, remote_task::run_on_all_shards, remote_task::run_on_key,
+    remote_task::RemoteTask, RustMRError,
 };
+use serde::{Deserialize, Serialize};
 
 use std::os::raw::c_void;
 
@@ -31,7 +30,7 @@ use std::{thread, time};
 
 use mr_derive::BaseObject;
 
-static mut DETACHED_CTX: *mut RedisModuleCtx = 0 as *mut RedisModuleCtx;
+static mut DETACHED_CTX: *mut RedisModuleCtx = std::ptr::null_mut();
 
 fn get_redis_ctx() -> *mut RedisModuleCtx {
     unsafe { DETACHED_CTX }
@@ -61,7 +60,7 @@ fn strin_record_new(s: String) -> StringRecord {
 }
 
 fn int_record_new(i: i64) -> IntRecord {
-    IntRecord { i: i }
+    IntRecord { i }
 }
 
 fn lmr_map_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
@@ -72,13 +71,14 @@ fn lmr_map_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
         .collect()
         .accumulate(CountAccumulator)
         .create_execution()
-        .map_err(|e| RedisError::String(e))?;
+        .map_err(RedisError::String)?;
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|res, errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-        let mut final_res = Vec::new();
-        final_res.push(RedisValue::Integer(res.len() as i64));
-        final_res.push(RedisValue::Integer(errs.len() as i64));
+        let final_res = vec![
+            RedisValue::Integer(res.len() as i64),
+            RedisValue::Integer(errs.len() as i64),
+        ];
         thread_ctx.reply(Ok(RedisValue::Array(final_res)));
     });
     execution.run();
@@ -99,9 +99,10 @@ fn lmr_filter_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|res, errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-        let mut final_res = Vec::new();
-        final_res.push(RedisValue::Integer(res.len() as i64));
-        final_res.push(RedisValue::Integer(errs.len() as i64));
+        let final_res = vec![
+            RedisValue::Integer(res.len() as i64),
+            RedisValue::Integer(errs.len() as i64),
+        ];
         thread_ctx.reply(Ok(RedisValue::Array(final_res)));
     });
     execution.run();
@@ -119,13 +120,14 @@ fn lmr_accumulate_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
         .collect()
         .accumulate(CountAccumulator)
         .create_execution()
-        .map_err(|e| RedisError::String(e))?;
+        .map_err(RedisError::String)?;
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|res, errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-        let mut final_res = Vec::new();
-        final_res.push(RedisValue::Integer(res.len() as i64));
-        final_res.push(RedisValue::Integer(errs.len() as i64));
+        let final_res = vec![
+            RedisValue::Integer(res.len() as i64),
+            RedisValue::Integer(errs.len() as i64),
+        ];
         thread_ctx.reply(Ok(RedisValue::Array(final_res)));
     });
     execution.run();
@@ -138,12 +140,12 @@ fn lmr_uneven_work(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let execution = create_builder(MaxIdleReader::new(1))
         .map(UnevenWorkMapper::new())
         .create_execution()
-        .map_err(|e| RedisError::String(e))?;
+        .map_err(RedisError::String)?;
     execution.set_max_idle(2000);
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-        if errs.len() > 0 {
+        if !errs.is_empty() {
             let err = errs.pop().unwrap();
             thread_ctx.reply(Err(RedisError::String(err.to_string())));
         } else {
@@ -169,9 +171,10 @@ fn lmr_read_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|res, errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-        let mut final_res = Vec::new();
-        final_res.push(RedisValue::Integer(res.len() as i64));
-        final_res.push(RedisValue::Integer(errs.len() as i64));
+        let final_res = vec![
+            RedisValue::Integer(res.len() as i64),
+            RedisValue::Integer(errs.len() as i64),
+        ];
         thread_ctx.reply(Ok(RedisValue::Array(final_res)));
     });
     execution.run();
@@ -212,7 +215,7 @@ fn lmr_reach_max_idle(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-        if errs.len() > 0 {
+        if !errs.is_empty() {
             let err = errs.pop().unwrap();
             thread_ctx.reply(Err(RedisError::String(err.to_string())));
         } else {
@@ -374,7 +377,7 @@ fn lmr_read_all_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
-#[derive(Clone, Serialize, Deserialize, BaseObject)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, BaseObject)]
 struct RemoteTaskGet;
 
 impl RemoteTask for RemoteTaskGet {
@@ -535,7 +538,7 @@ struct TypeFilter {
 
 impl TypeFilter {
     pub fn new(t: String) -> TypeFilter {
-        TypeFilter { t: t }
+        TypeFilter { t }
     }
 }
 
@@ -703,7 +706,7 @@ impl MaxIdleReader {
     fn new(sleep_time: usize) -> MaxIdleReader {
         MaxIdleReader {
             is_initiator: true,
-            sleep_time: sleep_time,
+            sleep_time,
             is_done: false,
         }
     }
@@ -764,7 +767,7 @@ impl KeysReader {
             cursor: None,
             pending: Vec::new(),
             is_done: false,
-            prefix: prefix,
+            prefix,
         };
         reader.init();
         reader
@@ -843,19 +846,21 @@ impl Drop for KeysReader {
     }
 }
 
-fn init_func(ctx: &Context, _args: &Vec<RedisString>) -> Status {
+fn init_func(ctx: &Context, _args: &[RedisString]) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
     mr_init(ctx, 5, Some("password"));
 
-	KeysReader::register();
-	Status::Ok
+    KeysReader::register();
+    Status::Ok
 }
 
+#[cfg(not(test))]
 redis_module! {
     name: "lmrtest",
     version: 99_99_99,
+    allocator: (RedisAlloc, RedisAlloc),
     data_types: [],
     init: init_func,
     commands: [

@@ -21,7 +21,7 @@ use std::slice;
 use std::str;
 
 pub extern "C" fn rust_obj_free<T: BaseObject>(ctx: *mut c_void) {
-    unsafe { Box::from_raw(ctx as *mut T) };
+    unsafe { std::ptr::drop_in_place(ctx) }
 }
 
 pub extern "C" fn rust_obj_dup<T: BaseObject>(arg: *mut c_void) -> *mut c_void {
@@ -59,9 +59,11 @@ pub extern "C" fn rust_obj_deserialize<T: BaseObject>(
 }
 
 pub extern "C" fn rust_obj_to_string(_arg: *mut c_void) -> *mut c_char {
-    0 as *mut c_char
+    std::ptr::null_mut()
 }
 
+/// All the types which are required to work with MR API are required to
+/// have an implementation of this trait.
 pub trait BaseObject: Clone + Serialize + Deserialize<'static> {
     fn get_name() -> &'static str;
     fn init(&mut self) {}
