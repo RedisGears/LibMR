@@ -7,15 +7,15 @@ edition = "2021"
 
 [dependencies]
 #redis-module = { version="0.22.0", features = ["experimental-api"]}
-redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "master", features = ["experimental-api"]}
-serde_json = "1.0"
-serde = "1.0"
-serde_derive = "1.0"
+redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "master" }
+serde_json = "1"
+serde = "1"
+serde_derive = "1"
 libc = "0.2"
 linkme = "0.3"
 
 [build-dependencies]
-bindgen = "0.59.2"
+bindgen = "0.59"
 
 [lib]
 crate-type = ["rlib"]
