@@ -21,7 +21,7 @@ use std::slice;
 use std::str;
 
 pub extern "C" fn rust_obj_free<T: BaseObject>(ctx: *mut c_void) {
-    unsafe { std::ptr::drop_in_place(ctx) }
+    unsafe { Box::from_raw(ctx as *mut T) };
 }
 
 pub extern "C" fn rust_obj_dup<T: BaseObject>(arg: *mut c_void) -> *mut c_void {
