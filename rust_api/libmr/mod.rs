@@ -44,7 +44,7 @@ pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>) {
             password
                 .as_ref()
                 .map(|v| v.as_ptr())
-                .unwrap_or(ptr::null_mut()) as *mut i8,
+                .unwrap_or(ptr::null_mut()) as *mut c_char,
         )
     };
     record::init();
