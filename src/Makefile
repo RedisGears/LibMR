@@ -27,9 +27,11 @@ LIBEVENT=../deps/libevent/.libs/libevent.a
 LIBEVENT_PTHREADS=../deps/libevent/.libs/libevent_pthreads.a
 
 ifeq ($(shell $(CC) -v 2>&1 | grep -c "clang version"), 1)
-COMPILER = clang
-else
-COMPILER = gcc
+CC=clang
+endif
+
+ifndef CC
+CC=gcc
 endif
 
 ARTIFACT_NAME=libmr
@@ -43,14 +45,14 @@ ifeq ($(uname_S),Darwin)
 endif
 
 %.o : %.c
-	gcc -c $(GCC_FLAGS) $< -o $@ -DMODULE_NAME=$(MODULE_NAME)
+	${CC} -c $(GCC_FLAGS) $< -o $@ -DMODULE_NAME=$(MODULE_NAME)
 
 
 $(ARTIFACT_NAME): $(SOURCES)
-	gcc $(SOURCES) $(HIREDIS) $(HIREDIS_SSL) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS)
-    ifeq ($(COMPILER),gcc)
-		objcopy --localize-hidden $(ARTIFACT_NAME).o
-    endif
+	${CC} $(SOURCES) $(HIREDIS) $(HIREDIS_SSL) $(LIBEVENT) $(LIBEVENT_PTHREADS) -r -o $(ARTIFACT_NAME).o $(LD_FLAGS)
+ifeq ($(CC),gcc)
+	objcopy --localize-hidden $(ARTIFACT_NAME).o
+endif
 	ar rcs $(ARTIFACT_NAME).a $(ARTIFACT_NAME).o
 
 clean:
