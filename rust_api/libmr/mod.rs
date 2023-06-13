@@ -61,5 +61,5 @@ pub fn calc_slot(s: &[u8]) -> usize {
 }
 
 pub fn is_my_slot(slot: usize) -> bool {
-    unsafe { MR_IsMySlot(slot) }
+    (unsafe { MR_IsMySlot(slot) }) != 0
 }
