@@ -5,7 +5,9 @@
  */
 //! This module provides with the Map-Reduce operations supported.
 
-use crate::libmr_c_raw::bindings::{MRRecordType, MR_CalculateSlot, MR_Init, RedisModuleCtx};
+use crate::libmr_c_raw::bindings::{
+    MRRecordType, MR_CalculateSlot, MR_Init, MR_IsMySlot, RedisModuleCtx,
+};
 use redis_module::Context;
 
 use std::{ffi::CString, os::raw::c_char, ptr};
@@ -56,4 +58,8 @@ pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>) {
 
 pub fn calc_slot(s: &[u8]) -> usize {
     unsafe { MR_CalculateSlot(s.as_ptr() as *const c_char, s.len()) }
+}
+
+pub fn is_my_slot(slot: usize) -> bool {
+    unsafe { MR_IsMySlot(slot) }
 }

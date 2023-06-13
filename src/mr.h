@@ -207,6 +207,9 @@ LIBMR_API Record* MR_RecordDeSerialize(ReaderSerializationCtx* reader);
 /* Calculate slot on the given buffer */
 LIBMR_API size_t MR_CalculateSlot(const char* buff, size_t len);
 
+/* Check if the given slot is in the current shard slot range */
+LIBMR_API int MR_IsMySlot(size_t slot);
+
 /* Create a new error object */
 LIBMR_API MRError* MR_ErrorCreate(const char* msg, size_t len);
 

@@ -1507,6 +1507,10 @@ size_t MR_CalculateSlot(const char* buff, size_t len) {
     return MR_ClusterGetSlotdByKey(buff, len);
 }
 
+LIBMR_API int MR_IsMySlot(size_t slot) {
+    return MR_ClusterIsMySlot(slot);
+}
+
 MRError* MR_ErrorCreate(const char* msg, size_t len) {
     MRError* ret = MR_ALLOC(sizeof(*ret));
     ret->type = MRErrorType_Dynamic;
