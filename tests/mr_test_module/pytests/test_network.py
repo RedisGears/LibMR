@@ -206,12 +206,14 @@ class ShardMock():
                      'NO-USED',
                      'password@%s:10000' % self.host
                      )
+        self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
     def __enter__(self):
         self.stream_server = gevent.server.StreamServer((self.host, 10000), self._handle_conn)
         self.stream_server.start()
         self._send_cluster_set()
         self.runId = self.env.cmd('MRTESTS.INFOCLUSTER')[3]
+        self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
         return self
 
     def __exit__(self, type, value, traceback):
