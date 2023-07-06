@@ -67,6 +67,9 @@ typedef int (*ExecutionFilter)(ExecutionCtx* ectx, Record* r, void* args);
 typedef Record* (*ExecutionAccumulator)(ExecutionCtx* ectx, Record* accumulator, Record* r, void* args);
 typedef void (*RemoteTask)(Record* r, void* args, void (*onDone)(void* PD, Record *r), void (*onError)(void* PD, MRError *r), void *pd);
 
+typedef void (*MR_OnError)(void *pd, MRError* err);
+typedef void (*MR_OnDone)(void *pd, Record* result);
+
 /* Run a remote task on a shard responsible for a given key.
  * There is not guarantee on which thread the task will run, if
  * the current shard is responsible for the given key or if its
@@ -80,8 +83,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            const char* remoteTaskName,
                            void* args,
                            Record* r,
-                           void (*onDone)(void *pd, Record* result),
-                           void (*onError)(void *pd, MRError* err),
+                           MR_OnDone onDone,
+                           MR_OnError onError,
                            void *pd,
                            size_t timeout);
 
