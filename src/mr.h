@@ -88,7 +88,7 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            void *pd,
                            size_t timeout);
 
-typedef void (*MR_RunOnShards_OnDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs)
+typedef void (*MR_RunOnShards_OnDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs);
 
 LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  void* args,
