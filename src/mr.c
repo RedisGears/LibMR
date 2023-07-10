@@ -1830,8 +1830,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            const char* remoteTaskName,
                            void* args,
                            Record* r,
-                           void (*onDone)(void *pd, Record* result),
-                           void (*onError)(void *pd, MRError* err),
+                           MR_RunOnKey_OnDone onDone,
+                           MR_RunOnKey_OnError onError,
                            void *pd,
                            size_t timeout)
 {
@@ -1971,7 +1971,7 @@ static void MR_RunOnAllShardsInternal(void* ctx) {
 LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  void* args,
                                  Record* r,
-                                 void (*onDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs),
+                                 MR_RunOnShards_OnDone onDone,
                                  void *pd,
                                  size_t timeout) {
     StepDefinition* msd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
