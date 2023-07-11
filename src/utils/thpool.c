@@ -22,6 +22,7 @@
 #endif
 
 #include "thpool.h"
+#include "../common.h"
 
 #include "../mr_memory.h"
 
@@ -77,6 +78,9 @@ typedef struct mr_thpool_ {
   mr_thread** threads;                 /* pointer to threads        */
   volatile int num_threads_alive;   /* threads currently alive   */
   volatile int num_threads_working; /* threads currently working */
+  volatile int total_num_of_threads; /* total requested num of threads */
+  volatile int is_threads_started;   /* indication if the threads already started */
+  pthread_mutex_t is_threads_started_lock;     /* used for thread count etc */
   pthread_mutex_t thcount_lock;     /* used for thread count etc */
   pthread_cond_t threads_all_idle;  /* signal to thpool_wait     */
   mr_jobqueue jobqueue;                /* job queue                 */
@@ -101,6 +105,31 @@ static void bsem_post(struct mr_bsem* bsem_p);
 static void bsem_post_all(struct mr_bsem* bsem_p);
 static void bsem_wait(struct mr_bsem* bsem_p);
 
+static void mr_thpool_start_threads(mr_thpool_* thpool_p) {
+    /* Thread init */
+    if (thpool_p->is_threads_started) {
+        return;
+    }
+    pthread_mutex_lock(&thpool_p->is_threads_started_lock);
+    if (thpool_p->is_threads_started) {
+        pthread_mutex_unlock(&thpool_p->is_threads_started_lock);
+        return;
+    }
+    int n;
+    for (n = 0; n < thpool_p->total_num_of_threads; n++) {
+        thread_init(thpool_p, &thpool_p->threads[n], n);
+#if THPOOL_DEBUG
+    printf("THPOOL_DEBUG: Created thread %d in pool \n", n);
+#endif
+    }
+
+    /* Wait for threads to initialize */
+    while (thpool_p->num_threads_alive != thpool_p->total_num_of_threads) {}
+
+    thpool_p->is_threads_started = 1;
+    pthread_mutex_unlock(&thpool_p->is_threads_started_lock);
+}
+
 /* ========================== THREADPOOL ============================ */
 
 /* Initialise thread pool */
@@ -122,6 +151,8 @@ struct mr_thpool_* mr_thpool_init(int num_threads) {
   }
   thpool_p->num_threads_alive = 0;
   thpool_p->num_threads_working = 0;
+  thpool_p->total_num_of_threads = num_threads;
+  thpool_p->is_threads_started = 0;
 
   /* Initialise the job queue */
   if (jobqueue_init(&thpool_p->jobqueue) == -1) {
@@ -140,20 +171,8 @@ struct mr_thpool_* mr_thpool_init(int num_threads) {
   }
 
   pthread_mutex_init(&(thpool_p->thcount_lock), NULL);
+  pthread_mutex_init(&(thpool_p->is_threads_started_lock), NULL);
   pthread_cond_init(&thpool_p->threads_all_idle, NULL);
-
-  /* Thread init */
-  int n;
-  for (n = 0; n < num_threads; n++) {
-    thread_init(thpool_p, &thpool_p->threads[n], n);
-#if THPOOL_DEBUG
-    printf("THPOOL_DEBUG: Created thread %d in pool \n", n);
-#endif
-  }
-
-  /* Wait for threads to initialize */
-  while (thpool_p->num_threads_alive != num_threads) {
-  }
 
   return thpool_p;
 }
@@ -161,6 +180,8 @@ struct mr_thpool_* mr_thpool_init(int num_threads) {
 /* Add work to the thread pool */
 int mr_thpool_add_work(mr_thpool_* thpool_p, void (*function_p)(void*), void* arg_p) {
   mr_job* newjob;
+
+  mr_thpool_start_threads(thpool_p);
 
   newjob = (struct mr_job*)MR_ALLOC(sizeof(struct mr_job));
   if (newjob == NULL) {
@@ -289,10 +310,9 @@ static void thread_hold(int sig_id) {
  * @return nothing
  */
 static void* thread_do(struct mr_thread* thread_p) {
-
   /* Set thread name for profiling and debuging */
   char thread_name[128] = {0};
-  sprintf(thread_name, "thread-pool-%d", thread_p->id);
+  sprintf(thread_name, xstr(MODULE_NAME)"-%d", thread_p->id);
 
 #if defined(__linux__)
   /* Use prctl instead to prevent using _GNU_SOURCE flag and implicit declaration */

@@ -5,6 +5,7 @@
  */
 
 #include "cluster.h"
+#include "common.h"
 #include "mr.h"
 #include "event_loop.h"
 #include "utils/arr_rm_alloc.h"
@@ -26,13 +27,6 @@
 #define MAX_SLOT 16384
 #define RUN_ID_SIZE 40
 
-#ifndef MODULE_NAME
-#error "MODULE_NAME is not defined"
-#endif
-
-#define xstr(s) str(s)
-#define str(s) #s
-
 #define CLUSTER_INNER_COMMUNICATION_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATION"
 #define CLUSTER_HELLO_COMMAND               xstr(MODULE_NAME)".HELLO"
 #define CLUSTER_REFRESH_COMMAND             xstr(MODULE_NAME)".REFRESHCLUSTER"
@@ -40,9 +34,10 @@
 #define CLUSTER_SET_FROM_SHARD_COMMAND      xstr(MODULE_NAME)".CLUSTERSETFROMSHARD"
 #define CLUSTER_INFO_COMMAND                xstr(MODULE_NAME)".INFOCLUSTER"
 #define NETWORK_TEST_COMMAND                xstr(MODULE_NAME)".NETWORKTEST"
+#define FORCE_SHARDS_CONNECTION             xstr(MODULE_NAME)".FORCESHARDSCONNECTION"
 
 typedef enum NodeStatus{
-    NodeStatus_Connected, NodeStatus_Disconnected, NodeStatus_HelloSent, NodeStatus_Free
+    NodeStatus_Connected, NodeStatus_Disconnected, NodeStatus_HelloSent, NodeStatus_Free, NodeStatus_Uninitialized
 }NodeStatus;
 
 typedef enum SendMsgType{
@@ -168,9 +163,13 @@ static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
     nodeMsg->msg = msg;
     nodeMsg->retries = 0;
     nodeMsg->msgId = node->msgId++;
-    if(node->status == NodeStatus_Connected){
+    if (node->status == NodeStatus_Connected) {
         MR_ClusterSendMsgToNodeInternal(node, nodeMsg);
-    }else{
+    } else {
+        if (node->status == NodeStatus_Uninitialized) {
+            MR_ConnectToShard(node);
+            node->status = NodeStatus_Disconnected;
+        }
         RedisModule_Log(mr_staticCtx, "warning", "message was not sent because status is not connected");
     }
     mr_listAddNodeTail(node->pendingMessages, nodeMsg);
@@ -320,7 +319,7 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             RedisModule_Log(mr_staticCtx, "warning", "Got uninitialize cluster error on hello response from %s (%s:%d), will resend cluster topology in next try in 1 second.", n->id, n->ip, n->port);
             n->sendClusterTopologyOnNextConnect = true;
         }else{
-            RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second", n->id, n->ip, n->port);
+            RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second, %s.", n->id, n->ip, n->port, reply->str);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
         return;
@@ -372,7 +371,7 @@ static void MR_ClusterAsyncDisconnect(void* ctx){
 }
 
 static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, int status){
-    RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, will try to reconnect.\r\n", c->c.tcp.host, c->c.tcp.port, status);
+    RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, will try to reconnect.", c->c.tcp.host, c->c.tcp.port, status);
     if(!c->data){
         return;
     }
@@ -596,10 +595,12 @@ static void MR_ClusterConnectToShards(){
         if(n->isMe){
             continue;
         }
-        MR_ConnectToShard(n);
+        if (n->status == NodeStatus_Uninitialized) {
+            MR_ConnectToShard(n);
+            n->status = NodeStatus_Disconnected;
+        }
     }
     mr_dictReleaseIterator(iter);
-    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
 static void MR_NodeFreeInternals(Node* n){
@@ -693,7 +694,7 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .minSlot = minSlot,
             .maxSlot = maxSlot,
             .isMe = false,
-            .status = NodeStatus_Disconnected,
+            .status = NodeStatus_Uninitialized,
             .sendClusterTopologyOnNextConnect = false,
             .runId = NULL,
             .reconnectEvent = NULL,
@@ -785,7 +786,7 @@ static void MR_RefreshClusterData(){
     }
     RedisModule_FreeCallReply(allSlotsRelpy);
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
-    MR_ClusterConnectToShards();
+    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
 static void MR_SetClusterData(RedisModuleString** argv, int argc){
@@ -908,7 +909,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
         }
     }
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
-    MR_ClusterConnectToShards();
+    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
 /* runs in the event loop so its safe to update cluster
@@ -1009,6 +1010,7 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     if(!MR_IsClusterInitialize()){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
         msgCtx->reply = MessageReply_ClusterUninitialized;
+        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
         return;
     }
 
@@ -1075,6 +1077,15 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     return;
 }
 
+static void MR_ClusterInnerCommunicationMsgFreePD(RedisModuleCtx* ctx, void* pd){
+    MessageCtx* msgCtx = pd;
+    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
+        RedisModule_FreeString(NULL, msgCtx->argv[i]);
+    }
+    MR_FREE(msgCtx->argv);
+    MR_FREE(msgCtx);
+}
+
 static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     MessageCtx* msgCtx = RedisModule_GetBlockedClientPrivateData(ctx);
     switch(msgCtx->reply) {
@@ -1099,11 +1110,6 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
     default:
         RedisModule_Assert(0);
     }
-    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, msgCtx->argv[i]);
-    }
-    MR_FREE(msgCtx->argv);
-    MR_FREE(msgCtx);
 
     return REDISMODULE_OK;
 }
@@ -1175,6 +1181,8 @@ static void MR_ClusterInfo(void* pd) {
             RedisModule_ReplyWithStringBuffer(ctx, "hello_sent", strlen("hello_sent"));
         } else if (n->status == NodeStatus_Free) {
             RedisModule_ReplyWithStringBuffer(ctx, "free", strlen("free"));
+        } else if (n->status == NodeStatus_Uninitialized) {
+            RedisModule_ReplyWithStringBuffer(ctx, "uninitialized", strlen("uninitialized"));
         }
     }
     mr_dictReleaseIterator(iter);
@@ -1185,6 +1193,24 @@ static void MR_ClusterInfo(void* pd) {
 int MR_ClusterInfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
     MR_EventLoopAddTask(MR_ClusterInfo, bc);
+    return REDISMODULE_OK;
+}
+
+/* runs in the event loop so its safe to update cluster
+ * topology here */
+static void MR_ForceShardsConnection(void* ctx){
+    RedisModuleBlockedClient* bc = ctx;
+    MR_ClusterConnectToShards();
+    RedisModuleCtx* rCtx = RedisModule_GetThreadSafeContext(bc);
+    RedisModule_ReplyWithSimpleString(rCtx, "OK");
+    RedisModule_FreeThreadSafeContext(rCtx);
+    RedisModule_UnblockClient(bc, NULL);
+}
+
+
+int MR_ForceShardsConnectionCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    MR_EventLoopAddTask(MR_ForceShardsConnection, bc);
     return REDISMODULE_OK;
 }
 
@@ -1200,7 +1226,7 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     }
 
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
-    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, NULL, 0);
+    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, MR_ClusterInnerCommunicationMsgFreePD, 0);
     msgCtx->argv = argvNew;
     msgCtx->argc = argc;
     msgCtx->reply = MessageReply_Undefined;
@@ -1209,6 +1235,11 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
 }
 
 int MR_ClusterIsMySlot(size_t slot) {
+    if (RedisModule_ShardingGetSlotRange) {
+        int first_slot, last_slot;
+        RedisModule_ShardingGetSlotRange(&first_slot, &last_slot);
+        return first_slot <= slot && last_slot >= slot;
+    }
     return clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
 }
 
@@ -1295,6 +1326,11 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
 
     if (RedisModule_CreateCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand, "readonly", 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_INFO_COMMAND);
+        return REDISMODULE_ERR;
+    }
+
+    if (RedisModule_CreateCommand(rctx, FORCE_SHARDS_CONNECTION, MR_ForceShardsConnectionCommand, "readonly", 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning", "could not register command "FORCE_SHARDS_CONNECTION);
         return REDISMODULE_ERR;
     }
 

@@ -81,7 +81,6 @@ def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
-            print(Colors.Cyan('\tRunning: %s' % test_name))
             if skipTest and not runSkipTests():
                 raise unittest.SkipTest()
             env = Env(**envArgs)

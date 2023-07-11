@@ -8,16 +8,19 @@ license = "Redis Source Available License 2.0 (RSALv2) or the Server Side Public
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-redis-module = { version="0.22.0", features = ["experimental-api"]}
-# redis-module = { path="/home/meir/work/redismodule-rs", features = ["experimental-api"]}
-serde_json = "1.0"
-serde = "1.0"
-serde_derive = "1.0"
+#redis-module = { version="0.22.0", features = ["experimental-api"]}
+redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "master" }
+serde_json = "1"
+serde = "1"
+serde_derive = "1"
 libc = "0.2"
+lib_mr = { path = "../../" }
+lib_mr_derive = { path = "../../LibMRDerive/" }
+linkme = "0.3"
 
 [build-dependencies]
 bindgen = "0.57"
-cc = "1.0"
+cc = "1"
 
 [lib]
 name = "mr_test"

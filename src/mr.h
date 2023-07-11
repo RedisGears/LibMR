@@ -65,6 +65,37 @@ typedef Record* (*ExecutionReader)(ExecutionCtx* ectx, void* args);
 typedef Record* (*ExecutionMapper)(ExecutionCtx* ectx, Record* r, void* args);
 typedef int (*ExecutionFilter)(ExecutionCtx* ectx, Record* r, void* args);
 typedef Record* (*ExecutionAccumulator)(ExecutionCtx* ectx, Record* accumulator, Record* r, void* args);
+typedef void (*RemoteTask)(Record* r, void* args, void (*onDone)(void* PD, Record *r), void (*onError)(void* PD, MRError *r), void *pd);
+
+typedef void (*MR_RunOnKey_OnError)(void *pd, MRError* err);
+typedef void (*MR_RunOnKey_OnDone)(void *pd, Record* result);
+
+/* Run a remote task on a shard responsible for a given key.
+ * There is not guarantee on which thread the task will run, if
+ * the current shard is responsible for the given key or if its
+ * a none cluster environment, then the callback will be called
+ * immediately (an so the onDone/onError) callbacks.
+ * If the key located on the remote shard, the task will
+ * be invoke on the thread pool of this remote shard, the onDone/onError
+ * callback will be invoke on the thread pool of the current shard. */
+LIBMR_API void MR_RunOnKey(const char* keyName,
+                           size_t keyNameSize,
+                           const char* remoteTaskName,
+                           void* args,
+                           Record* r,
+                           MR_RunOnKey_OnDone onDone,
+                           MR_RunOnKey_OnError onError,
+                           void *pd,
+                           size_t timeout);
+
+typedef void (*MR_RunOnShards_OnDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs);
+
+LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
+                                 void* args,
+                                 Record* r,
+                                 MR_RunOnShards_OnDone onDone,
+                                 void *pd,
+                                 size_t timeout);
 
 /* Creatign a new execution builder */
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
@@ -138,10 +169,13 @@ LIBMR_API void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObj
 /* Register an accumulate step */
 LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator accumulator, MRObjectType* argType);
 
+/* Register a remote task */
+LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObjectType* argType);
+
 /* Serialization Context functions */
-LIBMR_API long long MR_SerializationCtxReadeLongLong(ReaderSerializationCtx* sctx, MRError** err);
-LIBMR_API const char* MR_SerializationCtxReadeBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err);
-LIBMR_API double MR_SerializationCtxReadeDouble(ReaderSerializationCtx* sctx, MRError** err);
+LIBMR_API long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError** err);
+LIBMR_API const char* MR_SerializationCtxReadBuffer(ReaderSerializationCtx* sctx, size_t* len, MRError** err);
+LIBMR_API double MR_SerializationCtxReadDouble(ReaderSerializationCtx* sctx, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteLongLong(WriteSerializationCtx* sctx, long long val, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteBuffer(WriteSerializationCtx* sctx, const char* buff, size_t len, MRError** err);
 LIBMR_API void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val, MRError** err);
@@ -177,6 +211,9 @@ LIBMR_API Record* MR_RecordDeSerialize(ReaderSerializationCtx* reader);
 
 /* Calculate slot on the given buffer */
 LIBMR_API size_t MR_CalculateSlot(const char* buff, size_t len);
+
+/* Check if the given slot is in the current shard slot range */
+LIBMR_API int MR_IsMySlot(size_t slot);
 
 /* Create a new error object */
 LIBMR_API MRError* MR_ErrorCreate(const char* msg, size_t len);
