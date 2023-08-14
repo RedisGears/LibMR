@@ -22,3 +22,13 @@ def testMRAccumulateError(env, conn):
 def testMRReadError(env, conn):
     env.expect('lmrtest.readerror').equal([0, env.shardsCount])
 
+@MRTestDecorator()
+def testInternalCommandFromScript(env, conn):
+    env.expect('eval', "return redis.call('MRTESTS.NETWORKTEST')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.REFRESHCLUSTER')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.INNERCOMMUNICATION')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.HELLO')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.CLUSTERSET')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.CLUSTERSETFROMSHARD')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.INFOCLUSTER')", '0').error().contains('command is not allowed from script')
+    env.expect('eval', "return redis.call('MRTESTS.FORCESHARDSCONNECTION')", '0').error().contains('command is not allowed from script')
