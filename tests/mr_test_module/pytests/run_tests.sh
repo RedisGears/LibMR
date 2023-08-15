@@ -19,4 +19,4 @@ else
 fi
 
 
-python3 -m RLTest --module $MODULE_PATH --clear-logs "$@" --module-args "password" --oss_password "password"
+python3 -m RLTest --module $MODULE_PATH --clear-logs "$@" --module-args "password" --oss_password "password" --verbose-information-on-failure
