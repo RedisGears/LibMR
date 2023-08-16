@@ -118,6 +118,7 @@ def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False
                 'conn': conn
             }
             if env.isCluster():
+                env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '60000')
                 env.broadcast('MRTESTS.REFRESHCLUSTER')
                 with TimeLimit(2):
                     verifyClusterInitialized(env)
