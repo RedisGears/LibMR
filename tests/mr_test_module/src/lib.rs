@@ -142,7 +142,7 @@ fn lmr_uneven_work(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
         .map(UnevenWorkMapper::new())
         .create_execution()
         .map_err(RedisError::String)?;
-    execution.set_max_idle(2000);
+    execution.set_max_idle(10000);
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
@@ -642,7 +642,7 @@ impl MapStep for UnevenWorkMapper {
 
     fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         if !self.is_initiator {
-            let millis = time::Duration::from_millis(30000 as u64);
+            let millis = time::Duration::from_millis(60000 as u64);
             thread::sleep(millis);
         }
         Ok(r)
