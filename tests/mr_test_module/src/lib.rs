@@ -293,6 +293,7 @@ fn lmr_read_string_keys(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
         .collect()
         .create_execution()
         .map_err(|e| RedisError::String(e))?;
+    execution.set_max_idle(100000);
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
