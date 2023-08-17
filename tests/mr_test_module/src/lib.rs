@@ -267,6 +267,8 @@ fn replace_keys_values(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .create_execution()
         .map_err(|e| RedisError::String(e))?;
 
+    execution.set_max_idle(100000);
+
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
