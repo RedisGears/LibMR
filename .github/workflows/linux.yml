@@ -17,7 +17,7 @@ jobs:
     strategy:
       matrix:
         test_args: ["", "-V --vg-suppressions ../leakcheck.supp"]
-        redis_version: ["7.0.10", "7.2-rc1"]
+        redis_version: ["7.0.10", "7.2.1"]
 
     steps:
     - uses: actions/checkout@v3

@@ -754,13 +754,11 @@ static void MR_RefreshClusterData(){
         RedisModule_Assert(RedisModule_CallReplyType(nodeDetailsRelpy) == REDISMODULE_REPLY_ARRAY);
         RedisModule_Assert(RedisModule_CallReplyLength(nodeDetailsRelpy) >= 3);
         RedisModuleCallReply *nodeipReply = RedisModule_CallReplyArrayElement(nodeDetailsRelpy, 0);
-        RedisModuleCallReply *nodeportReply = RedisModule_CallReplyArrayElement(nodeDetailsRelpy, 1);
         RedisModuleCallReply *nodeidReply = RedisModule_CallReplyArrayElement(nodeDetailsRelpy, 2);
         size_t idLen;
         size_t ipLen;
         const char* id = RedisModule_CallReplyStringPtr(nodeidReply,&idLen);
         const char* ip = RedisModule_CallReplyStringPtr(nodeipReply,&ipLen);
-        long long port = RedisModule_CallReplyInteger(nodeportReply);
 
         char nodeId[REDISMODULE_NODE_ID_LEN + 1];
         memcpy(nodeId, id, REDISMODULE_NODE_ID_LEN);
@@ -769,6 +767,15 @@ static void MR_RefreshClusterData(){
         char nodeIp[ipLen + 1];
         memcpy(nodeIp, ip, ipLen);
         nodeIp[ipLen] = '\0';
+
+        // We need to get the port using the `RedisModule_GetClusterNodeInfo` API because on 7.2
+        // invoking `cluster slot` from RM_Call will always return the none tls port.
+        // For for information refer to: https://github.com/redis/redis/pull/12233
+        int port = 0;
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, NULL, NULL, &port, NULL);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+
 
         Node* n = MR_GetNode(nodeId);
         if(!n){
