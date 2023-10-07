@@ -24,7 +24,7 @@ jobs:
     - name: format
       run: cargo fmt -- --check
     - name: install rltest
-      run: python3 -m pip install RLTest gevent
+      run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest.git gevent
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; BUILD_TLS=yes make install
     - name: install automake
