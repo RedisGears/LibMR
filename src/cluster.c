@@ -1301,42 +1301,47 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
 
     RedisModule_Log(rctx, "notice", "Detected redis %s", clusterCtx.isOss? "oss" : "enterprise");
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh, "readonly deny-script", 0, 0, 0) != REDISMODULE_OK) {
+    const char *command_flags = "readonly deny-script";
+    if (MR_IsEnterpriseBuild()) {
+        command_flags = "readonly deny-script _proxy-filtered";
+    }
+
+    if (RedisModule_CreateCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh, command_flags, 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command " CLUSTER_REFRESH_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet, "readonly deny-script", 0, 0, -1) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet, command_flags, 0, 0, -1) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command " CLUSTER_SET_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND, MR_ClusterSetFromShard, "readonly deny-script", 0, 0, -1) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND, MR_ClusterSetFromShard, command_flags, 0, 0, -1) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_SET_FROM_SHARD_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello, "readonly deny-script", 0, 0, 0) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello, command_flags, 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_HELLO_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND, MR_ClusterInnerCommunicationMsg, "readonly deny-script", 0, 0, 0) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND, MR_ClusterInnerCommunicationMsg, command_flags, 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_INNER_COMMUNICATION_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand, "readonly deny-script", 0, 0, 0) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand, command_flags, 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "NETWORK_TEST_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand, "readonly deny-script", 0, 0, 0) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand, command_flags, 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_INFO_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, FORCE_SHARDS_CONNECTION, MR_ForceShardsConnectionCommand, "readonly deny-script", 0, 0, 0) != REDISMODULE_OK) {
+    if (RedisModule_CreateCommand(rctx, FORCE_SHARDS_CONNECTION, MR_ForceShardsConnectionCommand, command_flags, 0, 0, 0) != REDISMODULE_OK) {
         RedisModule_Log(rctx, "warning", "could not register command "FORCE_SHARDS_CONNECTION);
         return REDISMODULE_ERR;
     }
