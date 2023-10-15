@@ -30,7 +30,9 @@ jobs:
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make valgrind install
     - name: install valgrind
-      run: sudo apt-get install valgrind
+      run: |
+        sudo apt-get update --fix-mssing
+        sudo apt-get install valgrind
     - name: Build
       run: |
         cd tests/mr_test_module/
