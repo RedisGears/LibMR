@@ -5,6 +5,7 @@
  */
 
 #include "mr.h"
+#include "common.h"
 #include "utils/arr_rm_alloc.h"
 #include "utils/dict.h"
 #include "mr_memory.h"
@@ -21,6 +22,13 @@
 
 #define ID_LEN REDISMODULE_NODE_ID_LEN + sizeof(size_t)
 #define STR_ID_LEN  REDISMODULE_NODE_ID_LEN + 13
+
+MR_RedisVersion MR_currVersion;
+int MR_RlecMajorVersion;
+int MR_RlecMinorVersion;
+int MR_RlecPatchVersion;
+int MR_RlecBuild;
+int MR_IsEnterprise;
 
 RedisModuleCtx* mr_staticCtx;
 
@@ -1360,8 +1368,46 @@ void MR_FreeExecution(Execution* e) {
     MR_FREE(e);
 }
 
+static void MR_GetRedisVersion() {
+    RedisModuleCallReply *reply = RedisModule_Call(mr_staticCtx, "info", "c", "server");
+    assert(RedisModule_CallReplyType(reply) == REDISMODULE_REPLY_STRING);
+    size_t len;
+    const char *replyStr = RedisModule_CallReplyStringPtr(reply, &len);
+
+    int n = sscanf(replyStr,
+                   "# Server\nredis_version:%d.%d.%d",
+                   &MR_currVersion.redisMajorVersion,
+                   &MR_currVersion.redisMinorVersion,
+                   &MR_currVersion.redisPatchVersion);
+    if (n != 3) {
+        RedisModule_Log(NULL, "warning", "Could not extract redis version");
+    }
+
+    MR_RlecMajorVersion = -1;
+    MR_RlecMinorVersion = -1;
+    MR_RlecPatchVersion = -1;
+    MR_RlecBuild = -1;
+    MR_IsEnterprise = 0;
+    const char *enterpriseStr = strstr(replyStr, "rlec_version:");
+    if (enterpriseStr) {
+        MR_IsEnterprise = 1;
+        n = sscanf(enterpriseStr,
+                   "rlec_version:%d.%d.%d-%d",
+                   &MR_RlecMajorVersion,
+                   &MR_RlecMinorVersion,
+                   &MR_RlecPatchVersion,
+                   &MR_RlecBuild);
+        if (n != 4) {
+            RedisModule_Log(NULL, "warning", "Could not extract enterprise version");
+        }
+    }
+
+    RedisModule_FreeCallReply(reply);
+}
+
 int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
+    MR_GetRedisVersion();
 
     if (MR_ClusterInit(ctx, password) != REDISMODULE_OK) {
         return REDISMODULE_ERR;
