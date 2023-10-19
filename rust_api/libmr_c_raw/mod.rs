@@ -9,6 +9,7 @@
 #![allow(non_snake_case)]
 #![allow(dead_code)]
 
+#[allow(missing_docs)]
 pub mod bindings {
     include!(concat!(env!("OUT_DIR"), "/libmr_bindings.rs"));
 }
