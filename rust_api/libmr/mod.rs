@@ -6,7 +6,7 @@
 //! This module provides with the Map-Reduce operations supported.
 
 use crate::libmr_c_raw::bindings::{
-    MRRecordType, MR_CalculateSlot, MR_Init, MR_IsMySlot, RedisModuleCtx,
+    MRRecordType, MR_CalculateSlot, MR_ClusterIsInClusterMode, MR_Init, MR_IsMySlot, RedisModuleCtx,
 };
 use redis_module::Context;
 
@@ -62,4 +62,10 @@ pub fn calc_slot(s: &[u8]) -> usize {
 
 pub fn is_my_slot(slot: usize) -> bool {
     (unsafe { MR_IsMySlot(slot) }) != 0
+}
+
+/// Returns [`true`] if the cluster is in cluster mode and has been
+/// properly initialised.
+pub fn is_cluster_in_cluster_mode() -> bool {
+    unsafe { MR_ClusterIsInClusterMode().is_positive() }
 }
