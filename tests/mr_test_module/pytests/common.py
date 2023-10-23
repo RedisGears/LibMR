@@ -117,12 +117,12 @@ def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False
                 'env': env,
                 'conn': conn
             }
+            env.broadcast('MRTESTS.REFRESHCLUSTER')
             if env.isCluster():
                 # make sure cluster will not turn to failed state and we will not be
                 # able to execute commands on shards, on slow envs, run with valgrind,
                 # or mac, it is needed.
                 env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
-                env.broadcast('MRTESTS.REFRESHCLUSTER')
                 env.broadcast('MRTESTS.FORCESHARDSCONNECTION')
                 with TimeLimit(2):
                     verifyClusterInitialized(env)
