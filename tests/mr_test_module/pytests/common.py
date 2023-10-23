@@ -77,6 +77,24 @@ def runSkipTests():
 def waitBeforeTestStart():
     return True if os.environ.get('HOLD', False) else False
 
+def shardsConnections(env):
+    for s in range(1, env.shardsCount + 1):
+        yield env.getConnection(shardId=s)
+
+def verifyClusterInitialized(env):
+    for conn in shardsConnections(env):
+        allConnected = False
+        while not allConnected:
+            res = conn.execute_command('MRTESTS.INFOCLUSTER')
+            nodes = res[4]
+            allConnected = True
+            for n in nodes:
+                status = n[17]
+                if status != 'connected':
+                    allConnected = False
+            if not allConnected:
+                time.sleep(0.1)
+
 def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
@@ -99,11 +117,15 @@ def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False
                 'env': env,
                 'conn': conn
             }
-            env.broadcast('MRTESTS.REFRESHCLUSTER')
-            # make sure cluster will not turn to failed state and we will not be
-            # able to execute commands on shards, on slow envs, run with valgrind,
-            # or mac, it is needed.
-            env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '60000')
+            if env.isCluster():
+                # make sure cluster will not turn to failed state and we will not be
+                # able to execute commands on shards, on slow envs, run with valgrind,
+                # or mac, it is needed.
+                env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
+                env.broadcast('MRTESTS.REFRESHCLUSTER')
+                env.broadcast('MRTESTS.FORCESHARDSCONNECTION')
+                with TimeLimit(2):
+                    verifyClusterInitialized(env)
             if waitBeforeTestStart():
                 input('\tpress any button to continue test %s' % test_name)
             test_function(**args)
