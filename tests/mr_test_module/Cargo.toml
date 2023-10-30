@@ -3,7 +3,7 @@ name = "mr_test_module"
 version = "0.1.0"
 authors = ["meir@redislabs.com <meir@redislabs.com>"]
 edition = "2018"
-license = "Redis Source Available License 2.0 (RSALv2) or the Server Side Public License v1 (SSPLv1)"
+license = "LicenseRef-RSALv2 OR SSPL-1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
