@@ -124,7 +124,10 @@ static void mr_thpool_start_threads(mr_thpool_* thpool_p) {
     }
 
     /* Wait for threads to initialize */
-    while (thpool_p->num_threads_alive != thpool_p->total_num_of_threads) {}
+    while (thpool_p->num_threads_alive != thpool_p->total_num_of_threads) {
+        // avoid busy loop, wait for a very small amount of time.
+        usleep(1);
+    }
 
     thpool_p->is_threads_started = 1;
     pthread_mutex_unlock(&thpool_p->is_threads_started_lock);
