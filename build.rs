@@ -21,11 +21,14 @@ fn main() {
     println!("cargo:rerun-if-changed=src/utils/*.h");
     println!("cargo:rerun-if-changed=src/utils/*.c");
 
+    let for_profile = env::var("FOR_PROFILE").map_or(false, |v| v.as_str() == "1");
+
     if !Command::new("make")
         .env(
             "MODULE_NAME",
             std::env::var("MODULE_NAME").expect("module name was not given"),
         )
+        .env("FOR_PROFILE", if for_profile { "1" } else { "0" })
         .status()
         .expect("failed to compile libmr")
         .success()
@@ -74,4 +77,8 @@ fn main() {
         "cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto",
         output_dir, open_ssl_lib_path_link_argument
     );
+
+    if for_profile {
+        println!("cargo:rustc-force-frame-pointers=yes");
+    }
 }

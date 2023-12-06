@@ -19,6 +19,10 @@ ifeq ($(COVERAGE),1)
 	LD_FLAGS+=-fprofile-arcs -lgcov
 endif
 
+ifeq ($(FOR_PROFILE),1)
+	GCC_FLAGS+=-fno-omit-frame-pointer
+endif
+
 SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o utils/siphash.o
 
 HIREDIS=../deps/hiredis/libhiredis.a

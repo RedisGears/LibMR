@@ -327,6 +327,97 @@ fn lmr_dbsize(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::NoReply)
 }
 
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
+struct CommandRecord {
+    pub command: Vec<RedisString>,
+}
+
+impl Record for CommandRecord {
+    fn to_redis_value(&mut self) -> RedisValue {
+        RedisValue::Array(
+            self.command
+                .iter()
+                .map(|v| RedisValue::BulkRedisString(v.clone()))
+                .collect(),
+        )
+    }
+
+    fn hash_slot(&self) -> usize {
+        1
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
+struct ReplyRecord {
+    pub reply: RedisValue,
+}
+
+impl Record for ReplyRecord {
+    fn to_redis_value(&mut self) -> RedisValue {
+        self.reply.clone()
+    }
+
+    fn hash_slot(&self) -> usize {
+        1
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, BaseObject)]
+struct RemoteTaskRunOnShards;
+
+impl RemoteTask for RemoteTaskRunOnShards {
+    type InRecord = CommandRecord;
+    type OutRecord = ReplyRecord;
+
+    fn task(
+        self,
+        mut r: Self::InRecord,
+        on_done: Box<dyn FnOnce(Result<Self::OutRecord, RustMRError>) + Send>,
+    ) {
+        let command = r.command[0].try_as_str().unwrap();
+        let args: Vec<_> = r.command[1..]
+            .iter()
+            .map(|v| v.try_as_str().unwrap())
+            .collect();
+        let ctx = get_ctx();
+        ctx_lock();
+        let res = ctx.call(command, args.as_slice());
+        ctx_unlock();
+        if let Ok(res) = res {
+            on_done(Ok(ReplyRecord { reply: res }))
+        } else {
+            on_done(Err("error on command invocation".to_string()))
+        }
+    }
+}
+
+fn test_search(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    let blocked_client = ctx.block_client();
+    run_on_all_shards(
+        RemoteTaskRunOnShards,
+        CommandRecord {
+            command: args
+                .into_iter()
+                .skip(1)
+                .map(|v| v.safe_clone(ctx))
+                .collect(),
+        },
+        move |results: Vec<ReplyRecord>, mut errs: Vec<RustMRError>| {
+            let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
+            if errs.len() > 0 {
+                let err = errs.pop().unwrap();
+                thread_ctx.reply(Err(RedisError::String(err)));
+            } else {
+                thread_ctx.reply(Ok(RedisValue::Array(
+                    results.into_iter().map(|v| v.reply).collect(),
+                )));
+            }
+        },
+        usize::MAX,
+    );
+    Ok(RedisValue::NoReply)
+}
+
 fn lmr_get(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let mut args = args.into_iter().skip(1);
     let ke_redis_string = args.next().ok_or(RedisError::Str("not prefix was given"))?;
@@ -865,6 +956,7 @@ redis_module! {
     data_types: [],
     init: init_func,
     commands: [
+        ["lmrtest.runonallshards", test_search, "readonly", 0,0,0],
         ["lmrtest.dbsize", lmr_dbsize, "readonly", 0,0,0],
         ["lmrtest.get", lmr_get, "readonly", 0,0,0],
         ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0],

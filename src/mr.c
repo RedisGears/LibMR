@@ -1702,8 +1702,20 @@ static void MR_RemoteTaskDoneProcessesResult(const char *id, RemoteTaskResult re
     }
 }
 
-/* Run on the event loop */
-static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
+typedef struct RemoteTaskParsingResult {
+    RemoteTaskResult remoteTaskRes;
+    char *id;
+} RemoteTaskParsingResult;
+
+static void MR_RemoteTaskDoneParsing(void* pd) {
+    RemoteTaskParsingResult *res = pd;
+    MR_RemoteTaskDoneProcessesResult(res->id, res->remoteTaskRes);
+    MR_FREE(res->id);
+    MR_FREE(res);
+}
+
+static void MR_RemoteTaskDoneParseResult(void *pd) {
+    RedisModuleString* payload = pd;
     size_t dataSize;
     const char* data = RedisModule_StringPtrLen(payload, &dataSize);
     mr_Buffer buff = {
@@ -1729,7 +1741,17 @@ static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
         remoteTaskRes.replyType = ReplyType_ERROR;
     }
 
-    MR_RemoteTaskDoneProcessesResult(id, remoteTaskRes);
+    RemoteTaskParsingResult *res = MR_ALLOC(sizeof(*res));
+    res->remoteTaskRes = remoteTaskRes;
+    res->id = MR_ALLOC(idLen);
+    memcpy(res->id, id, ID_LEN);
+
+    MR_EventLoopAddTask(MR_RemoteTaskDoneParsing, res);
+}
+
+/* Run on the event loop */
+static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskDoneParseResult, payload);
 }
 
 static void MR_RemoteTaskErrorOnRemote(void *pd, MRError *error) {

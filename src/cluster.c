@@ -121,10 +121,11 @@ typedef enum MessageReply {
 }MessageReply;
 
 typedef struct MessageCtx {
-    RedisModuleBlockedClient* bc;
-    RedisModuleString **argv;
-    int argc;
-    MessageReply reply;
+    MR_ClusterMessageReceiver callback;
+    RedisModuleString* msg;
+    long long msgId;
+    RedisModuleString* senderId;
+    RedisModuleString* senderRunId;
 }MessageCtx;
 
 static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b);
@@ -1013,59 +1014,24 @@ int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
     return REDISMODULE_OK;
 }
 
+static void MR_MessageCtxFree(MessageCtx* msgCtx){
+    // todo: this actually need to run on the main thread because we free a RedisModuleString
+    if (msgCtx->msg) {
+        RedisModule_FreeString(NULL, msgCtx->msg);
+    }
+    RedisModule_FreeString(NULL, msgCtx->senderId);
+    RedisModule_FreeString(NULL, msgCtx->senderRunId);
+    MR_FREE(msgCtx);
+}
+
 /* run on the event loop */
 static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     MessageCtx* msgCtx = ctx;
-    if(!clusterCtx.CurrCluster){
-        RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
-        msgCtx->reply = MessageReply_ClusterNull;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
-
-    if(!MR_IsClusterInitialize()){
-        RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
-        msgCtx->reply = MessageReply_ClusterUninitialized;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
-
-    RedisModuleString** argv = msgCtx->argv;
-    size_t argc = msgCtx->argc;
-
-    RedisModuleString* senderId = argv[1];
-    RedisModuleString* senderRunId = argv[2];
-    RedisModuleString* functionToCall = argv[3];
-    RedisModuleString* msg = argv[4];
-    RedisModuleString* msgIdStr = argv[5];
-
-    long long msgId;
-    if(RedisModule_StringToLongLong(msgIdStr, &msgId) != REDISMODULE_OK){
-        RedisModule_Log(mr_staticCtx, "warning", "bad msg id given");
-        msgCtx->reply = MessageReply_BadMsgId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
-
-    long long functionId;
-    if(RedisModule_StringToLongLong(functionToCall, &functionId) != REDISMODULE_OK){
-        RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
-        msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
-
-    if (functionId < 0 || functionId >= array_len(clusterCtx.callbacks)) {
-        RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
-        msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
 
     size_t senderIdLen;
-    const char* senderIdStr = RedisModule_StringPtrLen(senderId, &senderIdLen);
+    const char* senderIdStr = RedisModule_StringPtrLen(msgCtx->senderId, &senderIdLen);
     size_t senderRunIdLen;
-    const char* senderRunIdStr = RedisModule_StringPtrLen(senderRunId, &senderRunIdLen);
+    const char* senderRunIdStr = RedisModule_StringPtrLen(msgCtx->senderRunId, &senderRunIdLen);
 
     char combinedId[senderIdLen + senderRunIdLen + 1]; // +1 is for '\0'
     memcpy(combinedId, senderIdStr, senderIdLen);
@@ -1079,55 +1045,17 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     }else{
         entity = mr_dictAddRaw(clusterCtx.nodesMsgIds, (char*)combinedId, NULL);
     }
-    if(msgId <= currId){
-        RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
-        msgCtx->reply = MessageReply_DuplicateMsg;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+    if(msgCtx->msgId <= currId){
+        RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgCtx->msgId, currId);
+        goto cleanup;
     }
-    mr_dictSetSignedIntegerVal(entity, msgId);
-    clusterCtx.callbacks[functionId](mr_staticCtx, senderIdStr, 0, msg);
+    mr_dictSetSignedIntegerVal(entity, msgCtx->msgId);
+    RedisModuleString *msg = msgCtx->msg;
+    msgCtx->msg = NULL;
+    msgCtx->callback(mr_staticCtx, senderIdStr, 0, msg);
 
-    msgCtx->reply = MessageReply_OK;
-    RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-    return;
-}
-
-static void MR_ClusterInnerCommunicationMsgFreePD(RedisModuleCtx* ctx, void* pd){
-    MessageCtx* msgCtx = pd;
-    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, msgCtx->argv[i]);
-    }
-    MR_FREE(msgCtx->argv);
-    MR_FREE(msgCtx);
-}
-
-static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    MessageCtx* msgCtx = RedisModule_GetBlockedClientPrivateData(ctx);
-    switch(msgCtx->reply) {
-    case MessageReply_OK:
-        RedisModule_ReplyWithSimpleString(ctx, "OK");
-        break;
-    case MessageReply_ClusterUninitialized:
-        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" Uninitialized cluster state");
-        break;
-    case MessageReply_ClusterNull:
-        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state");
-        break;
-    case MessageReply_BadMsgId:
-        RedisModule_ReplyWithError(ctx, "Err bad message id");
-        break;
-    case MessageReply_BadFunctionId:
-        RedisModule_ReplyWithError(ctx, "Err bad function id");
-        break;
-    case MessageReply_DuplicateMsg:
-        RedisModule_ReplyWithSimpleString(ctx, "duplicate message ignored");
-        break;
-    default:
-        RedisModule_Assert(0);
-    }
-
-    return REDISMODULE_OK;
+cleanup:
+    MR_MessageCtxFree(msgCtx);
 }
 
 int MR_NetworkTestCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -1235,17 +1163,50 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
         return RedisModule_WrongArity(ctx);
     }
 
-    // we must copy argv because if the client will disconnect the redis will free it
-    RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
-    for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+    if(!clusterCtx.CurrCluster){
+        RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
+        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state");
+        return REDISMODULE_OK;
     }
 
+    if(!MR_IsClusterInitialize()){
+        RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
+        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" Uninitialized cluster state");
+        return REDISMODULE_OK;
+    }
+
+    RedisModuleString* msgIdStr = argv[5];
+    long long msgId;
+    if(RedisModule_StringToLongLong(msgIdStr, &msgId) != REDISMODULE_OK){
+        RedisModule_Log(mr_staticCtx, "warning", "bad msg id given");
+        RedisModule_ReplyWithError(ctx, "Err bad message id");
+        return REDISMODULE_OK;
+    }
+
+    RedisModuleString* functionToCall = argv[3];
+    long long functionId;
+    if(RedisModule_StringToLongLong(functionToCall, &functionId) != REDISMODULE_OK){
+        RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
+        RedisModule_ReplyWithError(ctx, "Err bad function id");
+        return REDISMODULE_OK;
+    }
+
+    if (functionId < 0 || functionId >= array_len(clusterCtx.callbacks)) {
+        RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
+        RedisModule_ReplyWithError(ctx, "Err bad function id");
+        return REDISMODULE_OK;
+    }
+
+    RedisModuleString* senderId = RedisModule_HoldString(NULL, argv[1]);
+    RedisModuleString* senderRunId = RedisModule_HoldString(NULL, argv[2]);
+    RedisModuleString* msg = RedisModule_HoldString(NULL, argv[4]);
+
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
-    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, MR_ClusterInnerCommunicationMsgFreePD, 0);
-    msgCtx->argv = argvNew;
-    msgCtx->argc = argc;
-    msgCtx->reply = MessageReply_Undefined;
+    msgCtx->msgId = msgId;
+    msgCtx->msg = msg;
+    msgCtx->senderId = senderId;
+    msgCtx->senderRunId = senderRunId;
+    msgCtx->callback = clusterCtx.callbacks[functionId];
     MR_EventLoopAddTask(MR_ClusterInnerCommunicationMsgRun, msgCtx);
     return REDISMODULE_OK;
 }
