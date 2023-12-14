@@ -513,7 +513,7 @@ error:
     return NULL;
 }
 
-static void MR_OnConnectCallback(struct redisAsyncContext* c, int status){
+static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
     if(!c->data){
         return;
     }
@@ -553,7 +553,7 @@ static void MR_OnConnectCallback(struct redisAsyncContext* c, int status){
                 // This is a temporary fix to the bug describe on https://github.com/redis/hiredis/issues/1233.
                 // In case of SSL initialization failure. We need to reset the callbacks value, as the `redisInitiateSSL`
                 // function will not do it for us.
-                c->c.funcs = old_callbacks;
+                ((struct redisAsyncContext*)c)->c.funcs = old_callbacks;
                 RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry. %s.", c->c.tcp.host, c->c.tcp.port, err);
                 // disconnect async, its not possible to free redisAsyncContext here
                 MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
