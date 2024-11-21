@@ -24,6 +24,7 @@ name = "mr"
 path = "rust_api/lib.rs"
 
 [features]
+#default = ["min-redis-compatibility-version-6-0"]
 default = ["min-redis-compatibility-version-7-4"]
 min-redis-compatibility-version-7-4 = ["redis-module/min-redis-compatibility-version-7-4"]
 min-redis-compatibility-version-7-2 = ["redis-module/min-redis-compatibility-version-7-2"]

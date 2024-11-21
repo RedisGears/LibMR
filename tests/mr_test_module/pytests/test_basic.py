@@ -78,3 +78,9 @@ def testRemoteTaskOnAllShards(env, conn):
     for i in range(100):
         conn.execute_command('del', 'doc%d' % i)
     env.expect('lmrtest.dbsize').equal(0)
+
+@MRTestDecorator()
+def testAclSetting(env, conn):
+    result = conn.execute_command('acl', 'cat')
+    env.expect(result).contains('lmrtest.get')
+

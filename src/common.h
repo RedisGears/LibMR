@@ -11,13 +11,13 @@
 #define str(s) #s
 
 #ifndef MODULE_NAME
-#ifndef LIBMR_USER_MODULE_NAME
-#error "LIBMR_USER_MODULE_NAME is not defined"
+    #ifndef LIBMR_USER_MODULE_NAME
+    #error "LIBMR_USER_MODULE_NAME is not defined"
+    #else
+    #warning "MODULE_NAME is deprecated, please use LIBMR_USER_MODULE_NAME instead"
+    #endif
 #else
-#warning "MODULE_NAME is deprecated, please use LIBMR_USER_MODULE_NAME instead"
-#endif
-#else
-#define LIBMR_USER_MODULE_NAME str(MODULE_NAME)
+#define LIBMR_USER_MODULE_NAME xstr(MODULE_NAME)
 #endif
 
 #ifndef LIBMR_USER_MODULE_NAME
@@ -32,7 +32,7 @@
  */
 #ifndef LIBMR_ACL_COMMAND_CATEGORY_NAME
 #define LIBMR_ACL_COMMAND_CATEGORY_NAME                                        \
-  "_" str(LIBMR_USER_MODULE_NAME) "_libmr_internal"
+  "_" LIBMR_USER_MODULE_NAME "_libmr_internal"
 #endif
 
 typedef struct MR_RedisVersion

@@ -44,7 +44,7 @@
 #define SetCommandAcls(ctx, cmd, acls)                                         \
   ({                                                                           \
     if (!RedisModule_GetCommand || !RedisModule_SetCommandACLCategories) {     \
-      false;                                                                   \
+      true;                                                                    \
     }                                                                          \
     bool result = false;                                                       \
     struct RedisModuleCommand *command = RedisModule_GetCommand(ctx, cmd);     \
@@ -1360,6 +1360,13 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *username, char *password) {
     const char *command_flags = "readonly deny-script";
     if (MR_IsEnterpriseBuild()) {
         command_flags = "readonly deny-script _proxy-filtered";
+    }
+
+    if (RedisModule_AddACLCategory &&
+        RedisModule_AddACLCategory(rctx, LIBMR_ACL_COMMAND_CATEGORY_NAME) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "error", "Failed to add ACL category");
+
+        return REDISMODULE_ERR;
     }
 
     if (RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
