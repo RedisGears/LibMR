@@ -4,6 +4,8 @@
  * the Server Side Public License v1 (SSPLv1).
  */
 
+use mr::redis_module;
+
 use redis_module::redisraw::bindings::{
     RedisModuleCtx, RedisModuleKey, RedisModuleScanCursor, RedisModuleString,
     RedisModule_GetDetachedThreadSafeContext, RedisModule_Scan, RedisModule_ScanCursorCreate,
@@ -12,8 +14,8 @@ use redis_module::redisraw::bindings::{
 };
 
 use redis_module::{
-    alloc::RedisAlloc, redis_command, redis_module, Context, RedisError, RedisResult, RedisString,
-    RedisValue, Status, ThreadSafeContext,
+    alloc::RedisAlloc, redis_command, redis_module, AclCategory, Context, RedisError, RedisResult,
+    RedisString, RedisValue, Status, ThreadSafeContext,
 };
 
 use mr::libmr::{
@@ -851,7 +853,7 @@ fn init_func(ctx: &Context, _args: &[RedisString]) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
-    mr_init(ctx, 5, Some("password"));
+    mr_init(ctx, 5, None, Some("password"));
 
     KeysReader::register();
     Status::Ok
@@ -865,18 +867,18 @@ redis_module! {
     data_types: [],
     init: init_func,
     commands: [
-        ["lmrtest.dbsize", lmr_dbsize, "readonly", 0,0,0],
-        ["lmrtest.get", lmr_get, "readonly", 0,0,0],
-        ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0],
-        ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0],
-        ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0],
-        ["lmrtest.replacekeysvalues", replace_keys_values, "readonly", 0,0,0],
-        ["lmrtest.reachmaxidle", lmr_reach_max_idle, "readonly", 0,0,0],
-        ["lmrtest.countkeys", lmr_count_key, "readonly", 0,0,0],
-        ["lmrtest.maperror", lmr_map_error, "readonly", 0,0,0],
-        ["lmrtest.filtererror", lmr_filter_error, "readonly", 0,0,0],
-        ["lmrtest.accumulatererror", lmr_accumulate_error, "readonly", 0,0,0],
-        ["lmrtest.readerror", lmr_read_error, "readonly", 0,0,0],
-        ["lmrtest.unevenwork", lmr_uneven_work, "readonly", 0,0,0],
+        ["lmrtest.dbsize", lmr_dbsize, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.get", lmr_get, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.readallkeys", lmr_read_all_keys, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.readallkeystype", lmr_read_keys_type, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.readallstringkeys", lmr_read_string_keys, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.replacekeysvalues", replace_keys_values, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.reachmaxidle", lmr_reach_max_idle, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.countkeys", lmr_count_key, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.maperror", lmr_map_error, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.filtererror", lmr_filter_error, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.accumulatererror", lmr_accumulate_error, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.readerror", lmr_read_error, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.unevenwork", lmr_uneven_work, "readonly", 0,0,0, AclCategory::None],
     ],
 }

@@ -36,6 +36,49 @@
 #define NETWORK_TEST_COMMAND                xstr(MODULE_NAME)".NETWORKTEST"
 #define FORCE_SHARDS_CONNECTION             xstr(MODULE_NAME)".FORCESHARDSCONNECTION"
 
+/**
+ * @brief Sets the ACL categories for the given command.
+ * @return true if the ACL categories were set successfully for the
+ * command was registered successfully, false otherwise.
+ */
+#define SetCommandAcls(ctx, cmd, acls)                                         \
+  ({                                                                           \
+    if (!RedisModule_GetCommand || !RedisModule_SetCommandACLCategories) {     \
+      false;                                                                   \
+    }                                                                          \
+    bool result = false;                                                       \
+    struct RedisModuleCommand *command = RedisModule_GetCommand(ctx, cmd);     \
+    if (command != NULL) {                                                     \
+      const char *categories = ((acls) == NULL || !strcmp(acls, ""))           \
+                                   ? LIBMR_ACL_COMMAND_CATEGORY_NAME           \
+                                   : acls " " LIBMR_ACL_COMMAND_CATEGORY_NAME; \
+      if (RedisModule_SetCommandACLCategories(command, categories) ==          \
+          REDISMODULE_OK) {                                                    \
+        result = true;                                                         \
+      }                                                                        \
+    }                                                                          \
+    result;                                                                    \
+  })
+
+/** @brief  Register a new Redis command with the required ACLs.
+ *  @see    RedisModule_CreateCommand
+ *  @return true if the command was registered successfully, false
+ * otherwise.
+ */
+static inline __attribute__((always_inline)) bool
+RegisterRedisCommand(RedisModuleCtx *ctx, const char *name,
+                     RedisModuleCmdFunc cmdfunc, const char *strflags,
+                     int firstkey, int lastkey, int keystep) {
+  const int ret = RedisModule_CreateCommand(ctx, name, cmdfunc, strflags,
+                                            firstkey, lastkey, keystep);
+
+  if (ret != REDISMODULE_OK) {
+    return false;
+  }
+
+  return SetCommandAcls(ctx, name, "");
+}
+
 typedef enum NodeStatus{
     NodeStatus_Connected, NodeStatus_Disconnected, NodeStatus_HelloSent, NodeStatus_Free, NodeStatus_Uninitialized
 }NodeStatus;
@@ -66,6 +109,7 @@ typedef struct Node{
     char* id;
     char* ip;
     unsigned short port;
+    char* username;
     char* password;
     char* unixSocket;
     redisAsyncContext *c;
@@ -100,6 +144,7 @@ struct ClusterCtx {
     char myId[REDISMODULE_NODE_ID_LEN + 1];
     int isOss;
     functionId networkTestMsgReciever;
+    char *username;
     char *password;
 }clusterCtx;
 
@@ -688,13 +733,14 @@ static Node* MR_GetNode(const char* id){
     return n;
 }
 
-static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, const char* password, const char* unixSocket, size_t minSlot, size_t maxSlot){
+static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, const char* username, const char* password, const char* unixSocket, size_t minSlot, size_t maxSlot){
     RedisModule_Assert(!MR_GetNode(id));
     Node* n = MR_ALLOC(sizeof(*n));
     *n = (Node){
             .id = MR_STRDUP(id),
             .ip = MR_STRDUP(ip),
             .port = port,
+            .username = username ? MR_STRDUP(username) : NULL,
             .password = password ? MR_STRDUP(password) : NULL,
             .unixSocket = unixSocket ? MR_STRDUP(unixSocket) : NULL,
             .c = NULL,
@@ -788,7 +834,7 @@ static void MR_RefreshClusterData(){
 
         Node* n = MR_GetNode(nodeId);
         if(!n){
-            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, clusterCtx.password, NULL, minslot, maxslot);
+            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, clusterCtx.username, clusterCtx.password, NULL, minslot, maxslot);
         }
 
         if (n->isMe) {
@@ -905,7 +951,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
 
         Node* n = MR_GetNode(realId);
         if(!n){
-            n = MR_CreateNode(realId, ip, port, password, NULL, minslot, maxslot);
+            n = MR_CreateNode(realId, ip, port, NULL, password, NULL, minslot, maxslot);
         }
         for(int i = minslot ; i <= maxslot ; ++i){
             clusterCtx.CurrCluster->slots[i] = n;
@@ -1290,7 +1336,7 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
     RedisModule_Log(ctx, "notice", "got a nextwork test msg");
 }
 
-int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
+int MR_ClusterInit(RedisModuleCtx* rctx, char *username, char *password) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
@@ -1298,6 +1344,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
     clusterCtx.isOss = true;
+    clusterCtx.username = username ? MR_STRDUP(username) : NULL;
     clusterCtx.password = password ? MR_STRDUP(password) : NULL;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
@@ -1315,43 +1362,71 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
         command_flags = "readonly deny-script _proxy-filtered";
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh, command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command " CLUSTER_REFRESH_COMMAND);
+    if (RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
+                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " CLUSTER_REFRESH_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet, command_flags, 0, 0, -1) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command " CLUSTER_SET_COMMAND);
+    if (RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
+                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " CLUSTER_REFRESH_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND, MR_ClusterSetFromShard, command_flags, 0, 0, -1) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_SET_FROM_SHARD_COMMAND);
+    if (RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
+                            command_flags, 0, 0, -1) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " CLUSTER_SET_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello, command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_HELLO_COMMAND);
+    if (RegisterRedisCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND,
+                            MR_ClusterSetFromShard, command_flags, 0, 0,
+                            -1) != REDISMODULE_OK) {
+        RedisModule_Log(
+            rctx, "warning",
+            "could not register command " CLUSTER_SET_FROM_SHARD_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND, MR_ClusterInnerCommunicationMsg, command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_INNER_COMMUNICATION_COMMAND);
+    if (RegisterRedisCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello,
+                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " CLUSTER_HELLO_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand, command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command "NETWORK_TEST_COMMAND);
+    if (RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND,
+                            MR_ClusterInnerCommunicationMsg, command_flags, 0, 0,
+                            0) != REDISMODULE_OK) {
+        RedisModule_Log(
+            rctx, "warning",
+            "could not register command " CLUSTER_INNER_COMMUNICATION_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand, command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command "CLUSTER_INFO_COMMAND);
+    if (RegisterRedisCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand,
+                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " NETWORK_TEST_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (RedisModule_CreateCommand(rctx, FORCE_SHARDS_CONNECTION, MR_ForceShardsConnectionCommand, command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning", "could not register command "FORCE_SHARDS_CONNECTION);
+    if (RegisterRedisCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand,
+                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " CLUSTER_INFO_COMMAND);
+        return REDISMODULE_ERR;
+    }
+
+    if (RegisterRedisCommand(rctx, FORCE_SHARDS_CONNECTION,
+                            MR_ForceShardsConnectionCommand, command_flags, 0, 0,
+                            0) != REDISMODULE_OK) {
+        RedisModule_Log(rctx, "warning",
+                        "could not register command " FORCE_SHARDS_CONNECTION);
         return REDISMODULE_ERR;
     }
 

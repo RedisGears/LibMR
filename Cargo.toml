@@ -1,6 +1,6 @@
 [package]
 name = "lib_mr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "LicenseRef-RSALv2 OR SSPL-1.0"
 
@@ -16,7 +16,7 @@ libc = "0.2"
 linkme = "0.3"
 
 [build-dependencies]
-bindgen = "0.59"
+bindgen = "0.70"
 
 [lib]
 crate-type = ["rlib"]
@@ -24,7 +24,8 @@ name = "mr"
 path = "rust_api/lib.rs"
 
 [features]
-default = ["min-redis-compatibility-version-6-0"]
+default = ["min-redis-compatibility-version-7-4"]
+min-redis-compatibility-version-7-4 = ["redis-module/min-redis-compatibility-version-7-4"]
 min-redis-compatibility-version-7-2 = ["redis-module/min-redis-compatibility-version-7-2"]
 min-redis-compatibility-version-7-0 = ["redis-module/min-redis-compatibility-version-7-0"]
 min-redis-compatibility-version-6-2 = ["redis-module/min-redis-compatibility-version-6-2"]

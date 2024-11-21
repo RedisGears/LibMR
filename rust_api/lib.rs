@@ -7,5 +7,6 @@
 // For now warn, but should be #![deny(missing_docs)].
 #![warn(missing_docs)]
 
+pub use redis_module;
 pub mod libmr;
 pub mod libmr_c_raw;
