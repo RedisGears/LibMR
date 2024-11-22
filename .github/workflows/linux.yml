@@ -20,24 +20,26 @@ jobs:
         redis_version: ["7.0.10", "7.2.1"]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Checkout submodules
       run: git submodule update --init --recursive
     - name: format
       run: cargo fmt -- --check
+    - name: clippy
+      run: cargo clippy --all-targets --all-features
     - name: install rltest
       run: python3 -m pip install RLTest gevent
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make valgrind install
-    - name: install valgrind
       run: |
-        sudo apt-get update --fix-missing
-        sudo apt-get install valgrind
+        git clone https://github.com/redis/redis
+        cd redis
+        git checkout ${{ matrix.redis_version }}
+        BUILD_TLS=yes make valgrind install
     - name: Build
       run: |
-        cd tests/mr_test_module/
-        cargo build --verbose
+        make
     - name: Run tests
       run: |
+        make run_tests
         cd tests/mr_test_module/pytests/
         DEBUG=1 ./run_full_tests.sh ${{ matrix.test_args }}
