@@ -6,6 +6,8 @@
 
 // For now warn, but should be #![deny(missing_docs)].
 #![warn(missing_docs)]
+// TODO: disable this when refactoring
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 pub use redis_module;
 pub mod libmr;
