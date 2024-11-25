@@ -14,29 +14,28 @@ jobs:
 
     runs-on: macos-latest
 
+    strategy:
+      matrix:
+        redis_version: ["7.2", "7.4"]
+
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v4
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.12'
     - name: Checkout submodules
       run: git submodule update --init --recursive
-    - name: format
-      run: cargo fmt -- --check
     - name: install rltest
       run: python3 -m pip install RLTest gevent
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout 7.0.5; BUILD_TLS=yes make install
+      run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
     - name: install automake
       run: brew install automake
-    - name: install openssl
-      run: brew install openssl@1.1
-    - name: Build
-      run: |
-        cd tests/mr_test_module/
-        export PKG_CONFIG_PATH=/usr/local/opt/openssl@1.1/lib/pkgconfig/
-        cargo build --verbose
-    - name: Run tests
-      run: |
-        cd tests/mr_test_module/pytests/
-        DEBUG=1 ./run_full_tests.sh
+    - name: Build the dependencies
+      run: make build_deps
+    - name: Default tests
+      run: make run_tests
+    - name: SSL tests
+      run: make run_tests_ssl
+    - name: Valgrind tests
+      run: make run_tests_valgrind

@@ -41,23 +41,26 @@
  * @return true if the ACL categories were set successfully for the
  * command was registered successfully, false otherwise.
  */
-#define SetCommandAcls(ctx, cmd, acls)                                         \
-  ({                                                                           \
-    if (!RedisModule_GetCommand || !RedisModule_SetCommandACLCategories) {     \
-      true;                                                                    \
-    }                                                                          \
-    bool result = false;                                                       \
-    struct RedisModuleCommand *command = RedisModule_GetCommand(ctx, cmd);     \
-    if (command != NULL) {                                                     \
-      const char *categories = ((acls) == NULL || !strcmp(acls, ""))           \
-                                   ? LIBMR_ACL_COMMAND_CATEGORY_NAME           \
-                                   : acls " " LIBMR_ACL_COMMAND_CATEGORY_NAME; \
-      if (RedisModule_SetCommandACLCategories(command, categories) ==          \
-          REDISMODULE_OK) {                                                    \
-        result = true;                                                         \
-      }                                                                        \
-    }                                                                          \
-    result;                                                                    \
+#define SetCommandAcls(ctx, cmd, acls)                                              \
+  ({                                                                                \
+    bool result = false;                                                            \
+    if (!RedisModule_GetCommand || !RedisModule_SetCommandACLCategories             \
+      || !RedisModule_AddACLCategory) {                                             \
+      result = true;                                                                \
+    }                                                                               \
+    if (!result) {                                                                  \
+        struct RedisModuleCommand *command = RedisModule_GetCommand(ctx, cmd);      \
+        if (command != NULL) {                                                      \
+            const char *categories = ((acls) == NULL || !strcmp(acls, ""))          \
+                                        ? LIBMR_ACL_COMMAND_CATEGORY_NAME           \
+                                        : acls " " LIBMR_ACL_COMMAND_CATEGORY_NAME; \
+            if (RedisModule_SetCommandACLCategories(command, categories) ==         \
+                REDISMODULE_OK) {                                                   \
+                result = true;                                                      \
+            }                                                                       \
+        }                                                                           \
+    }                                                                               \
+    result;                                                                         \
   })
 
 /** @brief  Register a new Redis command with the required ACLs.
@@ -73,7 +76,11 @@ RegisterRedisCommand(RedisModuleCtx *ctx, const char *name,
                                             firstkey, lastkey, keystep);
 
   if (ret != REDISMODULE_OK) {
+    RedisModule_Log(ctx, "warning", "Couldn't register the command %s", name);
+
     return false;
+  } else {
+    RedisModule_Log(ctx, "warning", "Registered command %s", name);
   }
 
   return SetCommandAcls(ctx, name, "");
@@ -1362,78 +1369,54 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *username, char *password) {
         command_flags = "readonly deny-script _proxy-filtered";
     }
 
-    if (RedisModule_AddACLCategory &&
-        RedisModule_AddACLCategory(rctx, LIBMR_ACL_COMMAND_CATEGORY_NAME) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "error", "Failed to add ACL category");
+    if (RedisModule_AddACLCategory) {
+        if (RedisModule_AddACLCategory(rctx, LIBMR_ACL_COMMAND_CATEGORY_NAME) != REDISMODULE_OK) {
+            RedisModule_Log(rctx, "error", "Failed to add ACL category");
 
+            return REDISMODULE_ERR;
+        }
+    }
+
+    if (!RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
+                            command_flags, 0, 0, 0)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
-                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " CLUSTER_REFRESH_COMMAND);
+    if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
+                            command_flags, 0, 0, -1)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
-                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " CLUSTER_REFRESH_COMMAND);
-        return REDISMODULE_ERR;
-    }
-
-    if (RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
-                            command_flags, 0, 0, -1) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " CLUSTER_SET_COMMAND);
-        return REDISMODULE_ERR;
-    }
-
-    if (RegisterRedisCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND,
+    if (!RegisterRedisCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND,
                             MR_ClusterSetFromShard, command_flags, 0, 0,
-                            -1) != REDISMODULE_OK) {
-        RedisModule_Log(
-            rctx, "warning",
-            "could not register command " CLUSTER_SET_FROM_SHARD_COMMAND);
+                            -1)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello,
-                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " CLUSTER_HELLO_COMMAND);
+    if (!RegisterRedisCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello,
+                            command_flags, 0, 0, 0)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND,
+    if (!RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND,
                             MR_ClusterInnerCommunicationMsg, command_flags, 0, 0,
-                            0) != REDISMODULE_OK) {
-        RedisModule_Log(
-            rctx, "warning",
-            "could not register command " CLUSTER_INNER_COMMUNICATION_COMMAND);
+                            0)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand,
-                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " NETWORK_TEST_COMMAND);
+    if (!RegisterRedisCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand,
+                            command_flags, 0, 0, 0)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand,
-                            command_flags, 0, 0, 0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " CLUSTER_INFO_COMMAND);
+    if (!RegisterRedisCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand,
+                            command_flags, 0, 0, 0)) {
         return REDISMODULE_ERR;
     }
 
-    if (RegisterRedisCommand(rctx, FORCE_SHARDS_CONNECTION,
+    if (!RegisterRedisCommand(rctx, FORCE_SHARDS_CONNECTION,
                             MR_ForceShardsConnectionCommand, command_flags, 0, 0,
-                            0) != REDISMODULE_OK) {
-        RedisModule_Log(rctx, "warning",
-                        "could not register command " FORCE_SHARDS_CONNECTION);
+                            0)) {
         return REDISMODULE_ERR;
     }
 

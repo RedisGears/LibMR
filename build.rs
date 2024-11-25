@@ -24,11 +24,8 @@ fn main() {
     let mut command = Command::new("make");
 
     command.env(
-        "LIBMR_USER_MODULE_NAME",
-        std::env::var("LIBMR_USER_MODULE_NAME")
-            .or(std::env::var("MODULE_NAME"))
-            // .expect("module name was not given"),
-            .unwrap_or_else(|_| "testmodule".to_string()),
+        "MODULE_NAME",
+        std::env::var("MODULE_NAME").expect("module name was not given"),
     );
 
     if let Ok(acl_category_name) = std::env::var("LIBMR_ACL_COMMAND_CATEGORY_NAME") {

@@ -16,11 +16,13 @@ jobs:
 
     strategy:
       matrix:
-        test_args: ["", "-V --vg-suppressions ../leakcheck.supp"]
-        redis_version: ["7.0.10", "7.2.1"]
+        redis_version: ["7.2", "7.4"]
 
     steps:
     - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
     - name: Checkout submodules
       run: git submodule update --init --recursive
     - name: format
@@ -35,11 +37,15 @@ jobs:
         cd redis
         git checkout ${{ matrix.redis_version }}
         BUILD_TLS=yes make valgrind install
-    - name: Build
+    - name: install valgrind
       run: |
-        make
-    - name: Run tests
-      run: |
-        make run_tests
-        cd tests/mr_test_module/pytests/
-        DEBUG=1 ./run_full_tests.sh ${{ matrix.test_args }}
+        sudo apt-get update --fix-missing
+        sudo apt-get install valgrind
+    - name: Build the dependencies
+      run: make build_deps
+    - name: Default tests
+      run: make run_tests
+    - name: SSL tests
+      run: make run_tests_ssl
+    - name: Valgrind tests
+      run: make run_tests_valgrind

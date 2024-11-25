@@ -11,17 +11,7 @@
 #define str(s) #s
 
 #ifndef MODULE_NAME
-    #ifndef LIBMR_USER_MODULE_NAME
-    #error "LIBMR_USER_MODULE_NAME is not defined"
-    #else
-    #warning "MODULE_NAME is deprecated, please use LIBMR_USER_MODULE_NAME instead"
-    #endif
-#else
-#define LIBMR_USER_MODULE_NAME xstr(MODULE_NAME)
-#endif
-
-#ifndef LIBMR_USER_MODULE_NAME
-#error "LIBMR_USER_MODULE_NAME is not defined"
+#error "MODULE_NAME is not defined"
 #endif
 
 /** The name of the ACL category for the commands created by LibMR for
@@ -32,7 +22,7 @@
  */
 #ifndef LIBMR_ACL_COMMAND_CATEGORY_NAME
 #define LIBMR_ACL_COMMAND_CATEGORY_NAME                                        \
-  "_" LIBMR_USER_MODULE_NAME "_libmr_internal"
+  "_" xstr(MODULE_NAME) "_libmr_internal"
 #endif
 
 typedef struct MR_RedisVersion
