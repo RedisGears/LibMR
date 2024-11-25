@@ -81,6 +81,7 @@ def testRemoteTaskOnAllShards(env, conn):
 
 @MRTestDecorator()
 def testAclSetting(env, conn):
+    env.skipOnVersionSmaller('7.4.0')
     result = conn.execute_command('acl', 'cat')
     env.expect(result).contains('lmrtest.get')
 

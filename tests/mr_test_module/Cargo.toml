@@ -16,10 +16,6 @@ lib_mr = { path = "../../" }
 lib_mr_derive = { path = "../../LibMRDerive/" }
 linkme = "0.3"
 
-[build-dependencies]
-bindgen = "0.70"
-cc = "1"
-
 [lib]
 name = "mr_test"
 crate_type = ["cdylib"]
