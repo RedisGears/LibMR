@@ -614,9 +614,13 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         }
 
         RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d\r\n", c->c.tcp.host, c->c.tcp.port, status);
-        if(n->password){
+
+        if (n->username && n->password) {
+            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %s", n->username, n->password);
+        } else if (n->password){
             redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
         }
+
         if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
             RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
             clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
