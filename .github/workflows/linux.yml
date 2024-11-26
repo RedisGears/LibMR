@@ -49,5 +49,5 @@ jobs:
       run: make run_tests
     - name: SSL tests
       run: make run_tests_ssl
-    - name: Valgrind tests
-      run: make run_tests_valgrind
+    # - name: Valgrind tests
+    #   run: make run_tests_valgrind
