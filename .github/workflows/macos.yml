@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  PKG_CONFIG_PATH: /opt/homebrew/opt/openssl/lib/pkgconfig/
+  OPENSSL_PREFIX: /opt/homebrew/opt/openssl
 
 jobs:
   build:
@@ -30,7 +32,7 @@ jobs:
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
     - name: install automake
-      run: brew install automake
+      run: brew install automake libtool
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests

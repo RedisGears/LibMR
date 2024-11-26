@@ -81,7 +81,10 @@ def testRemoteTaskOnAllShards(env, conn):
 
 @MRTestDecorator()
 def testAclSetting(env, conn):
+    '''
+    Tests that LibMR sets the ACLs for its commands.
+    '''
     env.skipOnVersionSmaller('7.4.0')
     result = conn.execute_command('acl', 'cat')
-    env.expect(result).contains('lmrtest.get')
+    env.assertContains('_MRTESTS_libmr_internal', result)
 
