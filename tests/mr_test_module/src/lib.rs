@@ -849,11 +849,14 @@ impl Drop for KeysReader {
     }
 }
 
-fn init_func(ctx: &Context, _args: &[RedisString]) -> Status {
+fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
-    mr_init(ctx, 5, None, Some("password"));
+
+    let username = args.first().map(|s| s.to_string());
+
+    mr_init(ctx, 5, username.as_deref(), Some("password"));
 
     KeysReader::register();
     Status::Ok

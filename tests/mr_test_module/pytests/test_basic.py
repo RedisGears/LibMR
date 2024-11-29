@@ -85,6 +85,21 @@ def testAclSetting(env, conn):
     Tests that LibMR sets the ACLs for its commands.
     '''
     env.skipOnVersionSmaller('7.4.0')
-    result = conn.execute_command('acl', 'cat')
-    env.assertContains('_MRTESTS_libmr_internal', result)
+    acl_category = '_MRTESTS_libmr_internal'
+    env.expect('acl', 'cat').contains(acl_category)
 
+    # Test that the user not allowed to run the commands, as this
+    # module uses the "default" user to run the commands instead.
+    command = 'lmrtest.dbsize'
+    env.expect('ACL', 'SETUSER', 'user1', 'on', '>user1p', '-@all', '+%s' % command).contains('OK')
+    env.expect('ACL', 'SETUSER', 'user2', 'on', '>user2p', '+@all', '-@%s' % acl_category).contains('OK')
+    env.expect('AUTH', 'user1', 'user1p').equal(True)
+
+    env.expect('lmrtest.dbsize').equal(0)
+
+    # This should succeed even though the user is not allowed to run
+    # the commands of libmr. This is so, because the module itself runs
+    # the LibMR commands as the other user specified during the load,
+    # which has the necessary permissions.
+    env.expect('AUTH', 'user2', 'user2p').equal(True)
+    env.expect('lmrtest.dbsize').equal(0)
