@@ -1,5 +1,5 @@
-from common import MRTestDecorator
-from common import TimeLimit
+import pytest
+from common import MRTestDecorator, initialiseCluster, TimeLimit
 import time
 
 @MRTestDecorator()
@@ -79,7 +79,7 @@ def testRemoteTaskOnAllShards(env, conn):
         conn.execute_command('del', 'doc%d' % i)
     env.expect('lmrtest.dbsize').equal(0)
 
-@MRTestDecorator()
+@MRTestDecorator(moduleArgs='default')
 def testAclSetting(env, conn):
     '''
     Tests that LibMR sets the ACLs for its commands.
@@ -103,3 +103,40 @@ def testAclSetting(env, conn):
     # which has the necessary permissions.
     env.expect('AUTH', 'user2', 'user2p').equal(True)
     env.expect('lmrtest.dbsize').equal(0)
+
+# @MRTestDecorator(moduleArgs='default password')
+# def testAclSettingNotWorksWhenItShouldnt(env, conn):
+#     env.skipOnVersionSmaller('7.4.0')
+
+#     command = 'lmrtest.dbsize'
+#     acl_category = '_MRTESTS_libmr_internal'
+
+#     env.expect('ACL', 'SETUSER', 'user1', 'on', '>user2p', '+@all').contains('OK')
+#     env.expect('ACL', 'SETUSER', 'default', 'on', '>password', '-@%s' % acl_category, '+%s' % command).contains('OK')
+
+#     # env.broadcast('MRTESTS.REFRESHCLUSTER')
+#     env.broadcast('MRTESTS.HELLO')
+#     # Raises the timeout exception as the shards can't be connected to
+#     # due to the ACL restrictions on the "default", which disallow the
+#     # user to run the LibMR commands.
+#     with pytest.raises(Exception):
+#         env.expect('AUTH', 'user2', 'user2p').equal(True)
+#         env.expect('lmrtest.dbsize').equal(0)
+
+@MRTestDecorator(
+    commandsBeforeClusterStart=['ACL SETUSER baduser on >password -@_MRTESTS_libmr_internal'],
+    moduleArgs='baduser',
+    skipShardInitialisation=True,
+)
+def testAclSettingNotWorksWhenItShouldnt(env, conn):
+    '''
+    Tests that LibMR doesn't work when the user provided for it doesn't
+    have the necessary permissions to run the LibMR commands.
+    '''
+    env.skipOnVersionSmaller('7.4.0')
+
+    # This should fail as the LibMR will attempt to connect to the
+    # shards using the "baduser" user, which doesn't have the necessary
+    # permissions to run the LibMR commands.
+    with pytest.raises(Exception):
+        initialiseCluster(env)

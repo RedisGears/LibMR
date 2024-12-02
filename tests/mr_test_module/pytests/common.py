@@ -95,18 +95,30 @@ def verifyClusterInitialized(env):
             if not allConnected:
                 time.sleep(0.1)
 
-def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
+def initialiseCluster(env):
+    env.broadcast('MRTESTS.REFRESHCLUSTER')
+    if env.isCluster():
+        # make sure cluster will not turn to failed state and we will not be
+        # able to execute commands on shards, on slow envs, run with valgrind,
+        # or mac, it is needed.
+        env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
+        env.broadcast('MRTESTS.FORCESHARDSCONNECTION')
+        with TimeLimit(2):
+            verifyClusterInitialized(env)
+
+def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=False, skipShardInitialisation=False, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
             if skipTest and not runSkipTests():
                 raise unittest.SkipTest()
+            envArgs['moduleArgs'] = moduleArgs or None
             env = Env(**envArgs)
             conn = getConnectionByEnv(env)
             if skipOnSingleShard:
                 if env.shardsCount == 1:
                     raise unittest.SkipTest()
-                
+
             if skipOnCluster:
                 if 'cluster' in env.env:
                     raise unittest.SkipTest()
@@ -117,15 +129,11 @@ def MRTestDecorator(skipTest=False, skipOnSingleShard=False, skipOnCluster=False
                 'env': env,
                 'conn': conn
             }
-            env.broadcast('MRTESTS.REFRESHCLUSTER')
-            if env.isCluster():
-                # make sure cluster will not turn to failed state and we will not be
-                # able to execute commands on shards, on slow envs, run with valgrind,
-                # or mac, it is needed.
-                env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
-                env.broadcast('MRTESTS.FORCESHARDSCONNECTION')
-                with TimeLimit(2):
-                    verifyClusterInitialized(env)
+            if commandsBeforeClusterStart:
+                for command in commandsBeforeClusterStart:
+                    env.cmd(command)
+            if not skipShardInitialisation:
+                initialiseCluster(env)
             if waitBeforeTestStart():
                 input('\tpress any button to continue test %s' % test_name)
             test_function(**args)

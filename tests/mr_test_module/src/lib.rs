@@ -854,9 +854,24 @@ fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
 
-    let username = args.first().map(|s| s.to_string());
-
-    mr_init(ctx, 5, username.as_deref(), Some("password"));
+    match args.len() {
+        0 => {
+            mr_init(ctx, 5, None, Some("password"));
+        }
+        1 => {
+            let username = args[0].to_string();
+            mr_init(ctx, 5, Some(username.as_str()), Some("password"));
+        }
+        2 => {
+            let username = args[0].to_string();
+            let password = args[1].to_string();
+            mr_init(ctx, 5, Some(username.as_str()), Some(password.as_str()));
+        }
+        _ => {
+            redis_module::logging::log_warning("Invalid number of arguments. Expected 0, 1, or 2.");
+            return Status::Err;
+        }
+    }
 
     KeysReader::register();
     Status::Ok
