@@ -106,7 +106,7 @@ def initialiseCluster(env):
         with TimeLimit(2):
             verifyClusterInitialized(env)
 
-def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=False, skipShardInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
+def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
@@ -134,7 +134,7 @@ def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=F
             if commandsBeforeClusterStart:
                 for command in commandsBeforeClusterStart:
                     env.cmd(command)
-            if not skipShardInitialisation:
+            if not skipClusterInitialisation:
                 initialiseCluster(env)
             if waitBeforeTestStart():
                 input('\tpress any button to continue test %s' % test_name)

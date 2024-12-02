@@ -107,8 +107,9 @@ def testAclSetting(env, conn):
 @MRTestDecorator(
     commandsBeforeClusterStart=['ACL SETUSER baduser on >password -@_MRTESTS_libmr_internal'],
     moduleArgs='baduser',
-    skipShardInitialisation=True,
+    skipClusterInitialisation=True,
     skipOnVersionLowerThan='7.4.0',
+    skipOnSingleShard=True,
 )
 def testAclSettingNotWorksWhenItShouldnt(env, conn):
     '''
