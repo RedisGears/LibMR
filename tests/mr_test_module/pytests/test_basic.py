@@ -104,25 +104,6 @@ def testAclSetting(env, conn):
     env.expect('AUTH', 'user2', 'user2p').equal(True)
     env.expect('lmrtest.dbsize').equal(0)
 
-# @MRTestDecorator(moduleArgs='default password')
-# def testAclSettingNotWorksWhenItShouldnt(env, conn):
-#     env.skipOnVersionSmaller('7.4.0')
-
-#     command = 'lmrtest.dbsize'
-#     acl_category = '_MRTESTS_libmr_internal'
-
-#     env.expect('ACL', 'SETUSER', 'user1', 'on', '>user2p', '+@all').contains('OK')
-#     env.expect('ACL', 'SETUSER', 'default', 'on', '>password', '-@%s' % acl_category, '+%s' % command).contains('OK')
-
-#     # env.broadcast('MRTESTS.REFRESHCLUSTER')
-#     env.broadcast('MRTESTS.HELLO')
-#     # Raises the timeout exception as the shards can't be connected to
-#     # due to the ACL restrictions on the "default", which disallow the
-#     # user to run the LibMR commands.
-#     with pytest.raises(Exception):
-#         env.expect('AUTH', 'user2', 'user2p').equal(True)
-#         env.expect('lmrtest.dbsize').equal(0)
-
 @MRTestDecorator(
     commandsBeforeClusterStart=['ACL SETUSER baduser on >password -@_MRTESTS_libmr_internal'],
     moduleArgs='baduser',
