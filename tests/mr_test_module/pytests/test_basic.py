@@ -108,16 +108,17 @@ def testAclSetting(env, conn):
     commandsBeforeClusterStart=['ACL SETUSER baduser on >password -@_MRTESTS_libmr_internal'],
     moduleArgs='baduser',
     skipShardInitialisation=True,
+    skipOnVersionLowerThan='7.4.0',
 )
 def testAclSettingNotWorksWhenItShouldnt(env, conn):
     '''
     Tests that LibMR doesn't work when the user provided for it doesn't
     have the necessary permissions to run the LibMR commands.
     '''
-    env.skipOnVersionSmaller('7.4.0')
 
     # This should fail as the LibMR will attempt to connect to the
     # shards using the "baduser" user, which doesn't have the necessary
     # permissions to run the LibMR commands.
-    with pytest.raises(Exception):
-        initialiseCluster(env)
+    if env.isCluster():
+        with pytest.raises(Exception):
+            initialiseCluster(env)

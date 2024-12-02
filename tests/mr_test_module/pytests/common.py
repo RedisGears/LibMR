@@ -106,7 +106,7 @@ def initialiseCluster(env):
         with TimeLimit(2):
             verifyClusterInitialized(env)
 
-def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=False, skipShardInitialisation=False, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
+def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=False, skipShardInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
@@ -114,6 +114,8 @@ def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=F
                 raise unittest.SkipTest()
             envArgs['moduleArgs'] = moduleArgs or None
             env = Env(**envArgs)
+            if skipOnVersionLowerThan:
+                env.skipOnVersionSmaller(skipOnVersionLowerThan)
             conn = getConnectionByEnv(env)
             if skipOnSingleShard:
                 if env.shardsCount == 1:
