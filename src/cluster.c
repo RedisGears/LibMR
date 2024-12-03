@@ -79,8 +79,6 @@ RegisterRedisCommand(RedisModuleCtx *ctx, const char *name,
     RedisModule_Log(ctx, "warning", "Couldn't register the command %s", name);
 
     return false;
-  } else {
-    RedisModule_Log(ctx, "warning", "Registered command %s", name);
   }
 
   return SetCommandAcls(ctx, name, "");
