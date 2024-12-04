@@ -28,7 +28,7 @@ jobs:
     - name: Checkout submodules
       run: git submodule update --init --recursive
     - name: install rltest
-      run: python3 -m pip install RLTest gevent
+      run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
     - name: install automake

@@ -32,7 +32,7 @@ jobs:
         MODULE_NAME=MRTESTSCLIPPY cargo clippy --all-targets --all-features
         make clean
     - name: install rltest
-      run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@3d37f9e gevent
+      run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent
     - name: install redis
       run: |
         git clone https://github.com/redis/redis
