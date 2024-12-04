@@ -126,13 +126,12 @@ def get_redis_version():
     version_number = version_output.split()[2][2:].strip()
     return version.parse(version_number)
 
-def check_if_redis_version_is_lower_than(required_version):
+def is_redis_version_is_lower_than(required_version):
     return get_redis_version() < version.parse(required_version)
 
 def skip_if_redis_version_is_lower_than(required_version):
-    if check_if_redis_version_is_lower_than(required_version):
+    if is_redis_version_is_lower_than(required_version):
         raise unittest.SkipTest()
-
 
 def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):

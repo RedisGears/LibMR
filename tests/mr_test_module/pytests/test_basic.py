@@ -60,9 +60,10 @@ def testUnevenWork(env, conn):
                     c = env.getConnection(i)
                     env.assertTrue(c.ping())
                 time.sleep(0.1)
+    except ShardsConnectionTimeoutException:
+        pass
     except Exception as e:
-        if str(e) != 'timeout':
-            raise e
+        raise e
 
 @MRTestDecorator()
 def testRemoteTaskOnKey(env, conn):
