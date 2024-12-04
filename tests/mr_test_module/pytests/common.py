@@ -115,7 +115,7 @@ def create_config_file(content) -> str:
         return f.name
 
 
-def MRTestDecorator(commandsBeforeClusterStart=None, redisConfigFileContent=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
+def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
@@ -143,9 +143,6 @@ def MRTestDecorator(commandsBeforeClusterStart=None, redisConfigFileContent=None
                 'env': env,
                 'conn': conn
             }
-            if commandsBeforeClusterStart:
-                for command in commandsBeforeClusterStart:
-                    env.cmd(command)
             if not skipClusterInitialisation:
                 initialiseCluster(env)
             if waitBeforeTestStart():
