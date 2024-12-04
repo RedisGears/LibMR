@@ -105,7 +105,7 @@ def testAclSetting(env, conn):
     env.expect('lmrtest.dbsize').equal(0)
 
 @MRTestDecorator(
-    commandsBeforeClusterStart=['ACL SETUSER baduser on >password -@_MRTESTS_libmr_internal'],
+    redisConfigFileContent='user baduser on >password +@all -@_MRTESTS_libmr_internal +MRTESTS.FORCESHARDSCONNECTION +MRTESTS.INFOCLUSTER',
     moduleArgs='baduser',
     skipClusterInitialisation=True,
     skipOnVersionLowerThan='7.4.0',

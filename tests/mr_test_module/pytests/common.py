@@ -5,6 +5,7 @@ import time
 import unittest
 import inspect
 import os
+import tempfile
 
 Defaults.decode_responses = True
 
@@ -106,7 +107,15 @@ def initialiseCluster(env):
         with TimeLimit(2):
             verifyClusterInitialized(env)
 
-def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
+# Creates a temporary file with the content provided.
+# Returns the filepath of the created file.
+def create_config_file(content) -> str:
+    with tempfile.NamedTemporaryFile(delete=False, dir=os.getcwd()) as f:
+        f.write(content.encode())
+        return f.name
+
+
+def MRTestDecorator(commandsBeforeClusterStart=None, redisConfigFileContent=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
         def test_func():
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
@@ -116,6 +125,9 @@ def MRTestDecorator(commandsBeforeClusterStart=None, moduleArgs=None, skipTest=F
             env = Env(**envArgs)
             if skipOnVersionLowerThan:
                 env.skipOnVersionSmaller(skipOnVersionLowerThan)
+            if redisConfigFileContent:
+                envArgs['redisConfigFile'] = create_config_file(redisConfigFileContent) if redisConfigFileContent else None
+                env = Env(**envArgs)
             conn = getConnectionByEnv(env)
             if skipOnSingleShard:
                 if env.shardsCount == 1:

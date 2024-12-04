@@ -71,7 +71,7 @@
 static inline __attribute__((always_inline)) bool
 RegisterRedisCommand(RedisModuleCtx *ctx, const char *name,
                      RedisModuleCmdFunc cmdfunc, const char *strflags,
-                     int firstkey, int lastkey, int keystep) {
+                     int firstkey, int lastkey, int keystep, const bool setAcls) {
   const int ret = RedisModule_CreateCommand(ctx, name, cmdfunc, strflags,
                                             firstkey, lastkey, keystep);
 
@@ -79,6 +79,10 @@ RegisterRedisCommand(RedisModuleCtx *ctx, const char *name,
     RedisModule_Log(ctx, "warning", "Couldn't register the command %s", name);
 
     return false;
+  }
+
+  if (!setAcls) {
+    return true;
   }
 
   return SetCommandAcls(ctx, name, "");
@@ -1380,45 +1384,45 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *username, char *password) {
     }
 
     if (!RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
-                            command_flags, 0, 0, 0)) {
+                            command_flags, 0, 0, 0, false)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
-                            command_flags, 0, 0, -1)) {
+                            command_flags, 0, 0, -1, false)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND,
                             MR_ClusterSetFromShard, command_flags, 0, 0,
-                            -1)) {
+                            -1, true)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello,
-                            command_flags, 0, 0, 0)) {
+                            command_flags, 0, 0, 0, true)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND,
                             MR_ClusterInnerCommunicationMsg, command_flags, 0, 0,
-                            0)) {
+                            0, true)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand,
-                            command_flags, 0, 0, 0)) {
+                            command_flags, 0, 0, 0, true)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand,
-                            command_flags, 0, 0, 0)) {
+                            command_flags, 0, 0, 0, true)) {
         return REDISMODULE_ERR;
     }
 
     if (!RegisterRedisCommand(rctx, FORCE_SHARDS_CONNECTION,
                             MR_ForceShardsConnectionCommand, command_flags, 0, 0,
-                            0)) {
+                            0, true)) {
         return REDISMODULE_ERR;
     }
 
