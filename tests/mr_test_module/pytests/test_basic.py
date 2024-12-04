@@ -1,5 +1,5 @@
 import pytest
-from common import MRTestDecorator, initialiseCluster, TimeLimit
+from common import MRTestDecorator, ShardsConnectionTimeoutException, initialiseCluster, TimeLimit
 import time
 
 @MRTestDecorator()
@@ -121,5 +121,5 @@ def testAclSettingNotWorksWhenItShouldnt(env, conn):
     # shards using the "baduser" user, which doesn't have the necessary
     # permissions to run the LibMR commands.
     if env.isCluster():
-        with pytest.raises(Exception):
+        with pytest.raises(ShardsConnectionTimeoutException):
             initialiseCluster(env)

@@ -6,8 +6,13 @@ import unittest
 import inspect
 import os
 import tempfile
+from packaging import version
 
 Defaults.decode_responses = True
+
+
+class ShardsConnectionTimeoutException(Exception):
+    pass
 
 class TimeLimit(object):
     """
@@ -27,7 +32,7 @@ class TimeLimit(object):
         signal.signal(signal.SIGALRM, signal.SIG_DFL)
 
     def handler(self, signum, frame):
-        raise Exception('timeout')
+        raise ShardsConnectionTimeoutException()
 
 class Colors(object):
     @staticmethod
@@ -114,6 +119,20 @@ def create_config_file(content) -> str:
         f.write(content.encode())
         return f.name
 
+# Returns the redis-server version without starting the server.
+def get_redis_version():
+    redis_binary = os.environ.get('REDIS_SERVER', Defaults.binary)
+    version_output = os.popen('%s --version' % redis_binary).read()
+    version_number = version_output.split()[2][2:].strip()
+    return version.parse(version_number)
+
+def check_if_redis_version_is_lower_than(required_version):
+    return get_redis_version() < version.parse(required_version)
+
+def skip_if_redis_version_is_lower_than(required_version):
+    if check_if_redis_version_is_lower_than(required_version):
+        raise unittest.SkipTest()
+
 
 def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
@@ -121,13 +140,11 @@ def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False
             test_name = '%s:%s' % (inspect.getfile(test_function), test_function.__name__)
             if skipTest and not runSkipTests():
                 raise unittest.SkipTest()
-            envArgs['moduleArgs'] = moduleArgs or None
-            env = Env(**envArgs)
             if skipOnVersionLowerThan:
-                env.skipOnVersionSmaller(skipOnVersionLowerThan)
-            if redisConfigFileContent:
-                envArgs['redisConfigFile'] = create_config_file(redisConfigFileContent) if redisConfigFileContent else None
-                env = Env(**envArgs)
+                skip_if_redis_version_is_lower_than(skipOnVersionLowerThan)
+            envArgs['moduleArgs'] = moduleArgs or None
+            envArgs['redisConfigFile'] = create_config_file(redisConfigFileContent) if redisConfigFileContent else None
+            env = Env(**envArgs)
             conn = getConnectionByEnv(env)
             if skipOnSingleShard:
                 if env.shardsCount == 1:
