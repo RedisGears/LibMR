@@ -28,10 +28,6 @@ fn main() {
         std::env::var("MODULE_NAME").expect("module name was not given"),
     );
 
-    if let Ok(acl_category_name) = std::env::var("LIBMR_ACL_COMMAND_CATEGORY_NAME") {
-        command.env("LIBMR_ACL_COMMAND_CATEGORY_NAME", acl_category_name);
-    }
-
     if !command.status().expect("failed to compile libmr").success() {
         panic!("failed to compile libmr");
     }
