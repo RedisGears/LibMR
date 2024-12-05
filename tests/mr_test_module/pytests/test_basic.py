@@ -81,10 +81,11 @@ def testRemoteTaskOnAllShards(env, conn):
     env.expect('lmrtest.dbsize').equal(0)
 
 @MRTestDecorator(
-    redisConfigFileContent='user gooduser on >password -@all +@_MRTESTS_libmr_internal +MRTESTS.FORCESHARDSCONNECTION +MRTESTS.INFOCLUSTER',
+    redisConfigFileContent='user gooduser on >password -@all +@_MRTESTS_libmr_internal +MRTESTS.FORCESHARDSCONNECTION +MRTESTS.INFOCLUSTER\nuser default on >password +@all -@_MRTESTS_libmr_internal -MRTESTS.FORCESHARDSCONNECTION -MRTESTS.INFOCLUSTER\n',
     moduleArgs='gooduser',
     skipClusterInitialisation=True,
     skipOnVersionLowerThan='7.4.0',
+    envArgs={'password': 'password'},
     # skipOnSingleShard=True,
 )
 def testAclSetting(env, conn):
