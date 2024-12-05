@@ -4,7 +4,7 @@ build_hiredis:
 ifneq ("$(wildcard built_hiredis)","")
 	echo hiredis already built
 else
-	MAKEFLAGS='' USE_SSL=1 make -C ./hiredis/
+	MAKEFLAGS='' USE_SSL=1 OPENSSL_PREFIX=$(OPENSSL_PREFIX) make -C ./hiredis/
 endif
 	touch built_hiredis
 

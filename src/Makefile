@@ -8,7 +8,7 @@ endif
 
 OPENSSL_PREFIX?=/usr/local/opt/openssl
 
-GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API \
+GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API -DREDISMODULE_MAIN -DREDISMODULE_SDK_RLEC \
 -I../deps/hiredis/ \
 -I../deps/hiredis/adapters/ \
 -I../deps/libevent/include/ \

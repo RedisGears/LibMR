@@ -1,13 +1,12 @@
 [package]
 name = "lib_mr"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "LicenseRef-RSALv2 OR SSPL-1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#redis-module = { version="0.22.0", features = ["experimental-api"]}
 redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "master", default-features = false }
 serde_json = "1"
 serde = "1"
@@ -16,7 +15,7 @@ libc = "0.2"
 linkme = "0.3"
 
 [build-dependencies]
-bindgen = "0.59"
+bindgen = "0.70"
 
 [lib]
 crate-type = ["rlib"]
@@ -24,7 +23,9 @@ name = "mr"
 path = "rust_api/lib.rs"
 
 [features]
-default = ["min-redis-compatibility-version-6-0"]
+# default = ["min-redis-compatibility-version-6-0"]
+default = ["min-redis-compatibility-version-7-4"]
+min-redis-compatibility-version-7-4 = ["redis-module/min-redis-compatibility-version-7-4"]
 min-redis-compatibility-version-7-2 = ["redis-module/min-redis-compatibility-version-7-2"]
 min-redis-compatibility-version-7-0 = ["redis-module/min-redis-compatibility-version-7-0"]
 min-redis-compatibility-version-6-2 = ["redis-module/min-redis-compatibility-version-6-2"]

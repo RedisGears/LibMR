@@ -21,28 +21,18 @@ fn main() {
     println!("cargo:rerun-if-changed=src/utils/*.h");
     println!("cargo:rerun-if-changed=src/utils/*.c");
 
-    if !Command::new("make")
-        .env(
-            "MODULE_NAME",
-            std::env::var("MODULE_NAME").expect("module name was not given"),
-        )
-        .status()
-        .expect("failed to compile libmr")
-        .success()
-    {
+    let mut command = Command::new("make");
+
+    command.env(
+        "MODULE_NAME",
+        std::env::var("MODULE_NAME").expect("module name was not given"),
+    );
+
+    if !command.status().expect("failed to compile libmr").success() {
         panic!("failed to compile libmr");
     }
 
     let output_dir = env::var("OUT_DIR").expect("Can not find out directory");
-
-    if !Command::new("cp")
-        .args(["src/libmr.a", &output_dir])
-        .status()
-        .expect("failed copy libmr.a to output directory")
-        .success()
-    {
-        panic!("failed copy libmr.a to output directory");
-    }
 
     let build = bindgen::Builder::default();
 

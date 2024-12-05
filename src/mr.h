@@ -152,7 +152,7 @@ LIBMR_API void MR_Run(Execution* e);
 LIBMR_API void MR_FreeExecution(Execution* e);
 
 /* Initialize mr library */
-LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password);
+LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *username, char *password);
 
 /* Register a new object type */
 LIBMR_API int MR_RegisterObject(MRObjectType* t);

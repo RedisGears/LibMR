@@ -1405,11 +1405,11 @@ static void MR_GetRedisVersion() {
     RedisModule_FreeCallReply(reply);
 }
 
-int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
+int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *username, char *password) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
 
-    if (MR_ClusterInit(ctx, password) != REDISMODULE_OK) {
+    if (MR_ClusterInit(ctx, username, password) != REDISMODULE_OK) {
         return REDISMODULE_ERR;
     }
 

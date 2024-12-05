@@ -1,15 +1,13 @@
 [package]
 name = "mr_test_module"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["meir@redislabs.com <meir@redislabs.com>"]
-edition = "2018"
+edition = "2021"
 license = "LicenseRef-RSALv2 OR SSPL-1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-#redis-module = { version="0.22.0", features = ["experimental-api"]}
-redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "master" }
 serde_json = "1"
 serde = "1"
 serde_derive = "1"
@@ -17,10 +15,6 @@ libc = "0.2"
 lib_mr = { path = "../../" }
 lib_mr_derive = { path = "../../LibMRDerive/" }
 linkme = "0.3"
-
-[build-dependencies]
-bindgen = "0.57"
-cc = "1"
 
 [lib]
 name = "mr_test"
