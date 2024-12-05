@@ -80,7 +80,13 @@ def testRemoteTaskOnAllShards(env, conn):
         conn.execute_command('del', 'doc%d' % i)
     env.expect('lmrtest.dbsize').equal(0)
 
-@MRTestDecorator(moduleArgs='default')
+@MRTestDecorator(
+    redisConfigFileContent='user gooduser on >password -@all +@_MRTESTS_libmr_internal +MRTESTS.FORCESHARDSCONNECTION +MRTESTS.INFOCLUSTER',
+    moduleArgs='gooduser',
+    skipClusterInitialisation=True,
+    skipOnVersionLowerThan='7.4.0',
+    # skipOnSingleShard=True,
+)
 def testAclSetting(env, conn):
     '''
     Tests that LibMR sets the ACLs for its commands.
