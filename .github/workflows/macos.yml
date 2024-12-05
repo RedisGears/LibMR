@@ -32,7 +32,7 @@ jobs:
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
     - name: install automake
-      run: brew install automake libtool
+      run: brew install automake libtool valgrind
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests
