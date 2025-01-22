@@ -14,17 +14,6 @@
 #error "MODULE_NAME is not defined"
 #endif
 
-/** The name of the ACL category for the commands created by LibMR for
- * its own operations.
- *
- * The user may redefine the category name by defining the macro
- * LIBMR_ACL_COMMAND_CATEGORY_NAME before including this header.
- */
-#ifndef LIBMR_ACL_COMMAND_CATEGORY_NAME
-#define LIBMR_ACL_COMMAND_CATEGORY_NAME                                        \
-  "_" xstr(MODULE_NAME) "_libmr_internal"
-#endif
-
 typedef struct MR_RedisVersion
 {
     int redisMajorVersion;

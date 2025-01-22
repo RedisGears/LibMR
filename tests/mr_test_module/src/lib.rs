@@ -855,11 +855,14 @@ fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
     }
 
     let mut args_iter = args.iter();
-    let user = args_iter.next().map(|v| v.to_string());
     let pass = args_iter
         .next()
-        .map_or_else(|| Some("password".to_string()), |v| Some(v.to_string()));
-    mr_init(ctx, 5, user.as_deref(), pass.as_deref());
+        .map(|v| Some(v.to_string())).flatten();
+    if pass.is_none() {
+        ctx.log_notice("Password was not provided");
+        return Status::Err;
+    }
+    mr_init(ctx, 5, pass.as_deref());
 
     KeysReader::register();
     Status::Ok
