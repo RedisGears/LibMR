@@ -91,7 +91,7 @@ def verifyClusterInitialized(env):
     for conn in shardsConnections(env):
         try:
             # try to promote to internal connection
-            conn.execute_command('debug', 'PROMOTE-CONN')
+            conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
         except Exception:
             pass
         allConnected = False
@@ -115,8 +115,9 @@ def initialiseCluster(env):
         env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
         for conn in shardsConnections(env):
             try:
-                conn.execute_command('debug', 'PROMOTE-CONN')
-            except Exception:
+                conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
+            except Exception as e:
+                print(e)
                 pass
             conn.execute_command('MRTESTS.FORCESHARDSCONNECTION')
         with TimeLimit(2):

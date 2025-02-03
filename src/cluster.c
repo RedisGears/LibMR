@@ -593,7 +593,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
             size_t len;
             const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
             RedisModule_Assert(secret);
-            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "INTERNALAUTH %b", secret, len);
+            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
             RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         }
 
