@@ -7,7 +7,7 @@ license = "LicenseRef-RSALv2 OR SSPL-1.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "add_GetInternalSecret_redismodule_api", default-features = false }
+redis-module = { git = "https://github.com/RedisLabsModules/redismodule-rs", branch = "master", default-features = false }
 serde_json = "1"
 serde = "1"
 serde_derive = "1"
