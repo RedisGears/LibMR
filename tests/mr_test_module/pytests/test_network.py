@@ -181,6 +181,11 @@ class ShardMock():
         self.new_conns.put(conn)
 
     def _send_cluster_set(self):
+        try:
+            # try to promote to internal connection
+            self.env.cmd('debug', 'MARK-INTERNAL-CLIENT')
+        except Exception:
+            pass
         self.env.cmd('MRTESTS.CLUSTERSET',
                      'NO-USED',
                      'NO-USED',
@@ -521,6 +526,11 @@ def testClusterSetAfterHelloResponseFailure(env, conn):
             conn.send_error('err')  # hello response, sending runid
 
             # resend cluster set
+            try:
+                # try to promote to internal connection
+                env.cmd('debug', 'MARK-INTERNAL-CLIENT')
+            except Exception:
+                pass
             res = env.cmd('MRTESTS.CLUSTERSET',
                         'NO-USED',
                         'NO-USED',
@@ -553,6 +563,11 @@ def testClusterSetAfterDisconnect(env, conn):
 
             conn.close()
 
+            try:
+                # try to promote to internal connection
+                env.cmd('debug', 'MARK-INTERNAL-CLIENT')
+            except Exception:
+                pass
             # resend cluster set
             res = env.cmd('MRTESTS.CLUSTERSET',
                         'NO-USED',

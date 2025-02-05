@@ -80,54 +80,12 @@ def testRemoteTaskOnAllShards(env, conn):
         conn.execute_command('del', 'doc%d' % i)
     env.expect('lmrtest.dbsize').equal(0)
 
-@MRTestDecorator(
-    redisConfigFileContent='user gooduser on >password -@all +@_MRTESTS_libmr_internal +MRTESTS.FORCESHARDSCONNECTION +MRTESTS.INFOCLUSTER\nuser default on >password +@all -@_MRTESTS_libmr_internal -MRTESTS.FORCESHARDSCONNECTION -MRTESTS.INFOCLUSTER\n',
-    moduleArgs='gooduser',
-    skipClusterInitialisation=True,
-    skipOnVersionLowerThan='7.4.0',
-    envArgs={'password': 'password'},
-    # skipOnSingleShard=True,
-)
-def testAclSetting(env, conn):
-    '''
-    Tests that LibMR sets the ACLs for its commands.
-    '''
-    env.skipOnVersionSmaller('7.4.0')
-    acl_category = '_MRTESTS_libmr_internal'
-    env.expect('acl', 'cat').contains(acl_category)
-
-    # Test that the user not allowed to run the commands, as this
-    # module uses the "default" user to run the commands instead.
-    command = 'lmrtest.dbsize'
-    env.expect('ACL', 'SETUSER', 'user1', 'on', '>user1p', '-@all', '+%s' % command).contains('OK')
-    env.expect('ACL', 'SETUSER', 'user2', 'on', '>user2p', '+@all', '-@%s' % acl_category).contains('OK')
-    env.expect('AUTH', 'user1', 'user1p').equal(True)
-
-    env.expect('lmrtest.dbsize').equal(0)
-
-    # This should succeed even though the user is not allowed to run
-    # the commands of libmr. This is so, because the module itself runs
-    # the LibMR commands as the other user specified during the load,
-    # which has the necessary permissions.
-    env.expect('AUTH', 'user2', 'user2p').equal(True)
-    env.expect('lmrtest.dbsize').equal(0)
-
-@MRTestDecorator(
-    redisConfigFileContent='user baduser on >password +@all -@_MRTESTS_libmr_internal +MRTESTS.FORCESHARDSCONNECTION +MRTESTS.INFOCLUSTER',
-    moduleArgs='baduser',
-    skipClusterInitialisation=True,
-    skipOnVersionLowerThan='7.4.0',
-    skipOnSingleShard=True,
-)
-def testAclSettingNotWorksWhenItShouldnt(env, conn):
-    '''
-    Tests that LibMR doesn't work when the user provided for it doesn't
-    have the necessary permissions to run the LibMR commands.
-    '''
-
-    # This should fail as the LibMR will attempt to connect to the
-    # shards using the "baduser" user, which doesn't have the necessary
-    # permissions to run the LibMR commands.
-    if env.isCluster():
-        with pytest.raises(ShardsConnectionTimeoutException):
-            initialiseCluster(env)
+@MRTestDecorator(skipOnVersionLowerThan='8.0.0', skipOnCluster=False)
+def testInternalCommandsAreNotAllowed(env, conn):
+    env.expect('MRTESTS.CLUSTERSET').error().contains('unknown command')
+    env.expect('MRTESTS.INNERCOMMUNICATION').error().contains('unknown command')
+    env.expect('MRTESTS.HELLO').error().contains('unknown command')
+    env.expect('MRTESTS.CLUSTERSETFROMSHARD').error().contains('unknown command')
+    env.expect('MRTESTS.INFOCLUSTER').error().contains('unknown command')
+    env.expect('MRTESTS.NETWORKTEST').error().contains('unknown command')
+    env.expect('MRTESTS.FORCESHARDSCONNECTION').error().contains('unknown command')
