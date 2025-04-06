@@ -8,7 +8,6 @@
 #include "buffer.h"
 #include <string.h>
 #include "../mr_memory.h"
-#include "../mr.h"
 #include "../redismodule.h"
 
 void mr_BufferInit(mr_Buffer* buff, size_t initialCap){
@@ -94,3 +93,18 @@ char* mr_BufferReaderReadString(mr_BufferReader* br, int* error){
     return mr_BufferReaderReadBuff(br, &len, error);
 }
 
+void mr_BufferReaderRewind(mr_BufferReader* br) {
+    br->location = 0;
+}
+void mr_BufferWriterRewind(mr_BufferWriter* bw) {
+    bw->buff->size = 0;
+    bw->buff->cap = DEFAULT_INITIAL_CAP;
+    bw->buff->buff = MR_REALLOC(bw->buff->buff, DEFAULT_INITIAL_CAP);
+    bw->buff->buff[0] = '\0';
+}
+bool mr_BufferReaderIsDepleted(mr_BufferReader* br) {
+    return br->location >= br->buff->size;
+}
+bool mr_BufferWriterIsDepleted(mr_BufferWriter* bw) {
+    return bw->buff->size >= bw->buff->cap;
+}

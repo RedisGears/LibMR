@@ -8,6 +8,7 @@
 #define SRC_UTILS_BUFFER_H_
 
 #include <stddef.h>
+#include <stdbool.h>
 
 #define DEFAULT_INITIAL_CAP 50
 
@@ -45,7 +46,9 @@ long long mr_BufferReaderReadLongLong(mr_BufferReader* br, int* error);
 char* mr_BufferReaderReadBuff(mr_BufferReader* br, size_t* len, int* error);
 char* mr_BufferReaderReadString(mr_BufferReader* br, int* error);
 
-
-
+void mr_BufferReaderRewind(mr_BufferReader* br);
+void mr_BufferWriterRewind(mr_BufferWriter* bw);
+bool mr_BufferReaderIsDepleted(mr_BufferReader* br);
+bool mr_BufferWriterIsDepleted(mr_BufferWriter* bw);
 
 #endif /* SRC_UTILS_BUFFER_H_ */
