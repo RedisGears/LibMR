@@ -98,9 +98,6 @@ void mr_BufferReaderRewind(mr_BufferReader* br) {
 }
 void mr_BufferWriterRewind(mr_BufferWriter* bw) {
     bw->buff->size = 0;
-    bw->buff->cap = DEFAULT_INITIAL_CAP;
-    bw->buff->buff = MR_REALLOC(bw->buff->buff, DEFAULT_INITIAL_CAP);
-    bw->buff->buff[0] = '\0';
 }
 bool mr_BufferReaderIsDepleted(mr_BufferReader* br) {
     return br->location >= br->buff->size;
