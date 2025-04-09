@@ -2063,3 +2063,16 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
 
     MR_EventLoopAddTask(MR_RunOnAllShardsInternal, msg);
 }
+
+void MR_SerializationCtxReaderRewind(ReaderSerializationCtx* sctx) {
+    mr_BufferReaderRewind(sctx);
+}
+void MR_SerializationCtxWriterRewind(WriteSerializationCtx* sctx) {
+    mr_BufferWriterRewind(sctx);
+}
+bool MR_SerializationCtxReaderIsDepleted(ReaderSerializationCtx* sctx) {
+    return mr_BufferReaderIsDepleted(sctx);
+}
+bool MR_SerializationCtxWriterIsDepleted(WriteSerializationCtx* sctx) {
+    return mr_BufferWriterIsDepleted(sctx);
+}

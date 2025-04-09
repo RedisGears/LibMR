@@ -9,6 +9,7 @@
 
 #include <limits.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define LIBMR_API __attribute__ ((visibility("default")))
 
@@ -171,6 +172,12 @@ LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator acc
 
 /* Register a remote task */
 LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObjectType* argType);
+
+
+LIBMR_API void MR_SerializationCtxReaderRewind(ReaderSerializationCtx* sctx);
+LIBMR_API void MR_SerializationCtxWriterRewind(WriteSerializationCtx* sctx);
+LIBMR_API bool MR_SerializationCtxReaderIsDepleted(ReaderSerializationCtx* sctx);
+LIBMR_API bool MR_SerializationCtxWriterIsDepleted(WriteSerializationCtx* sctx);
 
 /* Serialization Context functions */
 LIBMR_API long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError** err);
