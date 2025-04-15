@@ -66,7 +66,7 @@ void mr_BufferReaderInit(mr_BufferReader* br, mr_Buffer* buff){
 
 long long mr_BufferReaderReadLongLong(mr_BufferReader* br, int* error){
     if(br->location + sizeof(long) > br->buff->size){
-        RedisModule_Assert(*error);
+        RedisModule_Assert(error);
         *error = 1;
         return 0;
     }
@@ -79,7 +79,7 @@ char* mr_BufferReaderReadBuff(mr_BufferReader* br, size_t* len, int* error){
     int internalErr = 0;
     *len = (size_t)mr_BufferReaderReadLongLong(br, &internalErr);
     if(internalErr || (br->location + *len > br->buff->size)){
-        RedisModule_Assert(*error);
+        RedisModule_Assert(error);
         *error = 1;
         return NULL;
     }
