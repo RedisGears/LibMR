@@ -51,3 +51,12 @@ make run_tests
 ```
 
 Notice that running the test will compile MRLib with `MODULE_NAME=MRTESTS`, please do not use this compilation with any other module other then the tests module as it will not work.
+
+## License
+
+Starting with Redis 8, LibMR is licensed under your choice of: (i) Redis Source Available License 2.0 (RSALv2); (ii) the Server Side Public License v1 (SSPLv1); or (iii) the GNU Affero General Public License version 3 (AGPLv3). Please review the license folder for the full license terms and conditions. Prior versions remain subject to (i) and (ii).
+
+## Code contributions
+
+
+By contributing code to this Redis module in any form, including sending a pull request via GitHub, a code fragment or patch via private email or public discussion groups, you agree to release your code under the terms of the Redis Software Grant and Contributor License Agreement. Please see the CONTRIBUTING.md file in this source distribution for more information. For security bugs and vulnerabilities, please see SECURITY.md. 
