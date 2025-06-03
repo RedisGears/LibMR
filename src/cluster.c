@@ -1368,7 +1368,8 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     /* The CLUSTERSET should be visible in COMMAND LIST, otherwise the RAMP packer
      * will miss it and a module will not be notified in an enterprise cluster */
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
-                            "readonly deny-script", 0, 0, -1)) {
+                            MR_IsEnterpriseBuild() ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
+                            0, 0, -1)) {
         return REDISMODULE_ERR;
     }
 
