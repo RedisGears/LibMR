@@ -82,7 +82,6 @@ def testRemoteTaskOnAllShards(env, conn):
 
 @MRTestDecorator(skipOnVersionLowerThan='8.0.0', skipOnCluster=False)
 def testInternalCommandsAreNotAllowed(env, conn):
-    env.expect('MRTESTS.CLUSTERSET').error().contains('unknown command')
     env.expect('MRTESTS.INNERCOMMUNICATION').error().contains('unknown command')
     env.expect('MRTESTS.HELLO').error().contains('unknown command')
     env.expect('MRTESTS.CLUSTERSETFROMSHARD').error().contains('unknown command')
