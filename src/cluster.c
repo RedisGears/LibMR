@@ -395,7 +395,8 @@ static void MR_ClusterAsyncDisconnect(void* ctx){
 }
 
 static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, int status){
-    RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, will try to reconnect.", c->c.tcp.host, c->c.tcp.port, status);
+    RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, %s.", c->c.tcp.host, c->c.tcp.port, status,
+            c->data ? "will try to reconnect later" : "no context data");
     if(!c->data){
         return;
     }
