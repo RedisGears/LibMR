@@ -2,9 +2,10 @@ name: Test ubuntu latest
 
 on:
   push:
-    branches: [ master ]
+    branches: [ "**" ]
   pull_request:
-    branches: [ master ]
+    branches: [ "**" ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
