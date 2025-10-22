@@ -14,6 +14,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  OPENSSL_PREFIX: /usr
 
 jobs:
   build:
@@ -170,7 +171,7 @@ jobs:
     - name: install valgrind
       run: |
         sudo apt-get update --fix-missing
-        sudo apt-get install valgrind
+        sudo apt-get install -y valgrind
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests
