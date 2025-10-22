@@ -14,12 +14,26 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    # Allow the 'unstable' Redis build to be non-blocking
+    continue-on-error: ${{ matrix.redis_version == 'unstable' }}
+
     strategy:
       matrix:
         redis_version: ["7.2", "7.4", "unstable"]
     
     steps:
     - uses: actions/checkout@v4
+    - name: Install Rust toolchain (stable) with clippy and rustfmt
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+    - name: Install build dependencies (autotools, pkg-config, SSL, build-essential)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          autoconf automake libtool pkg-config \
+          libssl-dev
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'

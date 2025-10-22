@@ -13,6 +13,8 @@ jobs:
   build:
 
     runs-on: macos-latest
+    # Allow the 'unstable' Redis build to be non-blocking
+    continue-on-error: ${{ matrix.redis_version == 'unstable' }}
 
     strategy:
       matrix:
@@ -20,6 +22,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install Rust toolchain (stable) with clippy and rustfmt
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -29,10 +35,12 @@ jobs:
       run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
-    - name: install automake and llvm
+    - name: install automake, libtool, llvm, pkg-config, and openssl@3
       run: |
-        brew install automake libtool llvm
+        brew update
+        brew install automake libtool llvm pkg-config openssl@3
         echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+        echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> $GITHUB_ENV
     - name: Debug and setup libclang
       run: |
         echo "=== Finding libclang on macOS ==="
