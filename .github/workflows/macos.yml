@@ -8,8 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  PKG_CONFIG_PATH: /opt/homebrew/opt/openssl/lib/pkgconfig/
-  OPENSSL_PREFIX: /opt/homebrew/opt/openssl
 
 jobs:
   build:
@@ -31,11 +29,78 @@ jobs:
       run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
-    - name: install automake
-      run: brew install automake libtool
+    - name: install automake and llvm
+      run: |
+        brew install automake libtool llvm
+        echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
+    - name: Debug and setup libclang
+      run: |
+        echo "=== Finding libclang on macOS ==="
+        # Try multiple approaches to find libclang
+        echo "1. Checking Homebrew llvm-config..."
+        if command -v llvm-config >/dev/null 2>&1; then
+          LLVM_LIBDIR=$(llvm-config --libdir)
+          echo "llvm-config --libdir: $LLVM_LIBDIR"
+          if [ -f "$LLVM_LIBDIR/libclang.dylib" ]; then
+            echo "Found libclang at: $LLVM_LIBDIR"
+            echo "OPENSSL_PREFIX=/opt/homebrew/opt/openssl@3" >> $GITHUB_ENV
+            echo "LIBCLANG_PATH=$LLVM_LIBDIR" >> $GITHUB_ENV
+            echo "DYLD_LIBRARY_PATH=$LLVM_LIBDIR" >> $GITHUB_ENV
+            echo "SUCCESS: Using Homebrew llvm path"
+            exit 0
+          fi
+        fi
+        
+        echo "2. Checking Xcode Command Line Tools..."
+        if [ -f "/Library/Developer/CommandLineTools/usr/lib/libclang.dylib" ]; then
+          echo "Found libclang at: /Library/Developer/CommandLineTools/usr/lib"
+          echo "OPENSSL_PREFIX=/opt/homebrew/opt/openssl@3" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=/Library/Developer/CommandLineTools/usr/lib" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=/Library/Developer/CommandLineTools/usr/lib" >> $GITHUB_ENV
+          echo "SUCCESS: Using Xcode Command Line Tools path"
+          exit 0
+        fi
+        
+        echo "3. Searching Homebrew directories..."
+        HOMEBREW_PREFIX=$(brew --prefix)
+        CLANG_FILES=$(find $HOMEBREW_PREFIX -name "libclang*.dylib" 2>/dev/null | head -5)
+        if [ -n "$CLANG_FILES" ]; then
+          CLANG_DIR=$(echo "$CLANG_FILES" | head -1 | xargs dirname)
+          echo "Found libclang files in: $CLANG_DIR"
+          echo "OPENSSL_PREFIX=/opt/homebrew/opt/openssl@3" >> $GITHUB_ENV
+          echo "LIBCLANG_PATH=$CLANG_DIR" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=$CLANG_DIR" >> $GITHUB_ENV
+          echo "SUCCESS: Using Homebrew search path"
+          exit 0
+        fi
+        
+        echo "ERROR: Could not find libclang anywhere!"
+        echo "Available files:"
+        find /usr -name "*clang*" 2>/dev/null | head -10
+        find $HOMEBREW_PREFIX -name "*clang*" 2>/dev/null | head -10
+        exit 1
+    - name: Verify libclang setup
+      run: |
+        echo "=== Verifying libclang setup ==="
+        echo "OPENSSL_PREFIX: $OPENSSL_PREFIX"
+        echo "LIBCLANG_PATH: $LIBCLANG_PATH"
+        echo "DYLD_LIBRARY_PATH: $DYLD_LIBRARY_PATH"
+        if [ -n "$LIBCLANG_PATH" ]; then
+          echo "Checking libclang at $LIBCLANG_PATH:"
+          ls -la $LIBCLANG_PATH/libclang* || echo "No libclang files found"
+        else
+          echo "ERROR: LIBCLANG_PATH not set!"
+          exit 1
+        fi
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests
-      run: make run_tests
+      run: |
+        echo "=== Test step environment ==="
+        echo "OPENSSL_PREFIX: $OPENSSL_PREFIX"
+        echo "LIBCLANG_PATH: $LIBCLANG_PATH"
+        echo "DYLD_LIBRARY_PATH: $DYLD_LIBRARY_PATH"
+        ls -la $LIBCLANG_PATH/libclang* || echo "No libclang at $LIBCLANG_PATH"
+        make run_tests
     - name: SSL tests
       run: make run_tests_ssl

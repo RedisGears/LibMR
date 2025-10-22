@@ -20,6 +20,11 @@ endif
 RUSTFLAGS=-L$(ROOT)/src/
 MODULE_NAME=MRTESTS
 
+# Export LIBCLANG_PATH if set
+ifneq ($(LIBCLANG_PATH),)
+export LIBCLANG_PATH
+endif
+
 all: build
 
 build_libmr:

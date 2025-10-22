@@ -7,7 +7,9 @@ fn probe_paths<'a>(paths: &'a [&'a str]) -> Option<&'a str> {
 }
 
 fn find_macos_openssl_prefix_path() -> &'static str {
-    const PATHS: [&str; 3] = [
+    const PATHS: [&str; 5] = [
+        "/opt/homebrew/opt/openssl@3",
+        "/usr/local/opt/openssl@3",
         "/usr/local/opt/openssl",
         "/usr/local/opt/openssl@1.1",
         "/opt/homebrew/opt/openssl@1.1",

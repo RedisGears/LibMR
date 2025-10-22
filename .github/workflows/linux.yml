@@ -17,7 +17,7 @@ jobs:
     strategy:
       matrix:
         redis_version: ["7.2", "7.4", "unstable"]
-
+    
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
@@ -25,10 +25,116 @@ jobs:
         python-version: '3.12'
     - name: Checkout submodules
       run: git submodule update --init --recursive
+    - name: install libclang for bindgen
+      run: |
+        sudo apt-get update
+        # Install multiple versions to ensure we have libclang
+        sudo apt-get install -y libclang-dev llvm-dev clang libclang-18-dev llvm-18-dev
+        sudo ldconfig
+        echo "=== Installed packages ==="
+        dpkg -l | grep -E "(clang|llvm)" | head -10
+    - name: Debug and setup libclang
+      run: |
+        echo "=== Finding libclang ==="
+        # Try multiple approaches to find libclang
+        echo "1. Checking llvm-config..."
+        if command -v llvm-config >/dev/null 2>&1; then
+          LLVM_LIBDIR=$(llvm-config --libdir)
+          echo "llvm-config --libdir: $LLVM_LIBDIR"
+          if [ -f "$LLVM_LIBDIR/libclang.so" ]; then
+            echo "Found libclang at: $LLVM_LIBDIR"
+            echo "LIBCLANG_PATH=$LLVM_LIBDIR" >> $GITHUB_ENV
+            echo "LD_LIBRARY_PATH=$LLVM_LIBDIR" >> $GITHUB_ENV
+            echo "SUCCESS: Using llvm-config path"
+            exit 0
+          fi
+        fi
+        
+        echo "2. Searching /usr/lib..."
+        CLANG_FILES=$(find /usr/lib -name "libclang*.so*" 2>/dev/null | head -5)
+        if [ -n "$CLANG_FILES" ]; then
+          CLANG_DIR=$(echo "$CLANG_FILES" | head -1 | xargs dirname)
+          echo "Found libclang files in: $CLANG_DIR"
+          echo "LIBCLANG_PATH=$CLANG_DIR" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$CLANG_DIR" >> $GITHUB_ENV
+          echo "SUCCESS: Using /usr/lib path"
+          exit 0
+        fi
+        
+        echo "3. Searching /usr/lib/x86_64-linux-gnu..."
+        if [ -f "/usr/lib/x86_64-linux-gnu/libclang.so" ]; then
+          echo "Found libclang at: /usr/lib/x86_64-linux-gnu"
+          echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu" >> $GITHUB_ENV
+          echo "SUCCESS: Using x86_64-linux-gnu path"
+          exit 0
+        fi
+        
+        echo "ERROR: Could not find libclang anywhere!"
+        echo "Available files:"
+        find /usr -name "*clang*" 2>/dev/null | head -10
+        exit 1
+    - name: Verify libclang setup
+      run: |
+        echo "=== Verifying libclang setup ==="
+        echo "LIBCLANG_PATH: $LIBCLANG_PATH"
+        echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+        if [ -n "$LIBCLANG_PATH" ]; then
+          echo "Checking libclang at $LIBCLANG_PATH:"
+          ls -la $LIBCLANG_PATH/libclang* || echo "No libclang files found"
+        else
+          echo "ERROR: LIBCLANG_PATH not set!"
+          exit 1
+        fi
     - name: format
       run: cargo fmt -- --check
     - name: clippy
       run: |
+        echo "=== Clippy step environment ==="
+        # Try to find libclang directly in this step
+        echo "Searching for libclang..."
+        CLANG_PATH=""
+        
+        # Method 1: Try llvm-config
+        if command -v llvm-config >/dev/null 2>&1; then
+          LLVM_LIBDIR=$(llvm-config --libdir)
+          echo "llvm-config --libdir: $LLVM_LIBDIR"
+          if [ -f "$LLVM_LIBDIR/libclang.so" ]; then
+            CLANG_PATH="$LLVM_LIBDIR"
+            echo "Found libclang via llvm-config: $CLANG_PATH"
+          fi
+        fi
+        
+        # Method 2: Search /usr/lib
+        if [ -z "$CLANG_PATH" ]; then
+          CLANG_FILES=$(find /usr/lib -name "libclang*.so*" 2>/dev/null | head -1)
+          if [ -n "$CLANG_FILES" ]; then
+            CLANG_PATH=$(echo "$CLANG_FILES" | xargs dirname)
+            echo "Found libclang via search: $CLANG_PATH"
+          fi
+        fi
+        
+        # Method 3: Try standard Ubuntu location
+        if [ -z "$CLANG_PATH" ]; then
+          if [ -f "/usr/lib/x86_64-linux-gnu/libclang.so" ]; then
+            CLANG_PATH="/usr/lib/x86_64-linux-gnu"
+            echo "Found libclang at standard location: $CLANG_PATH"
+          fi
+        fi
+        
+        if [ -z "$CLANG_PATH" ]; then
+          echo "ERROR: Could not find libclang!"
+          find /usr -name "*clang*" 2>/dev/null | head -10
+          exit 1
+        fi
+        
+        echo "Using LIBCLANG_PATH: $CLANG_PATH"
+        export LIBCLANG_PATH="$CLANG_PATH"
+        export LD_LIBRARY_PATH="$CLANG_PATH:$LD_LIBRARY_PATH"
+        echo "LIBCLANG_PATH: $LIBCLANG_PATH"
+        echo "LD_LIBRARY_PATH: $LD_LIBRARY_PATH"
+        ls -la $LIBCLANG_PATH/libclang* || echo "No libclang found at $LIBCLANG_PATH"
+        echo ""
         MODULE_NAME=MRTESTSCLIPPY cargo clippy --all-targets --all-features
         make clean
     - name: install rltest
@@ -46,8 +152,68 @@ jobs:
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests
-      run: make run_tests
+      run: |
+        # Find libclang for this step
+        CLANG_PATH=""
+        if command -v llvm-config >/dev/null 2>&1; then
+          LLVM_LIBDIR=$(llvm-config --libdir)
+          if [ -f "$LLVM_LIBDIR/libclang.so" ]; then
+            CLANG_PATH="$LLVM_LIBDIR"
+          fi
+        fi
+        if [ -z "$CLANG_PATH" ]; then
+          CLANG_FILES=$(find /usr/lib -name "libclang*.so*" 2>/dev/null | head -1)
+          if [ -n "$CLANG_FILES" ]; then
+            CLANG_PATH=$(echo "$CLANG_FILES" | xargs dirname)
+          fi
+        fi
+        if [ -z "$CLANG_PATH" ] && [ -f "/usr/lib/x86_64-linux-gnu/libclang.so" ]; then
+          CLANG_PATH="/usr/lib/x86_64-linux-gnu"
+        fi
+        export LIBCLANG_PATH="$CLANG_PATH"
+        export LD_LIBRARY_PATH="$CLANG_PATH:$LD_LIBRARY_PATH"
+        make run_tests
     - name: SSL tests
-      run: make run_tests_ssl
+      run: |
+        # Find libclang for this step
+        CLANG_PATH=""
+        if command -v llvm-config >/dev/null 2>&1; then
+          LLVM_LIBDIR=$(llvm-config --libdir)
+          if [ -f "$LLVM_LIBDIR/libclang.so" ]; then
+            CLANG_PATH="$LLVM_LIBDIR"
+          fi
+        fi
+        if [ -z "$CLANG_PATH" ]; then
+          CLANG_FILES=$(find /usr/lib -name "libclang*.so*" 2>/dev/null | head -1)
+          if [ -n "$CLANG_FILES" ]; then
+            CLANG_PATH=$(echo "$CLANG_FILES" | xargs dirname)
+          fi
+        fi
+        if [ -z "$CLANG_PATH" ] && [ -f "/usr/lib/x86_64-linux-gnu/libclang.so" ]; then
+          CLANG_PATH="/usr/lib/x86_64-linux-gnu"
+        fi
+        export LIBCLANG_PATH="$CLANG_PATH"
+        export LD_LIBRARY_PATH="$CLANG_PATH:$LD_LIBRARY_PATH"
+        make run_tests_ssl
     - name: Valgrind tests
-      run: make run_tests_valgrind
+      run: |
+        # Find libclang for this step
+        CLANG_PATH=""
+        if command -v llvm-config >/dev/null 2>&1; then
+          LLVM_LIBDIR=$(llvm-config --libdir)
+          if [ -f "$LLVM_LIBDIR/libclang.so" ]; then
+            CLANG_PATH="$LLVM_LIBDIR"
+          fi
+        fi
+        if [ -z "$CLANG_PATH" ]; then
+          CLANG_FILES=$(find /usr/lib -name "libclang*.so*" 2>/dev/null | head -1)
+          if [ -n "$CLANG_FILES" ]; then
+            CLANG_PATH=$(echo "$CLANG_FILES" | xargs dirname)
+          fi
+        fi
+        if [ -z "$CLANG_PATH" ] && [ -f "/usr/lib/x86_64-linux-gnu/libclang.so" ]; then
+          CLANG_PATH="/usr/lib/x86_64-linux-gnu"
+        fi
+        export LIBCLANG_PATH="$CLANG_PATH"
+        export LD_LIBRARY_PATH="$CLANG_PATH:$LD_LIBRARY_PATH"
+        make run_tests_valgrind
