@@ -1,11 +1,16 @@
 name: Test ubuntu latest
 
 on:
-  push:
-    branches: [ "**" ]
   pull_request:
     branches: [ "**" ]
+  push:
+    branches: [ master ]
   workflow_dispatch:
+
+# Prevent duplicate runs on the same branch/PR and cancel superseded jobs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
