@@ -1288,11 +1288,17 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
 }
 
 int MR_ClusterIsMySlot(size_t slot) {
-    if (RedisModule_ShardingGetSlotRange) {
-        int first_slot, last_slot;
-        RedisModule_ShardingGetSlotRange(&first_slot, &last_slot);
-        return first_slot <= slot && last_slot >= slot;
+    if (clusterCtx.isOss) {
+        if (RedisModule_ClusterCanAccessKeysInSlot != NULL)
+            return RedisModule_ClusterCanAccessKeysInSlot(slot);
+    } else {
+        if (RedisModule_ShardingGetSlotRange != NULL) {
+            int first_slot, last_slot;
+            RedisModule_ShardingGetSlotRange(&first_slot, &last_slot);
+            return first_slot <= slot && last_slot >= slot;
+        }
     }
+    // Fallback.
     return clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
 }
 
