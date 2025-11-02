@@ -1344,6 +1344,7 @@ REDISMODULE_API void (*RedisModule_GetRandomHexChars)(char *dst, size_t len) RED
 REDISMODULE_API void (*RedisModule_SetDisconnectCallback)(RedisModuleBlockedClient *bc, RedisModuleDisconnectFunc callback) REDISMODULE_ATTR;
 REDISMODULE_API void (*RedisModule_SetClusterFlags)(RedisModuleCtx *ctx, uint64_t flags) REDISMODULE_ATTR;
 REDISMODULE_API unsigned int (*RedisModule_ClusterKeySlot)(RedisModuleString *key) REDISMODULE_ATTR;
+REDISMODULE_API unsigned int (*RedisModule_ClusterKeySlotC)(const char *keystr, size_t keylen) REDISMODULE_ATTR;
 REDISMODULE_API const char *(*RedisModule_ClusterCanonicalKeyNameInSlot)(unsigned int slot) REDISMODULE_ATTR;
 REDISMODULE_API int (*RedisModule_ClusterCanAccessKeysInSlot)(int slot) REDISMODULE_ATTR;
 REDISMODULE_API int (*RedisModule_ClusterPropagateForSlotMigration)(RedisModuleCtx *ctx, const char *cmdname, const char *fmt, ...) REDISMODULE_ATTR;
@@ -1740,6 +1741,7 @@ static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int 
     REDISMODULE_GET_API(GetRandomHexChars);
     REDISMODULE_GET_API(SetClusterFlags);
     REDISMODULE_GET_API(ClusterKeySlot);
+    REDISMODULE_GET_API(ClusterKeySlotC);
     REDISMODULE_GET_API(ClusterCanonicalKeyNameInSlot);
     REDISMODULE_GET_API(ClusterCanAccessKeysInSlot);
     REDISMODULE_GET_API(ClusterPropagateForSlotMigration);
