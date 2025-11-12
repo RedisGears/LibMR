@@ -864,17 +864,14 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     clusterCtx.CurrCluster->clusterSetCommandSize = argc;
 
     clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
-    RedisModule_Log(mr_staticCtx, "notice", "debugme 0 %s",clusterCtx.CurrCluster->clusterSetCommand[0]);
 
     for(int i = 1 ; i < argc ; ++i){
         if(i == CLUSTER_SET_MY_ID_INDEX){
             clusterCtx.CurrCluster->clusterSetCommand[i] = NULL;
-            RedisModule_Log(mr_staticCtx, "notice", "debugme %d NULL", i);
             continue;
         }
         const char* arg = RedisModule_StringPtrLen(argv[i], NULL);
         clusterCtx.CurrCluster->clusterSetCommand[i] = MR_STRDUP(arg);
-        RedisModule_Log(mr_staticCtx, "notice", "debugme %d %s", i, arg);
     }
 
     size_t myIdLen;
@@ -890,7 +887,6 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
 
     long long numOfRanges;
     RedisModule_Assert(RedisModule_StringToLongLong(argv[8], &numOfRanges) == REDISMODULE_OK);
-    RedisModule_Log(mr_staticCtx, "notice", "debugme numOfRanges=%lld", numOfRanges);
 
     size_t i = 9;  // start of first shard's ranges (and some other) info
     for(size_t j = 0 ; j < numOfRanges ; ++j){
@@ -905,7 +901,6 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
         memset(realId, '0', zerosPadding);
         memcpy(realId + zerosPadding, shardId, shardIdLen);
         realId[REDISMODULE_NODE_ID_LEN] = '\0';
-        RedisModule_Log(mr_staticCtx, "notice", "debugme i=%zu, j=%zu, shardId=%s realId=%s", i, j, shardId, realId);
         i++;
 
         long long minslot = 0, maxslot = -1;  // Make sure that if they are missing a loop from minslot to maxslot will do nothing
