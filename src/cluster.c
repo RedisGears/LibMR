@@ -875,6 +875,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     }
 
     size_t myIdLen;
+    RedisModule_Assert(CLUSTER_SET_MY_ID_INDEX < argc);
     const char* myId = RedisModule_StringPtrLen(argv[CLUSTER_SET_MY_ID_INDEX], &myIdLen);
     clusterCtx.CurrCluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
     size_t zerosPadding = REDISMODULE_NODE_ID_LEN - myIdLen;
@@ -886,15 +887,20 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     long long numOfRanges;
+    RedisModule_Assert(8 < argc);
+    const char *token = RedisModule_StringPtrLen(argv[7], NULL);
+    RedisModule_Assert(strcasecmp(token, "RANGES") == 0);
     RedisModule_Assert(RedisModule_StringToLongLong(argv[8], &numOfRanges) == REDISMODULE_OK);
 
     size_t i = 9;  // start of first shard's ranges (and some other) info
     for(size_t j = 0 ; j < numOfRanges ; ++j){
-        const char *token = RedisModule_StringPtrLen(argv[i], NULL);
+        RedisModule_Assert(i < argc);
+        token = RedisModule_StringPtrLen(argv[i], NULL);
         RedisModule_Assert(strcasecmp(token, "SHARD") == 0);
         i++;
 
         size_t shardIdLen;
+        RedisModule_Assert(i < argc);
         const char* shardId = RedisModule_StringPtrLen(argv[i], &shardIdLen);
         char realId[REDISMODULE_NODE_ID_LEN + 1];
         size_t zerosPadding = REDISMODULE_NODE_ID_LEN - shardIdLen;
@@ -904,17 +910,22 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
         i++;
 
         long long minslot = 0, maxslot = -1;  // Make sure that if they are missing a loop from minslot to maxslot will do nothing
+        RedisModule_Assert(i < argc);
         token = RedisModule_StringPtrLen(argv[i], NULL);
         if (strcasecmp(token, "SLOTRANGE") == 0) {
             i++;
+            RedisModule_Assert(i < argc);
             RedisModule_Assert(RedisModule_StringToLongLong(argv[i++], &minslot) == REDISMODULE_OK);
+            RedisModule_Assert(i < argc);
             RedisModule_Assert(RedisModule_StringToLongLong(argv[i++], &maxslot) == REDISMODULE_OK);
         }
 
+        RedisModule_Assert(i < argc);
         token = RedisModule_StringPtrLen(argv[i], NULL);
         RedisModule_Assert(strcasecmp(token, "ADDR") == 0);
         i++;
 
+        RedisModule_Assert(i < argc);
         const char* addr = RedisModule_StringPtrLen(argv[i++], NULL);
         char* passEnd = strstr(addr, "@");
         RedisModule_Assert(passEnd != NULL);
@@ -957,13 +968,17 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
             clusterCtx.maxSlot = maxslot;
         }
 
+        RedisModule_Assert(i < argc);
         token = RedisModule_StringPtrLen(argv[i], NULL);
-        if (strcasecmp(token, "UNIXADDR") == 0)
+        if (strcasecmp(token, "UNIXADDR") == 0) {
             i += 2; // Ignore it and its value
+        }
 
+        RedisModule_Assert(i < argc);
         token = RedisModule_StringPtrLen(argv[i], NULL);
-        if (strcasecmp(token, "MASTER") == 0)
+        if (strcasecmp(token, "MASTER") == 0) {
             i++; // Ignore it
+        }
     }
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
