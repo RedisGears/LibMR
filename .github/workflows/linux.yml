@@ -40,7 +40,7 @@ jobs:
         make clean
     - name: Python test deps
       run: |
-        python3 -m pip install -U pip
+        python3 -m pip install -U pip setuptools
         python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent "redis>=5"
     - name: install redis
       run: |
@@ -56,7 +56,13 @@ jobs:
       run: make build_deps
     - name: Default tests
       run: make run_tests
+      env:
+        PYTHON: python
     - name: SSL tests
       run: make run_tests_ssl
+      env:
+        PYTHON: python
     - name: Valgrind tests
       run: make run_tests_valgrind
+      env:
+        PYTHON: python
