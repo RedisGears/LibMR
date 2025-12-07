@@ -19,4 +19,4 @@ else
 fi
 
 
-python3 -m RLTest --verbose-information-on-failure --no-progress --module $MODULE_PATH --clear-logs "$@" --oss_password "password" --enable-debug-command
+python3 -m RLTest --verbose-information-on-failure --no-progress --randomize-ports --module $MODULE_PATH --clear-logs "$@" --oss_password "password" --enable-debug-command

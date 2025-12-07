@@ -1,13 +1,20 @@
 ROOT=$(realpath ../../)
 HERE=$(realpath ./)
 
+uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
+ifeq ($(uname_S),Darwin)
+	MODULE_EXT=dylib
+else
+	MODULE_EXT=so
+endif
+
 ifeq ($(DEBUG),1)
 	EXTRA_ARGS=
-	MODULE_PATH=$(HERE)/target/debug/libmr_test.so
+	MODULE_PATH=$(HERE)/target/debug/libmr_test.$(MODULE_EXT)
 	DEBUG_RUN=1
 else
 	EXTRA_ARGS=--release
-	MODULE_PATH=$(HERE)/target/release/libmr_test.so
+	MODULE_PATH=$(HERE)/target/release/libmr_test.$(MODULE_EXT)
 	DEBUG_RUN=0
 endif
 

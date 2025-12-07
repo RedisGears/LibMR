@@ -1,2 +1,5 @@
 [env]
-MODULE_NAME = "MRTESTS"
+# Minimal env needed for macOS builds in tests
+LIBCLANG_PATH = "/opt/homebrew/opt/llvm/lib"
+OPENSSL_PREFIX = "/opt/homebrew/opt/openssl@3"
+PKG_CONFIG_PATH = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
