@@ -746,8 +746,9 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
 
     mr_list* slotRanges = mr_listCreate();
     mr_listSetFreeMethod(slotRanges, FreeSlotRange);
-    if (minSlot <= maxSlot)
+    if (minSlot <= maxSlot) {
         mr_listAddNodeTail(slotRanges, NewSlotRange(minSlot, maxSlot));
+    }
 
     mr_list* pendingMessages = mr_listCreate();
     mr_listSetFreeMethod(pendingMessages, MR_ClusterFreeNodeMsg);
@@ -810,13 +811,13 @@ static void MR_RefreshClusterData(){
     for(size_t i = 0 ; i < RedisModule_CallReplyLength(allSlotsReply) ; ++i){
         RedisModuleCallReply *slotRangeReply = RedisModule_CallReplyArrayElement(allSlotsReply, i);
 
-        RedisModuleCallReply *minslotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 0);
-        RedisModule_Assert(RedisModule_CallReplyType(minslotReply) == REDISMODULE_REPLY_INTEGER);
-        long long minSlot = RedisModule_CallReplyInteger(minslotReply);
+        RedisModuleCallReply *minSlotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 0);
+        RedisModule_Assert(RedisModule_CallReplyType(minSlotReply) == REDISMODULE_REPLY_INTEGER);
+        long long minSlot = RedisModule_CallReplyInteger(minSlotReply);
 
-        RedisModuleCallReply *maxslotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 1);
-        RedisModule_Assert(RedisModule_CallReplyType(maxslotReply) == REDISMODULE_REPLY_INTEGER);
-        long long maxSlot = RedisModule_CallReplyInteger(maxslotReply);
+        RedisModuleCallReply *maxSlotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 1);
+        RedisModule_Assert(RedisModule_CallReplyType(maxSlotReply) == REDISMODULE_REPLY_INTEGER);
+        long long maxSlot = RedisModule_CallReplyInteger(maxSlotReply);
 
         RedisModuleCallReply *nodeDetailsReply = RedisModule_CallReplyArrayElement(slotRangeReply, 2);
         RedisModule_Assert(RedisModule_CallReplyType(nodeDetailsReply) == REDISMODULE_REPLY_ARRAY);
@@ -922,8 +923,9 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     RedisModule_Assert(index < argc);
     long long numOfRanges;
     RedisModule_Assert(RedisModule_StringToLongLong(argv[index], &numOfRanges) == REDISMODULE_OK);
-    if (hasReplication)
+    if (hasReplication) {
         RedisModule_Assert(numOfRanges % 2 == 0);
+    }
     index++;
 
     for (size_t j = 0 ; j < numOfRanges ; ++j){
