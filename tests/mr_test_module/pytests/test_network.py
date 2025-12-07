@@ -186,6 +186,14 @@ class ShardMock():
             self.env.cmd('debug', 'MARK-INTERNAL-CLIENT')
         except Exception:
             pass
+        # Resolve the actual Redis listening port from the current env
+        redis_port = 6379
+        try:
+            c = self.env.getConnection()
+            # redis-py connection object exposes connection kwargs
+            redis_port = int(getattr(c, "connection_pool").connection_kwargs.get("port", redis_port))
+        except Exception:
+            pass
         self.env.cmd('MRTESTS.CLUSTERSET',
                      'NO-USED',
                      'NO-USED',
@@ -201,7 +209,7 @@ class ShardMock():
                      '0',
                      '8192',
                      'NO-USED',
-                     'password@%s:6379' % self.host,
+                     'password@%s:%d' % (self.host, redis_port),
                      'NO-USED',
                      'NO-USED',
                      '2',
