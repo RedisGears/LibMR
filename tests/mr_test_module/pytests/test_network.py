@@ -196,31 +196,30 @@ class ShardMock():
             pass
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
-        self.env.cmd('MRTESTS.CLUSTERSET',
-                     'NO-USED',
-                     'NO-USED',
-                     'NO-USED',
-                     'NO-USED',
-                     'NO-USED',
-                     '1',
-                     'NO-USED',
-                     '2',
-                     'NO-USED',
-                     '1',
-                     'NO-USED',
-                     '0',
-                     '8192',
-                     'NO-USED',
-                     'password@%s:%d' % (endpoint_host, redis_port),
-                     'NO-USED',
-                     'NO-USED',
-                     '2',
-                     'NO-USED',
-                     '8193',
-                     '16383',
-                     'NO-USED',
-                     'password@%s:%d' % (endpoint_host, self.port)
-                     )
+        # Build arguments according to MR_SetClusterData parser:
+        # argv[6] => myId, argv[7] => "RANGES", argv[8] => numOfRanges, then repeating:
+        # "SHARD" <id> "SLOTRANGE" <min> <max> "ADDR" <password@host:port> ["MASTER"]
+        args = [
+            'NO-USED',  # [1]
+            'NO-USED',  # [2]
+            'NO-USED',  # [3]
+            'NO-USED',  # [4]
+            'NO-USED',  # [5]
+            '1',        # [6] myId
+            'RANGES',   # [7]
+            '2',        # [8] two ranges
+            # Shard 1 (current Redis)
+            'SHARD', '1',
+            'SLOTRANGE', '0', '8192',
+            'ADDR', 'password@%s:%d' % (endpoint_host, redis_port),
+            'MASTER',
+            # Shard 2 (mock shard)
+            'SHARD', '2',
+            'SLOTRANGE', '8193', '16383',
+            'ADDR', 'password@%s:%d' % (endpoint_host, self.port),
+            'MASTER'
+        ]
+        self.env.cmd('MRTESTS.CLUSTERSET', *args)
         self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
     def __enter__(self):
@@ -322,8 +321,25 @@ def testClusterErrorHelloResponse(env, conn):
             conn.send_status('OK')  # auth response
             conn.send_error('ERRCLUSTER')  # sending error for the RG.HELLO request
 
-            # expect the topology rg.hello to be sent
-            env.assertEqual(conn.read_request(), ['MRTESTS.CLUSTERSETFROMSHARD', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', '0000000000000000000000000000000000000002', 'NO-USED', '2', 'NO-USED', '1', 'NO-USED', '0', '8192', 'NO-USED', 'password@%s:6379' % shardMock.host, 'NO-USED', 'NO-USED', '2', 'NO-USED', '8193', '16383', 'NO-USED', 'password@%s:10000' % shardMock.host])
+            # expect the topology rg.hello to be sent (new RANGES format)
+            endpoint_host = '[%s]' % shardMock.host if ':' in shardMock.host else shardMock.host
+            redis_port = int(getattr(env.getConnection().connection_pool, "connection_kwargs").get("port", 6379))
+            my_id = '0' * 39 + '2'
+            expected = [
+                'MRTESTS.CLUSTERSETFROMSHARD',
+                'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED',
+                my_id,
+                'RANGES', '2',
+                'SHARD', '1',
+                'SLOTRANGE', '0', '8192',
+                'ADDR', 'password@%s:%d' % (endpoint_host, redis_port),
+                'MASTER',
+                'SHARD', '2',
+                'SLOTRANGE', '8193', '16383',
+                'ADDR', 'password@%s:%d' % (endpoint_host, shardMock.port),
+                'MASTER'
+            ]
+            env.assertEqual(conn.read_request(), expected)
             env.assertEqual(conn.read_request(), ['MRTESTS.HELLO'])
 
             # closing the connection befor reply
@@ -458,8 +474,25 @@ def testSendTopology(env, conn):
             # should reconnect
             conn = shardMock.GetConnection(sendHelloResponse=False)
 
-            # should recieve the topology
-            env.assertEqual(conn.read_request(), ['MRTESTS.CLUSTERSETFROMSHARD', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', '0000000000000000000000000000000000000002', 'NO-USED', '2', 'NO-USED', '1', 'NO-USED', '0', '8192', 'NO-USED', 'password@%s:6379' % shardMock.host, 'NO-USED', 'NO-USED', '2', 'NO-USED', '8193', '16383', 'NO-USED', 'password@%s:10000' % shardMock.host])
+            # should receive the topology (new RANGES format)
+            endpoint_host = '[%s]' % shardMock.host if ':' in shardMock.host else shardMock.host
+            redis_port = int(getattr(env.getConnection().connection_pool, "connection_kwargs").get("port", 6379))
+            my_id = '0' * 39 + '2'
+            expected = [
+                'MRTESTS.CLUSTERSETFROMSHARD',
+                'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED', 'NO-USED',
+                my_id,
+                'RANGES', '2',
+                'SHARD', '1',
+                'SLOTRANGE', '0', '8192',
+                'ADDR', 'password@%s:%d' % (endpoint_host, redis_port),
+                'MASTER',
+                'SHARD', '2',
+                'SLOTRANGE', '8193', '16383',
+                'ADDR', 'password@%s:%d' % (endpoint_host, shardMock.port),
+                'MASTER'
+            ]
+            env.assertEqual(conn.read_request(), expected)
 
 @MRTestDecorator(skipOnCluster=True)
 def testStopListening(env, conn):
