@@ -25,14 +25,24 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+    - name: Install toolchain (LLVM, OpenSSL, automake, libtool)
+      run: |
+        brew update
+        brew install llvm openssl@3 automake libtool
+    - name: Export build environment
+      run: |
+        echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> $GITHUB_ENV
+        echo "PATH=$(brew --prefix llvm)/bin:$PATH" >> $GITHUB_ENV
+        echo "OPENSSL_PREFIX=$(brew --prefix openssl)" >> $GITHUB_ENV
+        echo "PKG_CONFIG_PATH=$(brew --prefix openssl)/lib/pkgconfig" >> $GITHUB_ENV
     - name: Checkout submodules
       run: git submodule update --init --recursive
-    - name: install rltest
-      run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent
+    - name: Python test deps
+      run: |
+        python -m pip install -U pip
+        python -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent "redis>=5"
     - name: install redis
       run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
-    - name: install automake
-      run: brew install automake libtool
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests

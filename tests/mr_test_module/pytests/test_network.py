@@ -209,12 +209,17 @@ class ShardMock():
                      '8193',
                      '16383',
                      'NO-USED',
-                     'password@%s:10000' % self.host
+                     'password@%s:%d' % (self.host, self.port)
                      )
         self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
     def __enter__(self):
-        self.stream_server = gevent.server.StreamServer((self.host, 10000), self._handle_conn)
+        # Pick an available ephemeral port to avoid collisions on shared dev machines/CI
+        tmp_sock = socket.socket(socket.AF_INET6 if ':' in self.host else socket.AF_INET, socket.SOCK_STREAM)
+        tmp_sock.bind((self.host, 0))
+        self.port = tmp_sock.getsockname()[1]
+        tmp_sock.close()
+        self.stream_server = gevent.server.StreamServer((self.host, self.port), self._handle_conn)
         self.stream_server.start()
         self._send_cluster_set()
         self.runId = self.env.cmd('MRTESTS.INFOCLUSTER')[3]
@@ -241,7 +246,7 @@ class ShardMock():
         self.stream_server.stop()
 
     def StartListening(self):
-        self.stream_server = gevent.server.StreamServer((self.host, 10000), self._handle_conn)
+        self.stream_server = gevent.server.StreamServer((self.host, self.port), self._handle_conn)
         self.stream_server.start()
 
 def _is_ipv6_enabled():
