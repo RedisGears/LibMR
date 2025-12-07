@@ -194,6 +194,8 @@ class ShardMock():
             redis_port = int(getattr(c, "connection_pool").connection_kwargs.get("port", redis_port))
         except Exception:
             pass
+        # IPv6 endpoints must be bracketed in host:port strings
+        endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
         self.env.cmd('MRTESTS.CLUSTERSET',
                      'NO-USED',
                      'NO-USED',
@@ -209,7 +211,7 @@ class ShardMock():
                      '0',
                      '8192',
                      'NO-USED',
-                     'password@%s:%d' % (self.host, redis_port),
+                     'password@%s:%d' % (endpoint_host, redis_port),
                      'NO-USED',
                      'NO-USED',
                      '2',
@@ -217,7 +219,7 @@ class ShardMock():
                      '8193',
                      '16383',
                      'NO-USED',
-                     'password@%s:%d' % (self.host, self.port)
+                     'password@%s:%d' % (endpoint_host, self.port)
                      )
         self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
