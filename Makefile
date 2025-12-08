@@ -17,15 +17,15 @@ ifeq ($(uname_S),Darwin)
 	LIBCLANG_PATH ?= $(shell /bin/sh -c 'if command -v brew >/dev/null 2>&1; then P=$$(brew --prefix llvm 2>/dev/null); [ -n "$$P" ] && echo "$$P/lib" || echo ""; else echo ""; fi')
 	OPENSSL_PREFIX ?= $(shell /bin/sh -c 'command -v brew >/dev/null 2>&1 && brew --prefix openssl 2>/dev/null || echo /usr/local/opt/openssl')
 	PKG_CONFIG_PATH ?= $(shell /bin/sh -c 'if command -v brew >/dev/null 2>&1; then P=$$(brew --prefix openssl 2>/dev/null); [ -n "$$P" ] && echo "$$P/lib/pkgconfig" || echo /usr/local/opt/openssl/lib/pkgconfig; else echo /usr/local/opt/openssl/lib/pkgconfig; fi')
-	# Auto-detect venv python
-	VENV_PYTHON := $(shell test -x .venv/bin/python && echo .venv/bin/python || echo python)
+	# Auto-detect venv python (use absolute path)
+	VENV_PYTHON := $(shell test -x $(CURDIR)/.venv/bin/python && echo $(CURDIR)/.venv/bin/python || echo python)
 else
 	# Linux: use system paths
 	LIBCLANG_PATH ?= $(shell llvm-config --libdir 2>/dev/null || echo "")
 	OPENSSL_PREFIX ?= /usr
 	PKG_CONFIG_PATH ?= /usr/lib/x86_64-linux-gnu/pkgconfig
-	# Auto-detect venv python
-	VENV_PYTHON := $(shell test -x .venv/bin/python && echo .venv/bin/python || echo python3)
+	# Auto-detect venv python (use absolute path)
+	VENV_PYTHON := $(shell test -x $(CURDIR)/.venv/bin/python && echo $(CURDIR)/.venv/bin/python || echo python3)
 endif
 
 run_tests:
