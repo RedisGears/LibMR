@@ -60,8 +60,12 @@ fn main() {
         format!("-L{open_ssl_prefix_path}/lib/")
     };
 
+    let mut extra = String::new();
+    if std::env::consts::OS == "linux" {
+        extra.push_str(" -lpthread");
+    }
     println!(
-        "cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto",
-        output_dir, open_ssl_lib_path_link_argument
+        "cargo:rustc-flags=-L{} {} -lmr -lssl -lcrypto{}",
+        output_dir, open_ssl_lib_path_link_argument, extra
     );
 }
