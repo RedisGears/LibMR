@@ -1,3 +1,6 @@
+[env]
+MODULE_NAME = "MRTESTS"
+
 [target.'cfg(target_os = "macos")'.env]
 # Minimal env for macOS (Homebrew)
 LIBCLANG_PATH = "/opt/homebrew/opt/llvm/lib"
