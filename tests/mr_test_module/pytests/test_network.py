@@ -186,14 +186,6 @@ class ShardMock():
             self.env.cmd('debug', 'MARK-INTERNAL-CLIENT')
         except Exception:
             pass
-        # Resolve the actual Redis listening port from the current env
-        redis_port = 6379
-        try:
-            c = self.env.getConnection()
-            # redis-py connection object exposes connection kwargs
-            redis_port = int(getattr(c, "connection_pool").connection_kwargs.get("port", redis_port))
-        except (AttributeError, ValueError):
-            pass
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
         # Build arguments according to MR_SetClusterData parser:
@@ -208,10 +200,10 @@ class ShardMock():
             '1',        # [6] myId
             'RANGES',   # [7]
             '2',        # [8] two ranges
-            # Shard 1 (current Redis)
+            # Shard 1 (current Redis) - HARDCODED PORT 6379
             'SHARD', '1',
             'SLOTRANGE', '0', '8192',
-            'ADDR', 'password@%s:%d' % (endpoint_host, redis_port),
+            'ADDR', 'password@%s:6379' % endpoint_host,
             'MASTER',
             # Shard 2 (mock shard)
             'SHARD', '2',
@@ -323,7 +315,6 @@ def testClusterErrorHelloResponse(env, conn):
 
             # expect the topology rg.hello to be sent (new RANGES format)
             endpoint_host = '[%s]' % shardMock.host if ':' in shardMock.host else shardMock.host
-            redis_port = int(getattr(env.getConnection().connection_pool, "connection_kwargs").get("port", 6379))
             my_id = '0' * 39 + '2'
             expected = [
                 'MRTESTS.CLUSTERSETFROMSHARD',
@@ -332,7 +323,7 @@ def testClusterErrorHelloResponse(env, conn):
                 'RANGES', '2',
                 'SHARD', '1',
                 'SLOTRANGE', '0', '8192',
-                'ADDR', 'password@%s:%d' % (endpoint_host, redis_port),
+                'ADDR', 'password@%s:6379' % endpoint_host,  # HARDCODED PORT 6379
                 'MASTER',
                 'SHARD', '2',
                 'SLOTRANGE', '8193', '16383',
@@ -476,7 +467,6 @@ def testSendTopology(env, conn):
 
             # should receive the topology (new RANGES format)
             endpoint_host = '[%s]' % shardMock.host if ':' in shardMock.host else shardMock.host
-            redis_port = int(getattr(env.getConnection().connection_pool, "connection_kwargs").get("port", 6379))
             my_id = '0' * 39 + '2'
             expected = [
                 'MRTESTS.CLUSTERSETFROMSHARD',
@@ -485,7 +475,7 @@ def testSendTopology(env, conn):
                 'RANGES', '2',
                 'SHARD', '1',
                 'SLOTRANGE', '0', '8192',
-                'ADDR', 'password@%s:%d' % (endpoint_host, redis_port),
+                'ADDR', 'password@%s:6379' % endpoint_host,  # HARDCODED PORT 6379
                 'MASTER',
                 'SHARD', '2',
                 'SLOTRANGE', '8193', '16383',
