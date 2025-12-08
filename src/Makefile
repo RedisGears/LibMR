@@ -44,6 +44,9 @@ ifeq ($(uname_S),Darwin)
 	# On macOS, rely on Homebrew when present; otherwise fallback is already set above.
 	OPENSSL_PREFIX:=$(shell /bin/sh -c 'command -v brew >/dev/null 2>&1 && brew --prefix openssl || printf $(OPENSSL_PREFIX)')
 	GCC_FLAGS+=-I$(OPENSSL_PREFIX)/include/
+else
+	# On Linux, ensure pthreads are linked when using libevent_pthreads
+	LD_FLAGS+=-lpthread
 endif
 
 %.o : %.c
