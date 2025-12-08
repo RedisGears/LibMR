@@ -23,7 +23,9 @@ else
 	# Linux: use system paths
 	LIBCLANG_PATH ?= $(shell llvm-config --libdir 2>/dev/null || echo "")
 	OPENSSL_PREFIX ?= /usr
-	PKG_CONFIG_PATH ?= /usr/lib/x86_64-linux-gnu/pkgconfig
+	# PKG_CONFIG_PATH: try multiarch path first, fallback to standard locations
+	# Works on x86_64, arm64, and other architectures
+	PKG_CONFIG_PATH ?= $(shell /bin/sh -c 'ARCH=$$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || echo x86_64-linux-gnu); if [ -d "/usr/lib/$$ARCH/pkgconfig" ]; then echo "/usr/lib/$$ARCH/pkgconfig"; elif [ -d "/usr/lib/pkgconfig" ]; then echo "/usr/lib/pkgconfig"; else echo ""; fi')
 	# Auto-detect venv python (use absolute path)
 	VENV_PYTHON := $(shell test -x $(CURDIR)/.venv/bin/python && echo $(CURDIR)/.venv/bin/python || echo python3)
 endif
