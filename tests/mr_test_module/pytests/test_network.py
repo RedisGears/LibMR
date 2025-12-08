@@ -561,7 +561,7 @@ def testClusterRefreshOnOnlySingleNode(env, conn):
     except Exception as e:
         env.assertTrue(False, message='Failed waiting for execution to finish')
 
-@MRTestDecorator(skipOnCluster=True, skipTest=True)
+@MRTestDecorator(skipOnCluster=True)
 def testClusterSetAfterHelloResponseFailure(env, conn):
     for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
@@ -580,27 +580,19 @@ def testClusterSetAfterHelloResponseFailure(env, conn):
             except Exception:
                 pass
             res = env.cmd('MRTESTS.CLUSTERSET',
-                        'NO-USED',
-                        'NO-USED',
-                        'NO-USED',
-                        'NO-USED',
-                        'NO-USED',
-                        '1',
-                        'NO-USED',
-                        '1',
-                        'NO-USED',
-                        '1',
-                        'NO-USED',
-                        '0',
-                        '8192',
-                        'NO-USED',
-                        'password@%s:6379' % shardMock.host,
-                        'NO-USED',
+                        'HASHFUNC', 'CRC16',
+                        'NUMSLOTS', '16384',
+                        'MYID', '1',
+                        'RANGES', '1',
+                        'SHARD', '1',
+                        'SLOTRANGE', '0', '8192',
+                        'ADDR', 'password@%s:6379' % shardMock.host,
+                        'MASTER',
                         )
 
             time.sleep(2) # make sure the RG.HELLO resend callback is not called
 
-@MRTestDecorator(skipOnCluster=True, skipTest=True)
+@MRTestDecorator(skipOnCluster=True)
 def testClusterSetAfterDisconnect(env, conn):
     for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
@@ -618,22 +610,14 @@ def testClusterSetAfterDisconnect(env, conn):
                 pass
             # resend cluster set
             res = env.cmd('MRTESTS.CLUSTERSET',
-                        'NO-USED',
-                        'NO-USED',
-                        'NO-USED',
-                        'NO-USED',
-                        'NO-USED',
-                        '1',
-                        'NO-USED',
-                        '1',
-                        'NO-USED',
-                        '1',
-                        'NO-USED',
-                        '0',
-                        '8192',
-                        'NO-USED',
-                        'password@%s:6379' % shardMock.host,
-                        'NO-USED',
+                        'HASHFUNC', 'CRC16',
+                        'NUMSLOTS', '16384',
+                        'MYID', '1',
+                        'RANGES', '1',
+                        'SHARD', '1',
+                        'SLOTRANGE', '0', '8192',
+                        'ADDR', 'password@%s:6379' % shardMock.host,
+                        'MASTER',
                         )
 
             shardMock._send_cluster_set()
