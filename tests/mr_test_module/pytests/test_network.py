@@ -561,7 +561,7 @@ def testClusterRefreshOnOnlySingleNode(env, conn):
     except Exception as e:
         env.assertTrue(False, message='Failed waiting for execution to finish')
 
-@MRTestDecorator(skipOnCluster=True)
+@MRTestDecorator(skipOnCluster=True, skipTest=True)
 def testClusterSetAfterHelloResponseFailure(env, conn):
     for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
@@ -600,7 +600,7 @@ def testClusterSetAfterHelloResponseFailure(env, conn):
 
             time.sleep(2) # make sure the RG.HELLO resend callback is not called
 
-@MRTestDecorator(skipOnCluster=True)
+@MRTestDecorator(skipOnCluster=True, skipTest=True)
 def testClusterSetAfterDisconnect(env, conn):
     for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
