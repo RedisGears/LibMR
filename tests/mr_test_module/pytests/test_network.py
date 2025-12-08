@@ -192,7 +192,7 @@ class ShardMock():
             c = self.env.getConnection()
             # redis-py connection object exposes connection kwargs
             redis_port = int(getattr(c, "connection_pool").connection_kwargs.get("port", redis_port))
-        except Exception:
+        except (AttributeError, ValueError):
             pass
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
