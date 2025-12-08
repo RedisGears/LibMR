@@ -633,3 +633,34 @@ def testMassiveClusterSetFromShard(env, conn):
                         'NO-USED',
                         'password@%s:10000' % shardMock.host
                         )
+
+@MRTestDecorator(skipOnCluster=True)
+def testSendMultiRangePerNodeTopology(env, conn):
+    for host in _get_hosts():
+        with ShardMock(env, host) as shardMock:
+            cmd = [
+                    'MRTESTS.CLUSTERSET',
+                    'HASHFUNC', 'CRC16',
+                    'NUMSLOTS', '16384',
+                    'MYID', '1',
+                    'HASREPLICATION',
+                    'RANGES', '8',
+                    # note that a slave cannot be on the same node as its master, but we ignore this in this test
+                    'SHARD', '1', 'SLOTRANGE', '0', '10000', 'ADDR', 'password@%s:6379' % shardMock.host, 'MASTER',
+                    'SHARD', '2', 'SLOTRANGE', '0', '10000', 'ADDR', 'password@%s:6380' % shardMock.host,
+                    'SHARD', '3', 'ADDR', 'password@%s:6382' % shardMock.host,  # a slotless slave
+                    # another range on first shard
+                    'SHARD', '1', 'SLOTRANGE', '16000', '16383', 'ADDR', 'password@%s:6379' % shardMock.host, 'MASTER',
+                    # a new range on a new shard
+                    'SHARD', '4', 'SLOTRANGE', '10001', '15999', 'ADDR', 'password@%s:6383' % shardMock.host, 'MASTER',
+                    # and its slave
+                    'SHARD', '5', 'SLOTRANGE', '10001', '15999', 'ADDR', 'password@%s:6384' % shardMock.host,
+                    # shard 1's second range's slave
+                    'SHARD', '2', 'SLOTRANGE', '16000', '16383', 'ADDR', 'password@%s:6380' % shardMock.host,
+                    # the master slotless shard
+                    'SHARD', '6', 'ADDR', 'password@%s:6381' % shardMock.host, 'MASTER',
+                    ]
+
+            res = env.cmd(*cmd)
+            assert res == 'OK'
+
