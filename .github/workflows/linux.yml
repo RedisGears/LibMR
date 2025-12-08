@@ -23,6 +23,13 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+    - name: Install system toolchain (LLVM/Clang, OpenSSL, build tools)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y llvm clang libclang-dev pkg-config libssl-dev build-essential automake libtool
+    - name: Export build environment
+      run: |
+        echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
     - name: Checkout submodules
       run: git submodule update --init --recursive
     - name: format
@@ -31,8 +38,10 @@ jobs:
       run: |
         MODULE_NAME=MRTESTSCLIPPY cargo clippy --all-targets --all-features
         make clean
-    - name: install rltest
-      run: python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent
+    - name: Python test deps
+      run: |
+        python3 -m pip install -U pip setuptools
+        python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent "redis>=5"
     - name: install redis
       run: |
         git clone https://github.com/redis/redis
@@ -47,7 +56,13 @@ jobs:
       run: make build_deps
     - name: Default tests
       run: make run_tests
+      env:
+        PYTHON: python
     - name: SSL tests
       run: make run_tests_ssl
+      env:
+        PYTHON: python
     - name: Valgrind tests
       run: make run_tests_valgrind
+      env:
+        PYTHON: python

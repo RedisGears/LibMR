@@ -6,7 +6,7 @@ else
 	GCC_FLAGS+=-O3
 endif
 
-OPENSSL_PREFIX?=/usr/local/opt/openssl
+OPENSSL_PREFIX?=$(shell brew --prefix openssl 2>/dev/null || echo /usr/local/opt/openssl)
 
 GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API -DREDISMODULE_MAIN -DREDISMODULE_SDK_RLEC \
 -I../deps/hiredis/ \
@@ -38,10 +38,12 @@ ARTIFACT_NAME=libmr
 
 all: $(ARTIFACT_NAME)
 
-uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
+uname_S := $(shell uname -s 2>/dev/null)
 ifeq ($(uname_S),Darwin)
-	OPENSSL_PREFIX?=/usr/local/opt/openssl@1.1
+	OPENSSL_PREFIX:=$(shell brew --prefix openssl 2>/dev/null || echo $(OPENSSL_PREFIX))
 	GCC_FLAGS+=-I$(OPENSSL_PREFIX)/include/
+else
+	LD_FLAGS+=-lpthread
 endif
 
 %.o : %.c
