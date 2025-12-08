@@ -927,6 +927,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
 
         RedisModule_Assert(i < argc);
         const char* addr = RedisModule_StringPtrLen(argv[i++], NULL);
+
         char* passEnd = strstr(addr, "@");
         RedisModule_Assert(passEnd != NULL);
         size_t passSize = passEnd - addr;
