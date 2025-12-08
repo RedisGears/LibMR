@@ -1,15 +1,15 @@
 [env]
 MODULE_NAME = "MRTESTS"
 
+# These can be overridden via environment variables
+# macOS defaults (Homebrew)
 [target.'cfg(target_os = "macos")'.env]
-# Minimal env for macOS (Homebrew)
 LIBCLANG_PATH = "/opt/homebrew/opt/llvm/lib"
 OPENSSL_PREFIX = "/opt/homebrew/opt/openssl@3"
 PKG_CONFIG_PATH = "/opt/homebrew/opt/openssl@3/lib/pkgconfig"
 
+# Linux defaults (Ubuntu/Debian)
 [target.'cfg(target_os = "linux")'.env]
-# Default paths for Ubuntu/Debian with llvm-18
-# If your distro uses a different llvm version, set LIBCLANG_PATH via env to override.
 LIBCLANG_PATH = "/usr/lib/llvm-18/lib"
 OPENSSL_PREFIX = "/usr"
 PKG_CONFIG_PATH = "/usr/lib/x86_64-linux-gnu/pkgconfig"

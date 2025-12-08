@@ -6,8 +6,7 @@ else
 	GCC_FLAGS+=-O3
 endif
 
-# Prefer Homebrew's OpenSSL prefix when available; fallback to common defaults.
-OPENSSL_PREFIX?=$(shell /bin/sh -c 'command -v brew >/dev/null 2>&1 && brew --prefix openssl || printf /usr/local/opt/openssl')
+OPENSSL_PREFIX?=$(shell brew --prefix openssl 2>/dev/null || echo /usr/local/opt/openssl)
 
 GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API -DREDISMODULE_MAIN -DREDISMODULE_SDK_RLEC \
 -I../deps/hiredis/ \
@@ -39,13 +38,11 @@ ARTIFACT_NAME=libmr
 
 all: $(ARTIFACT_NAME)
 
-uname_S := $(shell sh -c 'uname -s 2>/dev/null || echo not')
+uname_S := $(shell uname -s 2>/dev/null)
 ifeq ($(uname_S),Darwin)
-	# On macOS, rely on Homebrew when present; otherwise fallback is already set above.
-	OPENSSL_PREFIX:=$(shell /bin/sh -c 'command -v brew >/dev/null 2>&1 && brew --prefix openssl || printf $(OPENSSL_PREFIX)')
+	OPENSSL_PREFIX:=$(shell brew --prefix openssl 2>/dev/null || echo $(OPENSSL_PREFIX))
 	GCC_FLAGS+=-I$(OPENSSL_PREFIX)/include/
 else
-	# On Linux, ensure pthreads are linked when using libevent_pthreads
 	LD_FLAGS+=-lpthread
 endif
 
