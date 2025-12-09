@@ -86,6 +86,10 @@ typedef struct NodeSendMsg{
     size_t retries;
 }NodeSendMsg;
 
+typedef struct SlotRange{
+    uint16_t minSlot;
+    uint16_t maxSlot;
+}SlotRange;
 typedef struct Node{
     char* id;
     char* ip;
@@ -96,8 +100,7 @@ typedef struct Node{
     char* runId;
     unsigned long long msgId;
     mr_list* pendingMessages;
-    size_t minSlot;
-    size_t maxSlot;
+    mr_list* slotRanges;
     bool isMe;
     NodeStatus status;
     MR_LoopTaskCtx* reconnectEvent;
@@ -118,6 +121,8 @@ struct ClusterCtx {
     ARR(MR_ClusterMessageReceiver) callbacks;
     Cluster* CurrCluster;
     mr_dict* nodesMsgIds;
+    // Note that the slot range in ClusterCtx are legacy code and only used as a fallback.
+    // The general case (i.e., of possible multiple ranges per shard) are handled in `Node`.
     size_t minSlot;
     size_t maxSlot;
     size_t clusterSize;
@@ -155,6 +160,17 @@ static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static Node* MR_GetNode(const char* id);
+
+static SlotRange* NewSlotRange(uint16_t minSlot, uint16_t maxSlot) {
+    SlotRange* result = MR_ALLOC(sizeof(*result));
+    result->minSlot = minSlot;
+    result->maxSlot = maxSlot;
+    return result;
+}
+
+static void FreeSlotRange(void *ptr) {
+    MR_FREE(ptr);
+}
 
 static void MR_ClusterFreeMsg(void* ptr){
     SendMsg* msg = ptr;
@@ -672,6 +688,7 @@ static void MR_NodeFreeInternals(Node* n){
         redisAsyncFree(n->c);
     }
     mr_listRelease(n->pendingMessages);
+    mr_listRelease(n->slotRanges);
     MR_FREE(n);
 }
 
@@ -724,8 +741,18 @@ static Node* MR_GetNode(const char* id){
     return n;
 }
 
-static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, const char* password, const char* unixSocket, size_t minSlot, size_t maxSlot){
+static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, const char* password, const char* unixSocket, long long minSlot, long long maxSlot){
     RedisModule_Assert(!MR_GetNode(id));
+
+    mr_list* slotRanges = mr_listCreate();
+    mr_listSetFreeMethod(slotRanges, FreeSlotRange);
+    if (minSlot <= maxSlot) {
+        mr_listAddNodeTail(slotRanges, NewSlotRange(minSlot, maxSlot));
+    }
+
+    mr_list* pendingMessages = mr_listCreate();
+    mr_listSetFreeMethod(pendingMessages, MR_ClusterFreeNodeMsg);
+
     Node* n = MR_ALLOC(sizeof(*n));
     *n = (Node){
             .id = MR_STRDUP(id),
@@ -735,9 +762,8 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .unixSocket = unixSocket ? MR_STRDUP(unixSocket) : NULL,
             .c = NULL,
             .msgId = 0,
-            .pendingMessages = mr_listCreate(),
-            .minSlot = minSlot,
-            .maxSlot = maxSlot,
+            .pendingMessages = pendingMessages,
+            .slotRanges = slotRanges,
             .isMe = false,
             .status = NodeStatus_Uninitialized,
             .sendClusterTopologyOnNextConnect = false,
@@ -745,11 +771,9 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .reconnectEvent = NULL,
             .resendHelloEvent = NULL,
     };
-    mr_listSetFreeMethod(n->pendingMessages, MR_ClusterFreeNodeMsg);
     mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
-    if(strcmp(id, clusterCtx.CurrCluster->myId) == 0){
-        n->isMe = true;
-    }
+    n->isMe = strcmp(id, clusterCtx.CurrCluster->myId) == 0;
+
     return n;
 }
 
@@ -780,26 +804,26 @@ static void MR_RefreshClusterData(){
     clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModuleCallReply *allSlotsRelpy = RedisModule_Call(mr_staticCtx, "cluster", "c", "slots");
+    RedisModuleCallReply *allSlotsReply = RedisModule_Call(mr_staticCtx, "cluster", "c", "slots");
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
-    RedisModule_Assert(RedisModule_CallReplyType(allSlotsRelpy) == REDISMODULE_REPLY_ARRAY);
-    for(size_t i = 0 ; i < RedisModule_CallReplyLength(allSlotsRelpy) ; ++i){
-        RedisModuleCallReply *slotRangeRelpy = RedisModule_CallReplyArrayElement(allSlotsRelpy, i);
+    RedisModule_Assert(RedisModule_CallReplyType(allSlotsReply) == REDISMODULE_REPLY_ARRAY);
+    for(size_t i = 0 ; i < RedisModule_CallReplyLength(allSlotsReply) ; ++i){
+        RedisModuleCallReply *slotRangeReply = RedisModule_CallReplyArrayElement(allSlotsReply, i);
 
-        RedisModuleCallReply *minslotRelpy = RedisModule_CallReplyArrayElement(slotRangeRelpy, 0);
-        RedisModule_Assert(RedisModule_CallReplyType(minslotRelpy) == REDISMODULE_REPLY_INTEGER);
-        long long minslot = RedisModule_CallReplyInteger(minslotRelpy);
+        RedisModuleCallReply *minSlotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 0);
+        RedisModule_Assert(RedisModule_CallReplyType(minSlotReply) == REDISMODULE_REPLY_INTEGER);
+        long long minSlot = RedisModule_CallReplyInteger(minSlotReply);
 
-        RedisModuleCallReply *maxslotRelpy = RedisModule_CallReplyArrayElement(slotRangeRelpy, 1);
-        RedisModule_Assert(RedisModule_CallReplyType(maxslotRelpy) == REDISMODULE_REPLY_INTEGER);
-        long long maxslot = RedisModule_CallReplyInteger(maxslotRelpy);
+        RedisModuleCallReply *maxSlotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 1);
+        RedisModule_Assert(RedisModule_CallReplyType(maxSlotReply) == REDISMODULE_REPLY_INTEGER);
+        long long maxSlot = RedisModule_CallReplyInteger(maxSlotReply);
 
-        RedisModuleCallReply *nodeDetailsRelpy = RedisModule_CallReplyArrayElement(slotRangeRelpy, 2);
-        RedisModule_Assert(RedisModule_CallReplyType(nodeDetailsRelpy) == REDISMODULE_REPLY_ARRAY);
-        RedisModule_Assert(RedisModule_CallReplyLength(nodeDetailsRelpy) >= 3);
-        RedisModuleCallReply *nodeipReply = RedisModule_CallReplyArrayElement(nodeDetailsRelpy, 0);
-        RedisModuleCallReply *nodeidReply = RedisModule_CallReplyArrayElement(nodeDetailsRelpy, 2);
+        RedisModuleCallReply *nodeDetailsReply = RedisModule_CallReplyArrayElement(slotRangeReply, 2);
+        RedisModule_Assert(RedisModule_CallReplyType(nodeDetailsReply) == REDISMODULE_REPLY_ARRAY);
+        RedisModule_Assert(RedisModule_CallReplyLength(nodeDetailsReply) >= 3);
+        RedisModuleCallReply *nodeipReply = RedisModule_CallReplyArrayElement(nodeDetailsReply, 0);
+        RedisModuleCallReply *nodeidReply = RedisModule_CallReplyArrayElement(nodeDetailsReply, 2);
         size_t idLen;
         size_t ipLen;
         const char* id = RedisModule_CallReplyStringPtr(nodeidReply,&idLen);
@@ -825,19 +849,19 @@ static void MR_RefreshClusterData(){
         Node* n = MR_GetNode(nodeId);
         if(!n){
             /* If we have internal secret we will ignore the clusterCtx.password, we do not need it. */
-            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, RedisModule_GetInternalSecret ? NULL : clusterCtx.password, NULL, minslot, maxslot);
+            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, RedisModule_GetInternalSecret ? NULL : clusterCtx.password, NULL, minSlot, maxSlot);
         }
 
         if (n->isMe) {
-            clusterCtx.minSlot = minslot;
-            clusterCtx.maxSlot = maxslot;
+            clusterCtx.minSlot = minSlot;
+            clusterCtx.maxSlot = maxSlot;
         }
 
-        for(int k = minslot ; k <= maxslot ; ++k){
+        for(int k = minSlot ; k <= maxSlot ; ++k){
             clusterCtx.CurrCluster->slots[k] = n;
         }
     }
-    RedisModule_FreeCallReply(allSlotsRelpy);
+    RedisModule_FreeCallReply(allSlotsReply);
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
@@ -886,48 +910,58 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
 
     clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
-    long long numOfRanges;
-    RedisModule_Assert(8 < argc);
-    const char *token = RedisModule_StringPtrLen(argv[7], NULL);
+    size_t index = 7;
+    const char *token = RedisModule_StringPtrLen(argv[index], NULL);
+    bool hasReplication = strcasecmp(token, "HASREPLICATION") == 0;
+    if (hasReplication) {
+        index++;
+        RedisModule_Assert(index < argc);
+        token = RedisModule_StringPtrLen(argv[index], NULL);
+    }
     RedisModule_Assert(strcasecmp(token, "RANGES") == 0);
-    RedisModule_Assert(RedisModule_StringToLongLong(argv[8], &numOfRanges) == REDISMODULE_OK);
+    index++;
+    RedisModule_Assert(index < argc);
+    long long numOfRanges;
+    RedisModule_Assert(RedisModule_StringToLongLong(argv[index], &numOfRanges) == REDISMODULE_OK);
+    if (hasReplication) {
+        RedisModule_Assert(numOfRanges % 2 == 0);
+    }
+    index++;
 
-    size_t i = 9;  // start of first shard's ranges (and some other) info
-    for(size_t j = 0 ; j < numOfRanges ; ++j){
-        RedisModule_Assert(i < argc);
-        token = RedisModule_StringPtrLen(argv[i], NULL);
+    for (size_t j = 0 ; j < numOfRanges ; ++j){
+        RedisModule_Assert(index < argc);
+        token = RedisModule_StringPtrLen(argv[index], NULL);
         RedisModule_Assert(strcasecmp(token, "SHARD") == 0);
-        i++;
 
+        index++;
+        RedisModule_Assert(index < argc);
         size_t shardIdLen;
-        RedisModule_Assert(i < argc);
-        const char* shardId = RedisModule_StringPtrLen(argv[i], &shardIdLen);
+        const char* shardId = RedisModule_StringPtrLen(argv[index], &shardIdLen);
         char realId[REDISMODULE_NODE_ID_LEN + 1];
         size_t zerosPadding = REDISMODULE_NODE_ID_LEN - shardIdLen;
         memset(realId, '0', zerosPadding);
         memcpy(realId + zerosPadding, shardId, shardIdLen);
         realId[REDISMODULE_NODE_ID_LEN] = '\0';
-        i++;
+        index++;
 
-        long long minslot = 0, maxslot = -1;  // Make sure that if they are missing a loop from minslot to maxslot will do nothing
-        RedisModule_Assert(i < argc);
-        token = RedisModule_StringPtrLen(argv[i], NULL);
+        long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
+        RedisModule_Assert(index < argc);
+        token = RedisModule_StringPtrLen(argv[index], NULL);
         if (strcasecmp(token, "SLOTRANGE") == 0) {
-            i++;
-            RedisModule_Assert(i < argc);
-            RedisModule_Assert(RedisModule_StringToLongLong(argv[i++], &minslot) == REDISMODULE_OK);
-            RedisModule_Assert(i < argc);
-            RedisModule_Assert(RedisModule_StringToLongLong(argv[i++], &maxslot) == REDISMODULE_OK);
+            index++;
+            RedisModule_Assert(index < argc);
+            RedisModule_Assert(RedisModule_StringToLongLong(argv[index++], &minSlot) == REDISMODULE_OK);
+            RedisModule_Assert(index < argc);
+            RedisModule_Assert(RedisModule_StringToLongLong(argv[index++], &maxSlot) == REDISMODULE_OK);
         }
 
-        RedisModule_Assert(i < argc);
-        token = RedisModule_StringPtrLen(argv[i], NULL);
+        RedisModule_Assert(index < argc);
+        token = RedisModule_StringPtrLen(argv[index], NULL);
         RedisModule_Assert(strcasecmp(token, "ADDR") == 0);
-        i++;
+        index++;
 
-        RedisModule_Assert(i < argc);
-        const char* addr = RedisModule_StringPtrLen(argv[i++], NULL);
-
+        RedisModule_Assert(index < argc);
+        const char* addr = RedisModule_StringPtrLen(argv[index++], NULL);
         char* passEnd = strstr(addr, "@");
         RedisModule_Assert(passEnd != NULL);
         size_t passSize = passEnd - addr;
@@ -953,33 +987,39 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
         char ip[ipSize + 1];
         memcpy(ip, addr, ipSize);
         ip[ipSize] = '\0';
-
         unsigned short port = (unsigned short)atoi(ipEnd + 1);
 
-        Node* n = MR_GetNode(realId);
-        if(!n){
-            n = MR_CreateNode(realId, ip, port, password, NULL, minslot, maxslot);
-        }
-        for(int k = minslot ; k <= maxslot ; ++k){
-            clusterCtx.CurrCluster->slots[k] = n;
+        if (index >= argc)
+            break;
+        token = RedisModule_StringPtrLen(argv[index], NULL);
+        if (strcasecmp(token, "UNIXADDR") == 0)
+            index += 2; // Ignore it and its value
+
+        if (index >= argc)
+            break;
+        token = RedisModule_StringPtrLen(argv[index], NULL);
+        if (strcasecmp(token, "MASTER") != 0)
+            continue; // Ignore non-master nodes
+
+        // All info is parsed, create a new node or update an existing one
+        Node* aMasterNode = MR_GetNode(realId);
+        if(!aMasterNode){
+            aMasterNode = MR_CreateNode(realId, ip, port, password, NULL, minSlot, maxSlot);
+        } else {
+            RedisModule_Assert(minSlot <= maxSlot);  // slotless nodes are only created (above)
+            mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
         }
 
-        if (n->isMe) {
-            clusterCtx.minSlot = minslot;
-            clusterCtx.maxSlot = maxslot;
+        for(int k = minSlot ; k <= maxSlot ; ++k){
+            clusterCtx.CurrCluster->slots[k] = aMasterNode;
         }
 
-        RedisModule_Assert(i < argc);
-        token = RedisModule_StringPtrLen(argv[i], NULL);
-        if (strcasecmp(token, "UNIXADDR") == 0) {
-            i += 2; // Ignore it and its value
+        if (aMasterNode->isMe) {
+            clusterCtx.minSlot = minSlot;
+            clusterCtx.maxSlot = maxSlot;
         }
 
-        RedisModule_Assert(i < argc);
-        token = RedisModule_StringPtrLen(argv[i], NULL);
-        if (strcasecmp(token, "MASTER") == 0) {
-            i++; // Ignore it
-        }
+        index++;
     }
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
@@ -1236,10 +1276,13 @@ static void MR_ClusterInfo(void* pd) {
                 RedisModule_ReplyWithNull(ctx);
             }
         }
+
+        RedisModule_Assert(n->slotRanges->len == 1);
+        SlotRange* slotRange = mr_listFirst(n->slotRanges)->value;
         RedisModule_ReplyWithStringBuffer(ctx, "minHslot", strlen("minHslot"));
-        RedisModule_ReplyWithLongLong(ctx, n->minSlot);
+        RedisModule_ReplyWithLongLong(ctx, slotRange->minSlot);
         RedisModule_ReplyWithStringBuffer(ctx, "maxHslot", strlen("maxHslot"));
-        RedisModule_ReplyWithLongLong(ctx, n->maxSlot);
+        RedisModule_ReplyWithLongLong(ctx, slotRange->maxSlot);
         RedisModule_ReplyWithStringBuffer(ctx, "pendingMessages", strlen("pendingMessages"));
         RedisModule_ReplyWithLongLong(ctx, mr_listLength(n->pendingMessages));
 
@@ -1308,15 +1351,12 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
 }
 
 int MR_ClusterIsMySlot(size_t slot) {
-    if (clusterCtx.isOss) {
-        if (RedisModule_ClusterCanAccessKeysInSlot != NULL)
-            return RedisModule_ClusterCanAccessKeysInSlot(slot);
-    } else {
-        if (RedisModule_ShardingGetSlotRange != NULL) {
-            int first_slot, last_slot;
-            RedisModule_ShardingGetSlotRange(&first_slot, &last_slot);
-            return first_slot <= slot && last_slot >= slot;
-        }
+    if (RedisModule_ClusterCanAccessKeysInSlot != NULL)
+        return RedisModule_ClusterCanAccessKeysInSlot(slot);
+    if (RedisModule_ShardingGetSlotRange != NULL) {
+        int first_slot, last_slot;
+        RedisModule_ShardingGetSlotRange(&first_slot, &last_slot);
+        return first_slot <= slot && last_slot >= slot;
     }
     // Fallback.
     return clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
