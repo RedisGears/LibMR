@@ -60,6 +60,7 @@ static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, vo
 static void MR_RunExecution(Execution* e, void* pd);
 static Record* MR_RunStep(Execution* e, Step* s);
 void MR_FreeExecution(Execution* e);
+static void MR_FreeStringOnEventLoop(void* pd);
 
 /* Remote functions declaration */
 static void MR_NewExecutionRecieved(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
@@ -589,17 +590,16 @@ static void MR_SetRecord(Execution* e, void* pd) {
 
     char* buff_data = MR_ALLOC(dataLen);
     if (!buff_data) {
-        RedisModule_ThreadSafeContextLock(mr_staticCtx);
-        RedisModule_FreeString(NULL, payload);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        MR_EventLoopAddTask(MR_FreeStringOnEventLoop, payload);
         return;
     }
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
     const char* data = RedisModule_StringPtrLen(payload, &dataLen);
     memcpy(buff_data, data, dataLen);
-    RedisModule_FreeString(NULL, payload);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    
+    MR_EventLoopAddTask(MR_FreeStringOnEventLoop, payload);
     
     mr_Buffer buff = (mr_Buffer){
             .buff = buff_data,
@@ -1129,6 +1129,11 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     return e;
 }
 
+static void MR_FreeStringOnEventLoop(void* pd) {
+    RedisModuleString* payload = pd;
+    RedisModule_FreeString(NULL, payload);
+}
+
 static void MR_RecieveExecution(void* pd) {
     RedisModuleString* payload = pd;
     
@@ -1137,17 +1142,16 @@ static void MR_RecieveExecution(void* pd) {
 
     char* buff_data = MR_ALLOC(dataSize);
     if (!buff_data) {
-        RedisModule_ThreadSafeContextLock(mr_staticCtx);
-        RedisModule_FreeString(NULL, payload);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        MR_EventLoopAddTask(MR_FreeStringOnEventLoop, payload);
         return;
     }
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
     const char* data = RedisModule_StringPtrLen(payload, &dataSize);
     memcpy(buff_data, data, dataSize);
-    RedisModule_FreeString(NULL, payload);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    
+    MR_EventLoopAddTask(MR_FreeStringOnEventLoop, payload);
     
     mr_Buffer buff = {
             .buff = buff_data,
