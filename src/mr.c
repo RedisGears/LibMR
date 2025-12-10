@@ -584,11 +584,21 @@ static void MR_StepDone(Execution* e, void* pd) {
 static void MR_SetRecord(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
 
-    /* deserialize record, set it on the right step. */
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
     size_t dataLen;
     const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+    char* buff_data = MR_ALLOC(dataLen);
+    if (!buff_data) {
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
+    memcpy(buff_data, data, dataLen);
+    RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    
     mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
+            .buff = buff_data,
             .size = dataLen,
             .cap = dataLen,
     };
@@ -602,9 +612,7 @@ static void MR_SetRecord(Execution* e, void* pd) {
 
     Record* r = MR_RecordDeSerialize(&reader);
 
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    MR_FREE(buff_data);
 
     if (MR_SetRecordToStep(e, stepIndex, r) > 10000){
         /* There is enough records to process, lets continue running. */
@@ -614,18 +622,29 @@ static void MR_SetRecord(Execution* e, void* pd) {
 
 /* Remote function call, runs on the event loop */
 static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
     size_t dataLen;
     const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+    char* buff_data = MR_ALLOC(ID_LEN);
+    if (!buff_data) {
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
+    memcpy(buff_data, data, ID_LEN);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    
     mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
-            .size = dataLen,
-            .cap = dataLen,
+            .buff = buff_data,
+            .size = ID_LEN,
+            .cap = ID_LEN,
     };
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
     const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
+
+    MR_FREE(buff_data);
 
     Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
     if (!e) {
@@ -1109,10 +1128,22 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
 
 static void MR_RecieveExecution(void* pd) {
     RedisModuleString* payload = pd;
+    
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
     size_t dataSize;
     const char* data = RedisModule_StringPtrLen(payload, &dataSize);
+    char* buff_data = MR_ALLOC(dataSize);
+    if (!buff_data) {
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
+    memcpy(buff_data, data, dataSize);
+    RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    
     mr_Buffer buff = {
-            .buff = (char*)data,
+            .buff = buff_data,
             .size = dataSize,
             .cap = dataSize,
     };
@@ -1120,15 +1151,7 @@ static void MR_RecieveExecution(void* pd) {
     mr_BufferReaderInit(&buffReader, &buff);
     Execution* e = MR_ExecutionDeserialize(&buffReader);
 
-    /* We must take the Redis GIL to free the payload,
-     * RedisModuleString refcount are not thread safe.
-     * We better do it here and stuck on of the threads
-     * in the thread pool then do it on the event loop.
-     * Possible optimization would be to batch multiple
-     * payloads into one GIL locking */
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    MR_FREE(buff_data);
 
     /* Finish deserializing the execution, we need to
      * return to the event loop and save the execution
