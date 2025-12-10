@@ -585,16 +585,21 @@ static void MR_SetRecord(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
 
     size_t dataLen;
-    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+    RedisModule_StringPtrLen(payload, &dataLen);
 
     char* buff_data = MR_ALLOC(dataLen);
     if (!buff_data) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
         RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
     memcpy(buff_data, data, dataLen);
     RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
     
     mr_Buffer buff = (mr_Buffer){
             .buff = buff_data,
@@ -1128,16 +1133,21 @@ static void MR_RecieveExecution(void* pd) {
     RedisModuleString* payload = pd;
     
     size_t dataSize;
-    const char* data = RedisModule_StringPtrLen(payload, &dataSize);
+    RedisModule_StringPtrLen(payload, &dataSize);
 
     char* buff_data = MR_ALLOC(dataSize);
     if (!buff_data) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
         RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    const char* data = RedisModule_StringPtrLen(payload, &dataSize);
     memcpy(buff_data, data, dataSize);
     RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
     
     mr_Buffer buff = {
             .buff = buff_data,
