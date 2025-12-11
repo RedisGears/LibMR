@@ -1131,7 +1131,9 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
 
 static void MR_FreeStringOnEventLoop(void* pd) {
     RedisModuleString* payload = pd;
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
     RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 }
 
 static void MR_RecieveExecution(void* pd) {
