@@ -594,11 +594,23 @@ static void MR_SetRecord(Execution* e, void* pd) {
     };
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
+    int err = 0;
     size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
-    RedisModule_Assert(executionIdLen == ID_LEN);
+    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, &err);
+    if (err || executionIdLen != ID_LEN) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
 
-    size_t stepIndex = mr_BufferReaderReadLongLong(&reader, NULL);
+    size_t stepIndex = mr_BufferReaderReadLongLong(&reader, &err);
+    if (err) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
 
     Record* r = MR_RecordDeSerialize(&reader);
 
@@ -1118,7 +1130,15 @@ static void MR_RecieveExecution(void* pd) {
     };
     mr_BufferReader buffReader;
     mr_BufferReaderInit(&buffReader, &buff);
+    int err = 0;
     Execution* e = MR_ExecutionDeserialize(&buffReader);
+    if (!e) {
+        /* If deserialize failed, free payload and bail */
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
 
     /* We must take the Redis GIL to free the payload,
      * RedisModuleString refcount are not thread safe.
