@@ -586,9 +586,24 @@ static void MR_SetRecord(Execution* e, void* pd) {
 
     /* deserialize record, set it on the right step. */
     size_t dataLen;
+    RedisModule_StringPtrLen(payload, &dataLen);
+
+    char* buff_data = MR_ALLOC(dataLen);
+    if (!buff_data) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
+
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
     const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+    memcpy(buff_data, data, dataLen);
+    RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+
     mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
+            .buff = buff_data,
             .size = dataLen,
             .cap = dataLen,
     };
@@ -598,25 +613,19 @@ static void MR_SetRecord(Execution* e, void* pd) {
     size_t executionIdLen;
     const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, &err);
     if (err || executionIdLen != ID_LEN) {
-        RedisModule_ThreadSafeContextLock(mr_staticCtx);
-        RedisModule_FreeString(NULL, payload);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        MR_FREE(buff_data);
         return;
     }
 
     size_t stepIndex = mr_BufferReaderReadLongLong(&reader, &err);
     if (err) {
-        RedisModule_ThreadSafeContextLock(mr_staticCtx);
-        RedisModule_FreeString(NULL, payload);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        MR_FREE(buff_data);
         return;
     }
 
     Record* r = MR_RecordDeSerialize(&reader);
 
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    MR_FREE(buff_data);
 
     if (MR_SetRecordToStep(e, stepIndex, r) > 10000){
         /* There is enough records to process, lets continue running. */
@@ -1122,9 +1131,24 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
 static void MR_RecieveExecution(void* pd) {
     RedisModuleString* payload = pd;
     size_t dataSize;
+    RedisModule_StringPtrLen(payload, &dataSize);
+
+    char* buff_data = MR_ALLOC(dataSize);
+    if (!buff_data) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_FreeString(NULL, payload);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
+
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
     const char* data = RedisModule_StringPtrLen(payload, &dataSize);
+    memcpy(buff_data, data, dataSize);
+    RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+
     mr_Buffer buff = {
-            .buff = (char*)data,
+            .buff = buff_data,
             .size = dataSize,
             .cap = dataSize,
     };
@@ -1132,11 +1156,11 @@ static void MR_RecieveExecution(void* pd) {
     mr_BufferReaderInit(&buffReader, &buff);
     int err = 0;
     Execution* e = MR_ExecutionDeserialize(&buffReader);
+
+    MR_FREE(buff_data);
+
     if (!e) {
-        /* If deserialize failed, free payload and bail */
-        RedisModule_ThreadSafeContextLock(mr_staticCtx);
-        RedisModule_FreeString(NULL, payload);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        /* If deserialize failed, bail */
         return;
     }
 
