@@ -12,6 +12,7 @@
 #include "utils/arr_rm_alloc.h"
 #include "utils/dict.h"
 #include "mr_memory.h"
+#include "mr_prof.h"
 #include "event_loop.h"
 #include "cluster.h"
 #include "record.h"
@@ -552,6 +553,7 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
 
 /* Execution task */
 static void MR_StepDone(Execution* e, void* pd) {
+    uint64_t _t = MRProf_Begin(MRPROF_STAGE_WORKER_STEP_DONE);
     RedisModuleString* payload = pd;
 
     /* deserialize record, set it on the right step. */
@@ -578,10 +580,12 @@ static void MR_StepDone(Execution* e, void* pd) {
         /* All shards are done running the step, we can continue the execution. */
         MR_RunExecution(e, NULL);
     }
+    MRProf_End(MRPROF_STAGE_WORKER_STEP_DONE, _t);
 }
 
 /* Execution task */
 static void MR_SetRecord(Execution* e, void* pd) {
+    uint64_t _t = MRProf_Begin(MRPROF_STAGE_WORKER_SET_RECORD);
     RedisModuleString* payload = pd;
 
     /* deserialize record, set it on the right step. */
@@ -610,6 +614,7 @@ static void MR_SetRecord(Execution* e, void* pd) {
         /* There is enough records to process, lets continue running. */
         MR_RunExecution(e, NULL);
     }
+    MRProf_End(MRPROF_STAGE_WORKER_SET_RECORD, _t);
 }
 
 /* Remote function call, runs on the event loop */
@@ -1108,6 +1113,7 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
 }
 
 static void MR_RecieveExecution(void* pd) {
+    uint64_t _t = MRProf_Begin(MRPROF_STAGE_WORKER_DESERIALIZE_EXEC);
     RedisModuleString* payload = pd;
     size_t dataSize;
     const char* data = RedisModule_StringPtrLen(payload, &dataSize);
@@ -1135,6 +1141,7 @@ static void MR_RecieveExecution(void* pd) {
      * in the executions dictionary */
     MR_EventLoopAddTask(MR_RecievedExecution, e);
 
+    MRProf_End(MRPROF_STAGE_WORKER_DESERIALIZE_EXEC, _t);
 }
 
 /* Remote function call, runs on the event loop */
