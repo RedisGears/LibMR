@@ -24,6 +24,7 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include <stdlib.h>
 
 #define RETRY_INTERVAL 1000 // 1 second
 #define MSG_MAX_RETRIES 3
@@ -1432,6 +1433,20 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     RedisModule_FreeServerInfo(rctx, info);
 
     RedisModule_Log(rctx, "notice", "Detected redis %s", clusterCtx.isOss? "oss" : "enterprise");
+
+    /* By default, OSS builds do not expose LibMR internal RPC commands (ACL tests expect this).
+     * For local benchmarking on OSS cluster, allow enabling via env var:
+     *   TS_ENABLE_OSS_FANOUT=1
+     */
+    int enableOssFanout = 0;
+    const char *enableEnv = getenv("TS_ENABLE_OSS_FANOUT");
+    if (enableEnv && (enableEnv[0] == '1' || !strcasecmp(enableEnv, "true") || !strcasecmp(enableEnv, "yes"))) {
+        enableOssFanout = 1;
+    }
+    if (clusterCtx.isOss && !enableOssFanout) {
+        RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: OSS fanout disabled (set TS_ENABLE_OSS_FANOUT=1 to enable)", xstr(MODULE_NAME));
+        return REDISMODULE_OK;
+    }
 
     // NOTE: Internal-command auth semantics have changed across Redis versions and can break
     // module-to-module communication if the handshake isn't accepted.
