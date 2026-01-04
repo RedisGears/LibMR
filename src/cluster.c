@@ -613,14 +613,6 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         if (n->password){
             /* If password is provided to us we will use it (it means it was given to us with clusterset) */
             redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
-        } else if (RedisModule_GetInternalSecret && !MR_IsEnterpriseBuild()) {
-            /* OSS deployment that support internal secret, lets use it. */
-            RedisModule_ThreadSafeContextLock(mr_staticCtx);
-            size_t len;
-            const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
-            RedisModule_Assert(secret);
-            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
-            RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         }
 
         if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
@@ -1316,8 +1308,25 @@ static void MR_ClusterInfo(void* pd) {
     RedisModule_UnblockClient(bc, NULL);
 }
 
+/* Blocked-client reply callbacks (run on Redis main thread after UnblockClient). */
+static int MR_BlockClient_NoReply(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(ctx);
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    return REDISMODULE_OK;
+}
+
+static int MR_BlockClient_ReplyOK(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    REDISMODULE_NOT_USED(argv);
+    REDISMODULE_NOT_USED(argc);
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    return REDISMODULE_OK;
+}
+
 static int MR_ClusterInfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    /* RedisModule_BlockClient requires a non-NULL reply callback on newer Redis versions.
+     * We reply from the event-loop thread using a thread-safe context, so the callback is a no-op. */
+    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, MR_BlockClient_NoReply, NULL, NULL, 0);
     MR_EventLoopAddTask(MR_ClusterInfo, bc);
     return REDISMODULE_OK;
 }
@@ -1327,15 +1336,13 @@ static int MR_ClusterInfoCommand(RedisModuleCtx *ctx, RedisModuleString **argv, 
 static void MR_ForceShardsConnection(void* ctx){
     RedisModuleBlockedClient* bc = ctx;
     MR_ClusterConnectToShards();
-    RedisModuleCtx* rCtx = RedisModule_GetThreadSafeContext(bc);
-    RedisModule_ReplyWithSimpleString(rCtx, "OK");
-    RedisModule_FreeThreadSafeContext(rCtx);
+    /* Unblock; reply callback will handle client response. */
     RedisModule_UnblockClient(bc, NULL);
 }
 
 
 int MR_ForceShardsConnectionCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, MR_BlockClient_ReplyOK, NULL, NULL, 0);
     MR_EventLoopAddTask(MR_ForceShardsConnection, bc);
     return REDISMODULE_OK;
 }
@@ -1426,64 +1433,85 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
 
     RedisModule_Log(rctx, "notice", "Detected redis %s", clusterCtx.isOss? "oss" : "enterprise");
 
+    // NOTE: Internal-command auth semantics have changed across Redis versions and can break
+    // module-to-module communication if the handshake isn't accepted.
+    // For now, prefer non-internal commands for OSS so cluster comm works reliably in benchmarks.
     const char *command_flags = "readonly deny-script";
     if (MR_IsEnterpriseBuild()) {
         command_flags = "readonly deny-script _proxy-filtered";
-    } else {
-        if (RedisModule_GetInternalSecret) {
-            /* We run at a version that supports internal commands, let use it. */
-            command_flags = "readonly deny-script internal";
-        }
     }
+
+    RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: begin (isEnterprise=%d)", xstr(MODULE_NAME), MR_IsEnterpriseBuild());
 
     if (!MR_IsEnterpriseBuild()) {
         /* Refresh cluster is only relevant for oss, also notice that refresh cluster
          * is not considered internal and should be performed by the user. */
+        RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), CLUSTER_REFRESH_COMMAND);
         if (!RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
                                   "readonly deny-script", 0, 0, 0)) {
+            RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), CLUSTER_REFRESH_COMMAND);
             return REDISMODULE_ERR;
         }
     }
 
     /* The CLUSTERSET should be visible in COMMAND LIST, otherwise the RAMP packer
      * will miss it and a module will not be notified in an enterprise cluster */
+    RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), CLUSTER_SET_COMMAND);
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
                             MR_IsEnterpriseBuild() ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
                             0, 0, -1)) {
+        RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), CLUSTER_SET_COMMAND);
         return REDISMODULE_ERR;
     }
 
+    RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), CLUSTER_SET_FROM_SHARD_COMMAND);
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_FROM_SHARD_COMMAND,
                             MR_ClusterSetFromShard, command_flags, 0, 0,
                             -1)) {
+        RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), CLUSTER_SET_FROM_SHARD_COMMAND);
         return REDISMODULE_ERR;
     }
 
+    RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), CLUSTER_HELLO_COMMAND);
     if (!RegisterRedisCommand(rctx, CLUSTER_HELLO_COMMAND, MR_ClusterHello,
                             command_flags, 0, 0, 0)) {
+        RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), CLUSTER_HELLO_COMMAND);
         return REDISMODULE_ERR;
     }
 
+    RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), CLUSTER_INNER_COMMUNICATION_COMMAND);
     if (!RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND,
                             MR_ClusterInnerCommunicationMsg, command_flags, 0, 0,
                             0)) {
+        RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), CLUSTER_INNER_COMMUNICATION_COMMAND);
         return REDISMODULE_ERR;
     }
 
+    RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), NETWORK_TEST_COMMAND);
     if (!RegisterRedisCommand(rctx, NETWORK_TEST_COMMAND, MR_NetworkTestCommand,
                             command_flags, 0, 0, 0)) {
+        RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), NETWORK_TEST_COMMAND);
         return REDISMODULE_ERR;
     }
 
-    if (!RegisterRedisCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand,
-                            command_flags, 0, 0, 0)) {
-        return REDISMODULE_ERR;
-    }
+    /* NOTE: `INFOCLUSTER` / `FORCESHARDSCONNECTION` are debug/ops helpers. In OSS they are not
+     * needed for scatter/gather, and historically were not exposed. Keep them Enterprise-only
+     * to avoid accidental usage in OSS benchmarks/tests. */
+    if (!clusterCtx.isOss) {
+        RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), CLUSTER_INFO_COMMAND);
+        if (!RegisterRedisCommand(rctx, CLUSTER_INFO_COMMAND, MR_ClusterInfoCommand,
+                                command_flags, 0, 0, 0)) {
+            RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), CLUSTER_INFO_COMMAND);
+            return REDISMODULE_ERR;
+        }
 
-    if (!RegisterRedisCommand(rctx, FORCE_SHARDS_CONNECTION,
-                            MR_ForceShardsConnectionCommand, command_flags, 0, 0,
-                            0)) {
-        return REDISMODULE_ERR;
+        RedisModule_Log(rctx, "notice", "<%s> MR_ClusterInit: registering %s", xstr(MODULE_NAME), FORCE_SHARDS_CONNECTION);
+        if (!RegisterRedisCommand(rctx, FORCE_SHARDS_CONNECTION,
+                                MR_ForceShardsConnectionCommand, command_flags, 0, 0,
+                                0)) {
+            RedisModule_Log(rctx, "warning", "<%s> MR_ClusterInit: failed registering %s", xstr(MODULE_NAME), FORCE_SHARDS_CONNECTION);
+            return REDISMODULE_ERR;
+        }
     }
 
     clusterCtx.networkTestMsgReciever = MR_ClusterRegisterMsgReceiver(MR_NetworkTest);

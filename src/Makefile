@@ -6,6 +6,11 @@ else
 	GCC_FLAGS+=-O3
 endif
 
+# LibMR command names are derived from MODULE_NAME (e.g. timeseries.INNERCOMMUNICATION).
+# If MODULE_NAME is empty, the module can't register its internal cluster commands,
+# breaking multi-shard fanout. Allow callers to override, but default to "timeseries".
+MODULE_NAME?=timeseries
+
 OPENSSL_PREFIX?=$(shell brew --prefix openssl 2>/dev/null || echo /usr/local/opt/openssl)
 
 GCC_FLAGS+=-fvisibility=hidden -fPIC -DREDISMODULE_EXPERIMENTAL_API -DREDISMODULE_MAIN -DREDISMODULE_SDK_RLEC \
@@ -19,7 +24,7 @@ ifeq ($(COVERAGE),1)
 	LD_FLAGS+=-fprofile-arcs -lgcov
 endif
 
-SOURCES=mr.o record.o cluster.o event_loop.o crc16.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o utils/siphash.o
+SOURCES=mr.o record.o cluster.o event_loop.o crc16.o mr_prof.o utils/adlist.o utils/buffer.o utils/dict.o utils/thpool.o utils/siphash.o
 
 HIREDIS=../deps/hiredis/libhiredis.a
 HIREDIS_SSL=../deps/hiredis/libhiredis_ssl.a

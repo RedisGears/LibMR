@@ -25,6 +25,8 @@
 #include "../common.h"
 
 #include "../mr_memory.h"
+// optional lightweight profiling counters
+#include "../mr_prof.h"
 
 #ifdef THPOOL_DEBUG
 #define THPOOL_DEBUG 1
@@ -55,6 +57,7 @@ typedef struct mr_job {
   struct mr_job* prev;            /* pointer to previous job   */
   void (*function)(void* arg); /* function pointer          */
   void* arg;                   /* function's argument       */
+  uint64_t enqueued_ns;         /* enqueue timestamp (monotonic ns) */
 } mr_job;
 
 /* Job queue */
@@ -104,6 +107,12 @@ static void bsem_reset(struct mr_bsem* bsem_p);
 static void bsem_post(struct mr_bsem* bsem_p);
 static void bsem_post_all(struct mr_bsem* bsem_p);
 static void bsem_wait(struct mr_bsem* bsem_p);
+
+static inline uint64_t mr_now_ns(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
 
 static void mr_thpool_start_threads(mr_thpool_* thpool_p) {
     /* Thread init */
@@ -195,6 +204,7 @@ int mr_thpool_add_work(mr_thpool_* thpool_p, void (*function_p)(void*), void* ar
   /* add function and argument */
   newjob->function = function_p;
   newjob->arg = arg_p;
+  newjob->enqueued_ns = MRProf_GetEnabled() ? mr_now_ns() : 0;
 
   /* add job to queue */
   jobqueue_push(&thpool_p->jobqueue, newjob);
@@ -358,6 +368,12 @@ static void* thread_do(struct mr_thread* thread_p) {
       void* arg_buff;
       mr_job* job_p = jobqueue_pull(&thpool_p->jobqueue);
       if (job_p) {
+        if (job_p->enqueued_ns) {
+          uint64_t now = mr_now_ns();
+          if (now > job_p->enqueued_ns) {
+            MRProf_AddDelta(MRPROF_STAGE_WORKER_QUEUE_WAIT, now - job_p->enqueued_ns);
+          }
+        }
         func_buff = job_p->function;
         arg_buff = job_p->arg;
         func_buff(arg_buff);

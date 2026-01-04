@@ -53,6 +53,9 @@ void MRProf_AddDelta(MRProfStage stage, uint64_t delta_ns) {
     if (!delta_ns || !MRProf_GetEnabled()) {
         return;
     }
+    if ((int)stage < 0 || (int)stage >= (int)MRPROF_STAGE_MAX) {
+        return;
+    }
     __atomic_add_fetch(&mrprof_stats[stage].count, 1, __ATOMIC_RELAXED);
     __atomic_add_fetch(&mrprof_stats[stage].total_ns, delta_ns, __ATOMIC_RELAXED);
 }
@@ -64,6 +67,9 @@ uint64_t MRProf_Begin(MRProfStage stage) {
 
 void MRProf_End(MRProfStage stage, uint64_t start_ns) {
     if (!start_ns || !MRProf_GetEnabled()) {
+        return;
+    }
+    if ((int)stage < 0 || (int)stage >= (int)MRPROF_STAGE_MAX) {
         return;
     }
     uint64_t delta = now_ns() - start_ns;
