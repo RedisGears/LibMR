@@ -11,7 +11,6 @@
 #include "common.h"
 #include "mr.h"
 #include "event_loop.h"
-#include "mr_prof.h"
 #include "utils/arr_rm_alloc.h"
 #include "utils/dict.h"
 #include "utils/adlist.h"
@@ -190,7 +189,6 @@ static void MR_ClusterFreeNodeMsg(void* ptr){
 }
 
 static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
-    uint64_t _t = MRProf_Begin(MRPROF_STAGE_EL_SEND_ASYNC_CMD);
     // CLUSTER_INNER_COMMUNICATION_COMMAND <myid> <runid> <functionid> <msg> <msgId>
     redisAsyncCommand(node->c, MR_OnResponseArrived, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
             clusterCtx.CurrCluster->myId,
@@ -198,7 +196,6 @@ static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
             nodeMsg->msg->function,
             nodeMsg->msg->msg, nodeMsg->msg->msgLen,
             nodeMsg->msgId);
-    MRProf_End(MRPROF_STAGE_EL_SEND_ASYNC_CMD, _t);
 }
 
 static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
@@ -221,12 +218,10 @@ static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
 
 /* Runs on the event loop */
 static void MR_ClusterSendMsgTask(void* ctx) {
-    uint64_t _t = MRProf_Begin(MRPROF_STAGE_EL_SENDMSG_TASK);
     SendMsg* sendMsg = ctx;
     if (!clusterCtx.CurrCluster) {
         RedisModule_Log(mr_staticCtx, "warning", "try to send a message on an uninitialize cluster, message will not be sent.");
         MR_ClusterFreeMsg(sendMsg);
-        MRProf_End(MRPROF_STAGE_EL_SENDMSG_TASK, _t);
         return;
     }
     if (sendMsg->sendMsgType == SendMsgType_ById) {
@@ -257,7 +252,6 @@ static void MR_ClusterSendMsgTask(void* ctx) {
         RedisModule_Assert(false);
     }
     MR_ClusterFreeMsg(sendMsg);
-    MRProf_End(MRPROF_STAGE_EL_SENDMSG_TASK, _t);
 }
 
 void MR_ClusterSendMsg(const char* nodeId, functionId function, char* msg, size_t len) {
@@ -1111,13 +1105,11 @@ int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 
 /* run on the event loop */
 static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
-    uint64_t _t = MRProf_Begin(MRPROF_STAGE_EL_INNERCOMM_DISPATCH);
     MessageCtx* msgCtx = ctx;
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
         msgCtx->reply = MessageReply_ClusterNull;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        MRProf_End(MRPROF_STAGE_EL_INNERCOMM_DISPATCH, _t);
         return;
     }
 
@@ -1125,7 +1117,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
         msgCtx->reply = MessageReply_ClusterUninitialized;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        MRProf_End(MRPROF_STAGE_EL_INNERCOMM_DISPATCH, _t);
         return;
     }
 
@@ -1189,7 +1180,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
 
     msgCtx->reply = MessageReply_OK;
     RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-    MRProf_End(MRPROF_STAGE_EL_INNERCOMM_DISPATCH, _t);
     return;
 }
 
@@ -1349,9 +1339,7 @@ int MR_ForceShardsConnectionCommand(RedisModuleCtx *ctx, RedisModuleString **arg
 }
 
 int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
-    uint64_t _t = MRProf_Begin(MRPROF_STAGE_MAIN_INNERCOMM_CMD);
     if(argc != 6){
-        MRProf_End(MRPROF_STAGE_MAIN_INNERCOMM_CMD, _t);
         return RedisModule_WrongArity(ctx);
     }
 
@@ -1367,7 +1355,6 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     msgCtx->argc = argc;
     msgCtx->reply = MessageReply_Undefined;
     MR_EventLoopAddTask(MR_ClusterInnerCommunicationMsgRun, msgCtx);
-    MRProf_End(MRPROF_STAGE_MAIN_INNERCOMM_CMD, _t);
     return REDISMODULE_OK;
 }
 

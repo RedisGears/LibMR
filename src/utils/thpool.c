@@ -26,7 +26,6 @@
 
 #include "../mr_memory.h"
 // optional lightweight profiling counters
-#include "../mr_prof.h"
 
 #ifdef THPOOL_DEBUG
 #define THPOOL_DEBUG 1
@@ -204,7 +203,7 @@ int mr_thpool_add_work(mr_thpool_* thpool_p, void (*function_p)(void*), void* ar
   /* add function and argument */
   newjob->function = function_p;
   newjob->arg = arg_p;
-  newjob->enqueued_ns = MRProf_GetEnabled() ? mr_now_ns() : 0;
+  newjob->enqueued_ns = 0;
 
   /* add job to queue */
   jobqueue_push(&thpool_p->jobqueue, newjob);
@@ -368,12 +367,6 @@ static void* thread_do(struct mr_thread* thread_p) {
       void* arg_buff;
       mr_job* job_p = jobqueue_pull(&thpool_p->jobqueue);
       if (job_p) {
-        if (job_p->enqueued_ns) {
-          uint64_t now = mr_now_ns();
-          if (now > job_p->enqueued_ns) {
-            MRProf_AddDelta(MRPROF_STAGE_WORKER_QUEUE_WAIT, now - job_p->enqueued_ns);
-          }
-        }
         func_buff = job_p->function;
         arg_buff = job_p->arg;
         func_buff(arg_buff);
