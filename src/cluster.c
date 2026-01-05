@@ -23,6 +23,8 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+#include <stdlib.h>
+
 
 #define RETRY_INTERVAL 1000 // 1 second
 #define MSG_MAX_RETRIES 3
@@ -31,6 +33,7 @@
 #define RUN_ID_SIZE 40
 
 #define CLUSTER_INNER_COMMUNICATION_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATION"
+#define CLUSTER_INNER_COMMUNICATION_BATCH_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATIONBATCH"
 #define CLUSTER_HELLO_COMMAND               xstr(MODULE_NAME)".HELLO"
 #define CLUSTER_REFRESH_COMMAND             xstr(MODULE_NAME)".REFRESHCLUSTER"
 #define CLUSTER_SET_COMMAND                 xstr(MODULE_NAME)".CLUSTERSET"
@@ -100,6 +103,9 @@ typedef struct Node{
     char* runId;
     unsigned long long msgId;
     mr_list* pendingMessages;
+    /* Messages that are queued to be sent (not yet in-flight). */
+    mr_list* outboxMessages;
+    bool flushScheduled;
     mr_list* slotRanges;
     bool isMe;
     NodeStatus status;
@@ -139,24 +145,19 @@ typedef struct ClusterSetCtx {
     bool force;
 }ClusterSetCtx;
 
-typedef enum MessageReply {
-    MessageReply_Undefined,
-    MessageReply_OK,
-    MessageReply_ClusterUninitialized,
-    MessageReply_ClusterNull,
-    MessageReply_BadMsgId,
-    MessageReply_BadFunctionId,
-    MessageReply_DuplicateMsg,
-}MessageReply;
-
-typedef struct MessageCtx {
-    RedisModuleBlockedClient* bc;
-    RedisModuleString **argv;
-    int argc;
-    MessageReply reply;
-}MessageCtx;
+typedef struct InboundMsgCtx {
+    size_t senderIdLen;
+    char senderIdStr[REDISMODULE_NODE_ID_LEN + 1];
+    size_t senderRunIdLen;
+    char senderRunIdStr[RUN_ID_SIZE + 1];
+    long long msgId;
+    long long functionId;
+    size_t msgLen;
+    char* msgBuf;
+}InboundMsgCtx;
 
 static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b);
+static int MR_ClusterInnerCommunicationMsgBatch(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static Node* MR_GetNode(const char* id);
@@ -187,6 +188,27 @@ static void MR_ClusterFreeNodeMsg(void* ptr){
     MR_FREE(nodeMsg);
 }
 
+static void MR_ClusterFreeNodeMsgNoRef(void* ptr){
+    NodeSendMsg* nodeMsg = ptr;
+    MR_FREE(nodeMsg);
+}
+
+static void MR_ClusterFreeNodeMsgList(mr_list* list){
+    if (!list) {
+        return;
+    }
+    mr_listIter* iter = mr_listGetIterator(list, AL_START_HEAD);
+    mr_listNode* node = NULL;
+    while((node = mr_listNext(iter)) != NULL){
+        NodeSendMsg* m = mr_listNodeValue(node);
+        MR_ClusterFreeNodeMsg(m);
+    }
+    mr_listReleaseIterator(iter);
+    /* list->free might be NULL; ensure we don't double-free */
+    list->free = NULL;
+    mr_listRelease(list);
+}
+
 static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
     // CLUSTER_INNER_COMMUNICATION_COMMAND <myid> <runid> <functionid> <msg> <msgId>
     redisAsyncCommand(node->c, MR_OnResponseArrived, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
@@ -197,22 +219,146 @@ static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
             nodeMsg->msgId);
 }
 
+typedef struct BatchReplyCtx {
+    Node* n;
+    size_t count;
+} BatchReplyCtx;
+
+static size_t innercomm_batch_max = 32;
+
+static void MR_InitInnerCommBatchMax() {
+    const char* env = getenv("RG_INNERCOMM_BATCH_MAX");
+    if (!env || !env[0]) {
+        return;
+    }
+    char* end = NULL;
+    unsigned long v = strtoul(env, &end, 10);
+    if (!end || end == env || *end != '\0') {
+        return;
+    }
+    if (v < 1) v = 1;
+    if (v > 256) v = 256;
+    innercomm_batch_max = (size_t)v;
+}
+
+static void MR_OnBatchResponseArrived(struct redisAsyncContext* c, void* a, void* b){
+    redisReply* reply = (redisReply*)a;
+    BatchReplyCtx* brc = (BatchReplyCtx*)b;
+    if(!brc){
+        return;
+    }
+    Node* n = brc->n;
+    const size_t count = brc->count;
+    MR_FREE(brc);
+
+    if(!reply || !c->data || !n){
+        return;
+    }
+    if(reply->type == REDIS_REPLY_ERROR && strncmp(reply->str, CLUSTER_ERROR, strlen(CLUSTER_ERROR)) == 0){
+        n->sendClusterTopologyOnNextConnect = true;
+        RedisModule_Log(mr_staticCtx, "warning", "Received ERRCLUSTER reply from shard %s (%s:%d), will send cluster topology to the shard on next connect", n->id, n->ip, n->port);
+        redisAsyncDisconnect(c);
+        return;
+    }
+    if(reply->type != REDIS_REPLY_STATUS){
+        RedisModule_Log(mr_staticCtx, "warning", "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect. This is usually because the Redis server's 'proto-max-bulk-len' configuration setting is too low.", n->id, n->ip, n->port);
+        redisAsyncDisconnect(c);
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        mr_listNode* node = mr_listFirst(n->pendingMessages);
+        if (!node) {
+            break;
+        }
+        mr_listDelNode(n->pendingMessages, node);
+    }
+}
+
+static void MR_ClusterFlushOutbox(void* ctx){
+    Node* n = ctx;
+    n->flushScheduled = false;
+    if (n->status != NodeStatus_Connected || !n->c || !clusterCtx.CurrCluster) {
+        return;
+    }
+
+    while (mr_listLength(n->outboxMessages) > 0) {
+        /* Build a batch of messages */
+        NodeSendMsg* msgs[256];
+        size_t batchCount = 0;
+
+        while (batchCount < innercomm_batch_max && mr_listLength(n->outboxMessages) > 0) {
+            mr_listNode* ln = mr_listFirst(n->outboxMessages);
+            NodeSendMsg* m = mr_listNodeValue(ln);
+            mr_listDelNode(n->outboxMessages, ln); /* outbox has no free() */
+            msgs[batchCount++] = m;
+            /* Move to pending (in-flight) */
+            mr_listAddNodeTail(n->pendingMessages, m);
+        }
+
+        char numBuf[32];
+        snprintf(numBuf, sizeof(numBuf), "%zu", batchCount);
+
+        const int argc = (int)(4 + (batchCount * 3));
+        const char** argv = MR_ALLOC(sizeof(char*) * argc);
+        size_t* argvlen = MR_ALLOC(sizeof(size_t) * argc);
+        char** tmpNums = MR_ALLOC(sizeof(char*) * (batchCount * 2)); /* functionId + msgId */
+
+        argv[0] = CLUSTER_INNER_COMMUNICATION_BATCH_COMMAND;
+        argvlen[0] = strlen(argv[0]);
+        argv[1] = clusterCtx.CurrCluster->myId;
+        argvlen[1] = strlen(argv[1]);
+        argv[2] = clusterCtx.CurrCluster->runId;
+        argvlen[2] = strlen(argv[2]);
+        argv[3] = numBuf;
+        argvlen[3] = strlen(argv[3]);
+
+        for (size_t i = 0; i < batchCount; i++) {
+            char* fbuf = MR_ALLOC(32);
+            char* ibuf = MR_ALLOC(32);
+            snprintf(fbuf, 32, "%llu", (unsigned long long)msgs[i]->msg->function);
+            snprintf(ibuf, 32, "%llu", (unsigned long long)msgs[i]->msgId);
+            tmpNums[i*2] = fbuf;
+            tmpNums[i*2 + 1] = ibuf;
+
+            const int base = 4 + (int)(i*3);
+            argv[base] = fbuf;
+            argvlen[base] = strlen(fbuf);
+            argv[base + 1] = msgs[i]->msg->msg;
+            argvlen[base + 1] = msgs[i]->msg->msgLen;
+            argv[base + 2] = ibuf;
+            argvlen[base + 2] = strlen(ibuf);
+        }
+
+        BatchReplyCtx* brc = MR_ALLOC(sizeof(*brc));
+        brc->n = n;
+        brc->count = batchCount;
+
+        redisAsyncCommandArgv(n->c, MR_OnBatchResponseArrived, brc, argc, argv, argvlen);
+
+        for (size_t i = 0; i < batchCount * 2; i++) {
+            MR_FREE(tmpNums[i]);
+        }
+        MR_FREE(tmpNums);
+        MR_FREE(argv);
+        MR_FREE(argvlen);
+    }
+}
+
 static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
     msg->refCount+=1;
     NodeSendMsg* nodeMsg = MR_ALLOC(sizeof(*nodeMsg));
     nodeMsg->msg = msg;
     nodeMsg->retries = 0;
     nodeMsg->msgId = node->msgId++;
-    if (node->status == NodeStatus_Connected) {
-        MR_ClusterSendMsgToNodeInternal(node, nodeMsg);
-    } else {
-        if (node->status == NodeStatus_Uninitialized) {
-            MR_ConnectToShard(node);
-            node->status = NodeStatus_Disconnected;
-        }
-        RedisModule_Log(mr_staticCtx, "warning", "message was not sent because status is not connected");
+    mr_listAddNodeTail(node->outboxMessages, nodeMsg);
+    if (node->status == NodeStatus_Uninitialized) {
+        MR_ConnectToShard(node);
+        node->status = NodeStatus_Disconnected;
     }
-    mr_listAddNodeTail(node->pendingMessages, nodeMsg);
+    if (node->status == NodeStatus_Connected && !node->flushScheduled) {
+        node->flushScheduled = true;
+        MR_EventLoopAddTask(MR_ClusterFlushOutbox, node);
+    }
 }
 
 /* Runs on the event loop */
@@ -318,6 +464,9 @@ static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b){
         return;
     }
     mr_listNode* node = mr_listFirst(n->pendingMessages);
+    if(!node){
+        return;
+    }
     mr_listDelNode(n->pendingMessages, node);
 }
 
@@ -397,6 +546,12 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
     }
     n->runId = MR_STRDUP(reply->str);
     n->status = NodeStatus_Connected;
+
+    /* Flush any queued (not yet in-flight) messages. */
+    if (mr_listLength(n->outboxMessages) > 0 && !n->flushScheduled) {
+        n->flushScheduled = true;
+        MR_EventLoopAddTask(MR_ClusterFlushOutbox, n);
+    }
 }
 
 static void MR_ClusterReconnect(void* ctx){
@@ -688,6 +843,7 @@ static void MR_NodeFreeInternals(Node* n){
         redisAsyncFree(n->c);
     }
     mr_listRelease(n->pendingMessages);
+    MR_ClusterFreeNodeMsgList(n->outboxMessages);
     mr_listRelease(n->slotRanges);
     MR_FREE(n);
 }
@@ -753,6 +909,10 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
     mr_list* pendingMessages = mr_listCreate();
     mr_listSetFreeMethod(pendingMessages, MR_ClusterFreeNodeMsg);
 
+    mr_list* outboxMessages = mr_listCreate();
+    /* outboxMessages holds NodeSendMsg that are not yet in-flight; we manage their lifetime */
+    mr_listSetFreeMethod(outboxMessages, NULL);
+
     Node* n = MR_ALLOC(sizeof(*n));
     *n = (Node){
             .id = MR_STRDUP(id),
@@ -763,6 +923,8 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .c = NULL,
             .msgId = 0,
             .pendingMessages = pendingMessages,
+            .outboxMessages = outboxMessages,
+            .flushScheduled = false,
             .slotRanges = slotRanges,
             .isMe = false,
             .status = NodeStatus_Uninitialized,
@@ -1112,62 +1274,32 @@ int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 
 /* run on the event loop */
 static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
-    MessageCtx* msgCtx = ctx;
+    InboundMsgCtx* msgCtx = ctx;
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
-        msgCtx->reply = MessageReply_ClusterNull;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+        MR_FREE(msgCtx->msgBuf);
+        MR_FREE(msgCtx);
         return;
     }
 
     if(!MR_IsClusterInitialize()){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
-        msgCtx->reply = MessageReply_ClusterUninitialized;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+        MR_FREE(msgCtx->msgBuf);
+        MR_FREE(msgCtx);
         return;
     }
 
-    RedisModuleString** argv = msgCtx->argv;
-    size_t argc = msgCtx->argc;
-
-    RedisModuleString* senderId = argv[1];
-    RedisModuleString* senderRunId = argv[2];
-    RedisModuleString* functionToCall = argv[3];
-    RedisModuleString* msg = argv[4];
-    RedisModuleString* msgIdStr = argv[5];
-
-    long long msgId;
-    if(RedisModule_StringToLongLong(msgIdStr, &msgId) != REDISMODULE_OK){
-        RedisModule_Log(mr_staticCtx, "warning", "bad msg id given");
-        msgCtx->reply = MessageReply_BadMsgId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
-
-    long long functionId;
-    if(RedisModule_StringToLongLong(functionToCall, &functionId) != REDISMODULE_OK){
+    if (msgCtx->functionId < 0 || msgCtx->functionId >= array_len(clusterCtx.callbacks)) {
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
-        msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+        MR_FREE(msgCtx->msgBuf);
+        MR_FREE(msgCtx);
         return;
     }
 
-    if (functionId < 0 || functionId >= array_len(clusterCtx.callbacks)) {
-        RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
-        msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
-    }
-
-    size_t senderIdLen;
-    const char* senderIdStr = RedisModule_StringPtrLen(senderId, &senderIdLen);
-    size_t senderRunIdLen;
-    const char* senderRunIdStr = RedisModule_StringPtrLen(senderRunId, &senderRunIdLen);
-
-    char combinedId[senderIdLen + senderRunIdLen + 1]; // +1 is for '\0'
-    memcpy(combinedId, senderIdStr, senderIdLen);
-    memcpy(combinedId + senderIdLen, senderRunIdStr, senderRunIdLen);
-    combinedId[senderIdLen + senderRunIdLen] = '\0';
+    char combinedId[msgCtx->senderIdLen + msgCtx->senderRunIdLen + 1]; // +1 is for '\0'
+    memcpy(combinedId, msgCtx->senderIdStr, msgCtx->senderIdLen);
+    memcpy(combinedId + msgCtx->senderIdLen, msgCtx->senderRunIdStr, msgCtx->senderRunIdLen);
+    combinedId[msgCtx->senderIdLen + msgCtx->senderRunIdLen] = '\0';
 
     mr_dictEntry* entity = mr_dictFind(clusterCtx.nodesMsgIds, combinedId);
     long long currId = -1;
@@ -1176,55 +1308,21 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     }else{
         entity = mr_dictAddRaw(clusterCtx.nodesMsgIds, (char*)combinedId, NULL);
     }
-    if(msgId <= currId){
-        RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
-        msgCtx->reply = MessageReply_DuplicateMsg;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+    if(msgCtx->msgId <= currId){
+        /* Duplicate message ignored (most commonly due to retries). */
+        MR_FREE(msgCtx->msgBuf);
+        MR_FREE(msgCtx);
         return;
     }
-    mr_dictSetSignedIntegerVal(entity, msgId);
-    clusterCtx.callbacks[functionId](mr_staticCtx, senderIdStr, 0, msg);
+    mr_dictSetSignedIntegerVal(entity, msgCtx->msgId);
 
-    msgCtx->reply = MessageReply_OK;
-    RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-    return;
-}
+    RedisModuleString* payload = RedisModule_CreateString(mr_staticCtx, msgCtx->msgBuf, msgCtx->msgLen);
+    clusterCtx.callbacks[msgCtx->functionId](mr_staticCtx, msgCtx->senderIdStr, 0, payload);
+    RedisModule_FreeString(mr_staticCtx, payload);
 
-static void MR_ClusterInnerCommunicationMsgFreePD(RedisModuleCtx* ctx, void* pd){
-    MessageCtx* msgCtx = pd;
-    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, msgCtx->argv[i]);
-    }
-    MR_FREE(msgCtx->argv);
+    MR_FREE(msgCtx->msgBuf);
     MR_FREE(msgCtx);
-}
-
-static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    MessageCtx* msgCtx = RedisModule_GetBlockedClientPrivateData(ctx);
-    switch(msgCtx->reply) {
-    case MessageReply_OK:
-        RedisModule_ReplyWithSimpleString(ctx, "OK");
-        break;
-    case MessageReply_ClusterUninitialized:
-        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" Uninitialized cluster state");
-        break;
-    case MessageReply_ClusterNull:
-        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state");
-        break;
-    case MessageReply_BadMsgId:
-        RedisModule_ReplyWithError(ctx, "Err bad message id");
-        break;
-    case MessageReply_BadFunctionId:
-        RedisModule_ReplyWithError(ctx, "Err bad function id");
-        break;
-    case MessageReply_DuplicateMsg:
-        RedisModule_ReplyWithSimpleString(ctx, "duplicate message ignored");
-        break;
-    default:
-        RedisModule_Assert(0);
-    }
-
-    return REDISMODULE_OK;
+    return;
 }
 
 int MR_NetworkTestCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -1335,18 +1433,114 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
         return RedisModule_WrongArity(ctx);
     }
 
-    // we must copy argv because if the client will disconnect the redis will free it
-    RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
-    for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+    if(!clusterCtx.CurrCluster){
+        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state");
+    }
+    if(!MR_IsClusterInitialize()){
+        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" Uninitialized cluster state");
     }
 
-    MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
-    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, MR_ClusterInnerCommunicationMsgFreePD, 0);
-    msgCtx->argv = argvNew;
-    msgCtx->argc = argc;
-    msgCtx->reply = MessageReply_Undefined;
+    long long msgId;
+    if(RedisModule_StringToLongLong(argv[5], &msgId) != REDISMODULE_OK){
+        return RedisModule_ReplyWithError(ctx, "Err bad message id");
+    }
+    long long functionId;
+    if(RedisModule_StringToLongLong(argv[3], &functionId) != REDISMODULE_OK){
+        return RedisModule_ReplyWithError(ctx, "Err bad function id");
+    }
+    if (functionId < 0 || functionId >= array_len(clusterCtx.callbacks)) {
+        return RedisModule_ReplyWithError(ctx, "Err bad function id");
+    }
+
+    InboundMsgCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
+    size_t senderIdLen;
+    const char* senderIdStr = RedisModule_StringPtrLen(argv[1], &senderIdLen);
+    size_t senderRunIdLen;
+    const char* senderRunIdStr = RedisModule_StringPtrLen(argv[2], &senderRunIdLen);
+    size_t msgLen;
+    const char* msgBuf = RedisModule_StringPtrLen(argv[4], &msgLen);
+
+    msgCtx->senderIdLen = senderIdLen > REDISMODULE_NODE_ID_LEN ? REDISMODULE_NODE_ID_LEN : senderIdLen;
+    memcpy(msgCtx->senderIdStr, senderIdStr, msgCtx->senderIdLen);
+    msgCtx->senderIdStr[msgCtx->senderIdLen] = '\0';
+
+    msgCtx->senderRunIdLen = senderRunIdLen > RUN_ID_SIZE ? RUN_ID_SIZE : senderRunIdLen;
+    memcpy(msgCtx->senderRunIdStr, senderRunIdStr, msgCtx->senderRunIdLen);
+    msgCtx->senderRunIdStr[msgCtx->senderRunIdLen] = '\0';
+
+    msgCtx->msgId = msgId;
+    msgCtx->functionId = functionId;
+    msgCtx->msgLen = msgLen;
+    msgCtx->msgBuf = MR_ALLOC(msgLen);
+    memcpy(msgCtx->msgBuf, msgBuf, msgLen);
+
+    /* Reply immediately to avoid per-message BlockClient/UnblockClient overhead under pipelining.
+     * The actual handling (including duplicate suppression) is done asynchronously on the event loop. */
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
     MR_EventLoopAddTask(MR_ClusterInnerCommunicationMsgRun, msgCtx);
+    return REDISMODULE_OK;
+}
+
+int MR_ClusterInnerCommunicationMsgBatch(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+    /* Format:
+     *  <cmd> <senderId> <senderRunId> <num> (<functionId> <msg> <msgId>)... */
+    if (argc < 5) {
+        return RedisModule_WrongArity(ctx);
+    }
+
+    if(!clusterCtx.CurrCluster){
+        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state");
+    }
+    if(!MR_IsClusterInitialize()){
+        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" Uninitialized cluster state");
+    }
+
+    long long numMsgs = 0;
+    if (RedisModule_StringToLongLong(argv[3], &numMsgs) != REDISMODULE_OK || numMsgs < 0) {
+        return RedisModule_ReplyWithError(ctx, "Err bad num messages");
+    }
+    if (argc != (4 + (int)numMsgs * 3)) {
+        return RedisModule_WrongArity(ctx);
+    }
+
+    size_t senderIdLen;
+    const char* senderIdStr = RedisModule_StringPtrLen(argv[1], &senderIdLen);
+    size_t senderRunIdLen;
+    const char* senderRunIdStr = RedisModule_StringPtrLen(argv[2], &senderRunIdLen);
+
+    for (long long i = 0; i < numMsgs; i++) {
+        const int base = 4 + (int)(i * 3);
+        long long functionId;
+        if(RedisModule_StringToLongLong(argv[base], &functionId) != REDISMODULE_OK){
+            continue;
+        }
+        long long msgId;
+        if(RedisModule_StringToLongLong(argv[base + 2], &msgId) != REDISMODULE_OK){
+            continue;
+        }
+        size_t msgLen;
+        const char* msgBuf = RedisModule_StringPtrLen(argv[base + 1], &msgLen);
+
+        InboundMsgCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
+
+        msgCtx->senderIdLen = senderIdLen > REDISMODULE_NODE_ID_LEN ? REDISMODULE_NODE_ID_LEN : senderIdLen;
+        memcpy(msgCtx->senderIdStr, senderIdStr, msgCtx->senderIdLen);
+        msgCtx->senderIdStr[msgCtx->senderIdLen] = '\0';
+
+        msgCtx->senderRunIdLen = senderRunIdLen > RUN_ID_SIZE ? RUN_ID_SIZE : senderRunIdLen;
+        memcpy(msgCtx->senderRunIdStr, senderRunIdStr, msgCtx->senderRunIdLen);
+        msgCtx->senderRunIdStr[msgCtx->senderRunIdLen] = '\0';
+
+        msgCtx->msgId = msgId;
+        msgCtx->functionId = functionId;
+        msgCtx->msgLen = msgLen;
+        msgCtx->msgBuf = MR_ALLOC(msgLen);
+        memcpy(msgCtx->msgBuf, msgBuf, msgLen);
+
+        MR_EventLoopAddTask(MR_ClusterInnerCommunicationMsgRun, msgCtx);
+    }
+
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
     return REDISMODULE_OK;
 }
 
@@ -1394,6 +1588,7 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
 }
 
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
+    MR_InitInnerCommBatchMax();
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
@@ -1453,6 +1648,12 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
 
     if (!RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_COMMAND,
                             MR_ClusterInnerCommunicationMsg, command_flags, 0, 0,
+                            0)) {
+        return REDISMODULE_ERR;
+    }
+
+    if (!RegisterRedisCommand(rctx, CLUSTER_INNER_COMMUNICATION_BATCH_COMMAND,
+                            MR_ClusterInnerCommunicationMsgBatch, command_flags, 0, 0,
                             0)) {
         return REDISMODULE_ERR;
     }
