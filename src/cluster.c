@@ -1113,22 +1113,22 @@ int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 /* run on the event loop */
 static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     MessageCtx* msgCtx = ctx;
+    /* NOTE: This function runs on LibMR event loop thread.
+     * We avoid Redis main-thread block/unblock for INNERCOMMUNICATION because it is a hot path.
+     * We also free RedisModuleString objects under ThreadSafeContextLock since we are off-thread. */
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
-        msgCtx->reply = MessageReply_ClusterNull;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto done;
     }
 
     if(!MR_IsClusterInitialize()){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
-        msgCtx->reply = MessageReply_ClusterUninitialized;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto done;
     }
 
     RedisModuleString** argv = msgCtx->argv;
     size_t argc = msgCtx->argc;
+    char *combinedId = NULL;
 
     RedisModuleString* senderId = argv[1];
     RedisModuleString* senderRunId = argv[2];
@@ -1139,24 +1139,18 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     long long msgId;
     if(RedisModule_StringToLongLong(msgIdStr, &msgId) != REDISMODULE_OK){
         RedisModule_Log(mr_staticCtx, "warning", "bad msg id given");
-        msgCtx->reply = MessageReply_BadMsgId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto done;
     }
 
     long long functionId;
     if(RedisModule_StringToLongLong(functionToCall, &functionId) != REDISMODULE_OK){
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
-        msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto done;
     }
 
     if (functionId < 0 || functionId >= array_len(clusterCtx.callbacks)) {
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
-        msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto done;
     }
 
     size_t senderIdLen;
@@ -1164,7 +1158,8 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     size_t senderRunIdLen;
     const char* senderRunIdStr = RedisModule_StringPtrLen(senderRunId, &senderRunIdLen);
 
-    char combinedId[senderIdLen + senderRunIdLen + 1]; // +1 is for '\0'
+    /* Avoid a VLA here because we use goto-based error handling. */
+    combinedId = MR_ALLOC(senderIdLen + senderRunIdLen + 1); // +1 is for '\0'
     memcpy(combinedId, senderIdStr, senderIdLen);
     memcpy(combinedId + senderIdLen, senderRunIdStr, senderRunIdLen);
     combinedId[senderIdLen + senderRunIdLen] = '\0';
@@ -1178,15 +1173,23 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     }
     if(msgId <= currId){
         RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
-        msgCtx->reply = MessageReply_DuplicateMsg;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto done;
     }
     mr_dictSetSignedIntegerVal(entity, msgId);
     clusterCtx.callbacks[functionId](mr_staticCtx, senderIdStr, 0, msg);
 
-    msgCtx->reply = MessageReply_OK;
-    RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+done:
+    if (combinedId) {
+        MR_FREE(combinedId);
+    }
+    /* Free held argv strings safely from event loop thread. */
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    for(size_t i = 0 ; i < msgCtx->argc ; ++i){
+        RedisModule_FreeString(NULL, msgCtx->argv[i]);
+    }
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    MR_FREE(msgCtx->argv);
+    MR_FREE(msgCtx);
     return;
 }
 
@@ -1335,6 +1338,15 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
         return RedisModule_WrongArity(ctx);
     }
 
+    /* Fast-path: reject early if cluster state isn't ready.
+     * We need to return ERRCLUSTER so the sender will re-send topology. */
+    if(!clusterCtx.CurrCluster){
+        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state");
+    }
+    if(!MR_IsClusterInitialize()){
+        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" Uninitialized cluster state");
+    }
+
     // we must copy argv because if the client will disconnect the redis will free it
     RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
     for(size_t i = 0 ; i < argc ; ++i){
@@ -1342,11 +1354,15 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     }
 
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
-    msgCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterInnerCommunicationMsgUnblock, NULL, MR_ClusterInnerCommunicationMsgFreePD, 0);
+    msgCtx->bc = NULL;
     msgCtx->argv = argvNew;
     msgCtx->argc = argc;
     msgCtx->reply = MessageReply_Undefined;
     MR_EventLoopAddTask(MR_ClusterInnerCommunicationMsgRun, msgCtx);
+
+    /* Reply immediately to avoid main-thread block/unblock overhead.
+     * The message is processed asynchronously on the LibMR event loop. */
+    RedisModule_ReplyWithSimpleString(ctx, "OK");
     return REDISMODULE_OK;
 }
 
