@@ -225,6 +225,7 @@ typedef struct BatchReplyCtx {
 } BatchReplyCtx;
 
 static size_t innercomm_batch_max = 32;
+static size_t innercomm_flush_delay_ms = 0;
 
 static void MR_InitInnerCommBatchMax() {
     const char* env = getenv("RG_INNERCOMM_BATCH_MAX");
@@ -239,6 +240,21 @@ static void MR_InitInnerCommBatchMax() {
     if (v < 1) v = 1;
     if (v > 256) v = 256;
     innercomm_batch_max = (size_t)v;
+}
+
+static void MR_InitInnerCommFlushDelayMs() {
+    const char* env = getenv("RG_INNERCOMM_FLUSH_DELAY_MS");
+    if (!env || !env[0]) {
+        return;
+    }
+    char* end = NULL;
+    unsigned long v = strtoul(env, &end, 10);
+    if (!end || end == env || *end != '\0') {
+        return;
+    }
+    /* 0 means "flush immediately" (default). Clamp to a small sane range. */
+    if (v > 1000) v = 1000;
+    innercomm_flush_delay_ms = (size_t)v;
 }
 
 static void MR_OnBatchResponseArrived(struct redisAsyncContext* c, void* a, void* b){
@@ -357,7 +373,11 @@ static void MR_ClusterSendMsgToNode(Node* node, SendMsg* msg){
     }
     if (node->status == NodeStatus_Connected && !node->flushScheduled) {
         node->flushScheduled = true;
-        MR_EventLoopAddTask(MR_ClusterFlushOutbox, node);
+        if (innercomm_flush_delay_ms > 0) {
+            MR_EventLoopAddTaskWithDelay(MR_ClusterFlushOutbox, node, innercomm_flush_delay_ms);
+        } else {
+            MR_EventLoopAddTask(MR_ClusterFlushOutbox, node);
+        }
     }
 }
 
@@ -529,20 +549,25 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
     }
 
     if(resendPendingMessages){
-        // we need to send pending messages to the shard
-        mr_listIter* iter = mr_listGetIterator(n->pendingMessages, AL_START_HEAD);
-        mr_listNode *node = NULL;
-        while((node = mr_listNext(iter)) != NULL){
-            NodeSendMsg* sentMsg = mr_listNodeValue(node);
-            ++sentMsg->retries;
-            if(MSG_MAX_RETRIES == 0 || sentMsg->retries < MSG_MAX_RETRIES){
-                MR_ClusterSendMsgToNodeInternal(n, sentMsg);
-            }else{
-                RedisModule_Log(mr_staticCtx, "warning", "Gave up of message because failed to send it for more than %d time", MSG_MAX_RETRIES);
-                mr_listDelNode(n->pendingMessages, node);
+        /* Re-queue pending (in-flight) messages back to the outbox and flush them in batches.
+         * This avoids resending one-by-one via INNERCOMMUNICATION which amplifies +OK acks. */
+        while (mr_listLength(n->pendingMessages) > 0) {
+            mr_listNode* ln = mr_listFirst(n->pendingMessages);
+            if (!ln) {
+                break;
             }
+            NodeSendMsg* sentMsg = mr_listNodeValue(ln);
+            mr_listDelNode(n->pendingMessages, ln);
+
+            ++sentMsg->retries;
+            if (MSG_MAX_RETRIES != 0 && sentMsg->retries >= MSG_MAX_RETRIES) {
+                RedisModule_Log(mr_staticCtx, "warning", "Gave up of message because failed to send it for more than %d time", MSG_MAX_RETRIES);
+                MR_ClusterFreeNodeMsg(sentMsg);
+                continue;
+            }
+
+            mr_listAddNodeTail(n->outboxMessages, sentMsg);
         }
-        mr_listReleaseIterator(iter);
     }
     n->runId = MR_STRDUP(reply->str);
     n->status = NodeStatus_Connected;
@@ -550,7 +575,11 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
     /* Flush any queued (not yet in-flight) messages. */
     if (mr_listLength(n->outboxMessages) > 0 && !n->flushScheduled) {
         n->flushScheduled = true;
-        MR_EventLoopAddTask(MR_ClusterFlushOutbox, n);
+        if (innercomm_flush_delay_ms > 0) {
+            MR_EventLoopAddTaskWithDelay(MR_ClusterFlushOutbox, n, innercomm_flush_delay_ms);
+        } else {
+            MR_EventLoopAddTask(MR_ClusterFlushOutbox, n);
+        }
     }
 }
 
@@ -1589,6 +1618,7 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
 
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     MR_InitInnerCommBatchMax();
+    MR_InitInnerCommFlushDelayMs();
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
