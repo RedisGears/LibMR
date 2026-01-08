@@ -20,6 +20,8 @@
 #include "utils/buffer.h"
 
 #include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define EXECUTION_DEFAULT_MAX_IDLE_MS 5000
 
@@ -571,7 +573,7 @@ static void MR_StepDone(Execution* e, void* pd) {
     size_t stepIndex = mr_BufferReaderReadLongLong(&reader, NULL);
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
+    RedisModule_FreeString(mr_staticCtx, payload);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
     if (MR_PerformStepDoneOp(e, stepIndex) == MR_ClusterGetSize() - 1){
@@ -603,7 +605,7 @@ static void MR_SetRecord(Execution* e, void* pd) {
     Record* r = MR_RecordDeSerialize(&reader);
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
+    RedisModule_FreeString(mr_staticCtx, payload);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
     if (MR_SetRecordToStep(e, stepIndex, r) > 10000){
@@ -634,7 +636,7 @@ static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     }
 
     /* run the execution on the thread pool */
-    MR_ExecutionAddTask(e, MR_SetRecord, RedisModule_HoldString(NULL, payload));
+    MR_ExecutionAddTask(e, MR_SetRecord, RedisModule_HoldString(mr_staticCtx, payload));
 }
 
 static void MR_SendRecordToSlot(Execution* e, Step* s, Record* r, size_t slot) {
@@ -688,7 +690,7 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
     }
 
     /* run the execution on the thread pool */
-    MR_ExecutionAddTask(e, MR_StepDone, RedisModule_HoldString(NULL, payload));
+    MR_ExecutionAddTask(e, MR_StepDone, RedisModule_HoldString(mr_staticCtx, payload));
 }
 
 static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
@@ -1127,7 +1129,7 @@ static void MR_RecieveExecution(void* pd) {
      * Possible optimization would be to batch multiple
      * payloads into one GIL locking */
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
+    RedisModule_FreeString(mr_staticCtx, payload);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
     /* Finish deserializing the execution, we need to
@@ -1141,7 +1143,7 @@ static void MR_RecieveExecution(void* pd) {
 static void MR_NewExecutionRecieved(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
     /* We can directly move the job to the thread pool.
      * We need to deserialize the execution and reply to the initiator. */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RecieveExecution, RedisModule_HoldString(NULL, payload));
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RecieveExecution, RedisModule_HoldString(mr_staticCtx, payload));
 }
 
 static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
@@ -1411,6 +1413,7 @@ static void MR_GetRedisVersion() {
 int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
+    RedisModule_Log(ctx, "notice", "LibMR: remote task receiver main-thread mode enabled (hard-coded)");
 
     if (MR_ClusterInit(ctx, password) != REDISMODULE_OK) {
         return REDISMODULE_ERR;
@@ -1783,9 +1786,8 @@ static void MR_RemoteTaskDoneOnRemote(void *pd, Record *res) {
     MR_FREE(replyMsg);
 }
 
-/* Runs on thread pool */
-static void MR_RemoteTaskInternal(void* pd) {
-    RedisModuleString* payload = pd;
+/* Runs on Redis main thread (receiver shard) */
+static void MR_RemoteTaskMainThread(RedisModuleString* payload) {
     size_t dataSize;
     const char* data = RedisModule_StringPtrLen(payload, &dataSize);
     mr_Buffer buff = {
@@ -1820,22 +1822,16 @@ static void MR_RemoteTaskInternal(void* pd) {
     memcpy(replyMsg->id, id, idLen);
 
     ((RemoteTask)msd->callback)(r, args, MR_RemoteTaskDoneOnRemote, MR_RemoteTaskErrorOnRemote, replyMsg);
-
-    /* We must take the Redis GIL to free the payload,
-     * RedisModuleString refcount are not thread safe.
-     * We better do it here and stuck on of the threads
-     * in the thread pool then do it on the event loop.
-     * Possible optimization would be to batch multiple
-     * payloads into one GIL locking */
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 }
 
 /* Runs on the event loop */
 static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
-    /* We can directly move the job to the thread pool for deserialization and execution */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskInternal, RedisModule_HoldString(NULL, payload));
+    (void)ctx;
+    (void)sender_id;
+    (void)type;
+    /* Remote task receiver is executed on Redis main thread by the cluster
+     * inner-communication unblock path (secondary shard). */
+    MR_RemoteTaskMainThread(payload);
 }
 
 /* Invoked on the event look */

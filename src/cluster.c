@@ -23,6 +23,9 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
+/* MR_RemoteTask receiver functionId (assigned during MR_Init). */
+extern functionId REMOTE_TASK_FUNCTION_ID;
+
 
 #define RETRY_INTERVAL 1000 // 1 second
 #define MSG_MAX_RETRIES 3
@@ -154,6 +157,8 @@ typedef struct MessageCtx {
     RedisModuleString **argv;
     int argc;
     MessageReply reply;
+    long long functionId;
+    bool runCallbackOnUnblock;
 }MessageCtx;
 
 static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b);
@@ -1049,7 +1054,8 @@ static void MR_ClusterSetFromCommand(void* ctx){
 static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     ClusterSetCtx* csCtx = RedisModule_GetBlockedClientPrivateData(ctx);
     for(size_t i = 0 ; i < csCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, csCtx->argv[i]);
+        /* Must use a real context for refcount ops. */
+        RedisModule_FreeString(ctx ? ctx : mr_staticCtx, csCtx->argv[i]);
     }
     MR_FREE(csCtx->argv);
     MR_FREE(csCtx);
@@ -1081,7 +1087,8 @@ static int MR_ClusterSet(RedisModuleCtx *ctx, RedisModuleString **argv, int argc
     // we must copy argv because if the client will disconnect the redis will free it
     RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
     for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+        /* Must use a real context for refcount ops. */
+        argvNew[i] = RedisModule_HoldString(ctx, argv[i]);
     }
     MR_ClusterSetInternal(ctx, argvNew, argc, true);
     return REDISMODULE_OK;
@@ -1095,7 +1102,8 @@ static int MR_ClusterSetFromShard(RedisModuleCtx *ctx, RedisModuleString **argv,
     // we must copy argv because if the client will disconnect the redis will free it
     RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
     for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+        /* Must use a real context for refcount ops. */
+        argvNew[i] = RedisModule_HoldString(ctx, argv[i]);
     }
     MR_ClusterSetInternal(ctx, argvNew, argc, false);
     return REDISMODULE_OK;
@@ -1183,9 +1191,16 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         return;
     }
     mr_dictSetSignedIntegerVal(entity, msgId);
-    clusterCtx.callbacks[functionId](mr_staticCtx, senderIdStr, 0, msg);
-
+    msgCtx->functionId = functionId;
     msgCtx->reply = MessageReply_OK;
+    msgCtx->runCallbackOnUnblock = false;
+
+    /* Run remote task receiver on Redis main thread (secondary shard). */
+    if ((size_t)functionId == (size_t)REMOTE_TASK_FUNCTION_ID) {
+        msgCtx->runCallbackOnUnblock = true;
+    } else {
+        clusterCtx.callbacks[functionId](mr_staticCtx, senderIdStr, 0, msg);
+    }
     RedisModule_UnblockClient(msgCtx->bc, msgCtx);
     return;
 }
@@ -1193,7 +1208,8 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
 static void MR_ClusterInnerCommunicationMsgFreePD(RedisModuleCtx* ctx, void* pd){
     MessageCtx* msgCtx = pd;
     for(size_t i = 0 ; i < msgCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, msgCtx->argv[i]);
+        /* Must use a real context for refcount ops. */
+        RedisModule_FreeString(ctx, msgCtx->argv[i]);
     }
     MR_FREE(msgCtx->argv);
     MR_FREE(msgCtx);
@@ -1203,6 +1219,14 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
     MessageCtx* msgCtx = RedisModule_GetBlockedClientPrivateData(ctx);
     switch(msgCtx->reply) {
     case MessageReply_OK:
+        if (msgCtx->runCallbackOnUnblock) {
+            RedisModuleString** argvLocal = msgCtx->argv;
+            RedisModuleString* senderId = argvLocal[1];
+            RedisModuleString* msg = argvLocal[4];
+            size_t senderIdLen;
+            const char* senderIdStr = RedisModule_StringPtrLen(senderId, &senderIdLen);
+            clusterCtx.callbacks[msgCtx->functionId](ctx, senderIdStr, 0, msg);
+        }
         RedisModule_ReplyWithSimpleString(ctx, "OK");
         break;
     case MessageReply_ClusterUninitialized:
@@ -1338,7 +1362,8 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     // we must copy argv because if the client will disconnect the redis will free it
     RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
     for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+        /* Must use a real context for refcount ops. */
+        argvNew[i] = RedisModule_HoldString(ctx, argv[i]);
     }
 
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
@@ -1346,6 +1371,8 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     msgCtx->argv = argvNew;
     msgCtx->argc = argc;
     msgCtx->reply = MessageReply_Undefined;
+    msgCtx->functionId = -1;
+    msgCtx->runCallbackOnUnblock = false;
     MR_EventLoopAddTask(MR_ClusterInnerCommunicationMsgRun, msgCtx);
     return REDISMODULE_OK;
 }
