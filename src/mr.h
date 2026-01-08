@@ -53,12 +53,6 @@ typedef struct MRObjectType{
 
 LIBMR_API int MR_ClusterIsInClusterMode();
 
-/* Experimental: run remote-task receiver execution on the Redis main thread on the
- * receiving shard ("secondary shard"). This is controlled via an environment variable
- * (see MR_Init implementation). */
-LIBMR_API int MR_RemoteTaskMainThreadReceiverEnabled(void);
-LIBMR_API size_t MR_GetRemoteTaskFunctionId(void);
-
 /* Opaque struct that is given to execution steps */
 typedef struct ExecutionCtx ExecutionCtx;
 LIBMR_API Record* MR_ExecutionCtxGetResult(ExecutionCtx* ectx, size_t i);
