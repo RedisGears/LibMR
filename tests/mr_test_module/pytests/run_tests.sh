@@ -18,6 +18,8 @@ else
     MODULE_PATH=$HERE/../target/release/libmr_test.$LIB_EXTENTION
 fi
 
+export PYTHONUNBUFFERED=1
+
 check_python_deps() {
     # RLTest uses redis-py 'protocol=' kwarg (redis>=5). Fail fast with a clear hint.
     "${PYTHON:-python}" - <<'PY'
@@ -84,8 +86,17 @@ RLTEST_ARGS=(
     --enable-debug-command
 )
 
+# In GitHub Actions, avoid "silent forever" hangs by setting a default hard
+# timeout unless explicitly overridden.
+if [[ -n $GITHUB_ACTIONS && ( -z ${RUN_TIMEOUT_SEC+x} || $RUN_TIMEOUT_SEC == 0 ) ]]; then
+    RUN_TIMEOUT_SEC=1800
+fi
+
 # Optional: RLTest per-test timeout (seconds)
 if [[ -n $TEST_TIMEOUT_SEC && $TEST_TIMEOUT_SEC != 0 ]]; then
+    RLTEST_ARGS+=(--test-timeout "$TEST_TIMEOUT_SEC")
+elif [[ -n $GITHUB_ACTIONS && ( -z ${TEST_TIMEOUT_SEC+x} || $TEST_TIMEOUT_SEC == 0 ) ]]; then
+    TEST_TIMEOUT_SEC=120
     RLTEST_ARGS+=(--test-timeout "$TEST_TIMEOUT_SEC")
 fi
 
@@ -95,9 +106,26 @@ RUN_TIMEOUT_SEC=${RUN_TIMEOUT_SEC:-0}
 check_python_deps
 
 set +e
+# Heartbeat so CI logs keep moving even if RLTest blocks during env startup.
+if [[ -n $GITHUB_ACTIONS && $RUN_TIMEOUT_SEC != 0 ]]; then
+    (
+        i=0
+        while true; do
+            sleep 60
+            i=$((i + 60))
+            echo "[heartbeat] RLTest still running (${i}s elapsed, RUN_TIMEOUT_SEC=${RUN_TIMEOUT_SEC})"
+        done
+    ) &
+    HB_PID=$!
+fi
+
 run_with_timeout "$RUN_TIMEOUT_SEC" "${PYTHON:-python}" -m RLTest "${RLTEST_ARGS[@]}" "$@"
 E=$?
 set -e
+
+if [[ -n ${HB_PID:-} ]]; then
+    kill "$HB_PID" >/dev/null 2>&1 || true
+fi
 
 if [[ $E == 124 ]]; then
     echo "RLTest timed out (RUN_TIMEOUT_SEC=$RUN_TIMEOUT_SEC). Diagnostics:"
