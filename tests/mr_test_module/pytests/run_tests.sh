@@ -51,14 +51,18 @@ run_with_timeout() {
         return $?
     fi
 
-    # Prefer coreutils 'timeout' when available (Linux CI).
-    if command -v timeout >/dev/null 2>&1; then
-        timeout --signal=KILL "${timeout_sec}s" "$@"
+    is_gnu_timeout() {
+        timeout --version 2>/dev/null | head -n 1 | grep -q "GNU coreutils"
+    }
+
+    # Prefer GNU coreutils 'timeout' when available (Linux CI).
+    if command -v timeout >/dev/null 2>&1 && is_gnu_timeout; then
+        timeout --signal=TERM --kill-after=5s "$timeout_sec" "$@"
         return $?
     fi
     # macOS users may have coreutils as 'gtimeout'.
     if command -v gtimeout >/dev/null 2>&1; then
-        gtimeout --signal=KILL "${timeout_sec}s" "$@"
+        gtimeout --signal=TERM --kill-after=5s "$timeout_sec" "$@"
         return $?
     fi
 
