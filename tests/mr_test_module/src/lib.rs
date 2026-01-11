@@ -31,11 +31,20 @@ use serde::{Deserialize, Serialize};
 
 use std::os::raw::c_void;
 
+use std::cell::RefCell;
 use std::{thread, time};
+use std::sync::OnceLock;
 
 use mr_derive::BaseObject;
 
 static mut DETACHED_CTX: *mut RedisModuleCtx = std::ptr::null_mut();
+static MAIN_THREAD: OnceLock<libc::pthread_t> = OnceLock::new();
+
+thread_local! {
+    static CTX_LOCK_GUARD: RefCell<Option<std::sync::MutexGuard<'static, ()>>> = RefCell::new(None);
+}
+
+static CTX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn get_redis_ctx() -> *mut RedisModuleCtx {
     unsafe { DETACHED_CTX }
@@ -47,17 +56,44 @@ fn get_ctx() -> Context {
 }
 
 fn ctx_lock() {
+    // Protect detached ctx usage from concurrent access, even when some remote
+    // tasks execute on the Redis main thread.
+    let g = CTX_LOCK.lock().expect("CTX_LOCK poisoned");
+    CTX_LOCK_GUARD.with(|cell| {
+        *cell.borrow_mut() = Some(g);
+    });
+
     let inner = get_redis_ctx();
+    let is_main = MAIN_THREAD
+        .get()
+        .map(|t| unsafe { libc::pthread_equal(libc::pthread_self(), *t) != 0 })
+        .unwrap_or(false);
     unsafe {
-        RedisModule_ThreadSafeContextLock.unwrap()(inner);
+        // On some Redis versions, calling ThreadSafeContextLock from the main
+        // thread may crash. Remote tasks can execute on the main thread, so we
+        // skip it there (mutex above still protects concurrent access).
+        if !is_main {
+            RedisModule_ThreadSafeContextLock.unwrap()(inner);
+        }
     }
 }
 
 fn ctx_unlock() {
     let inner = get_redis_ctx();
+    let is_main = MAIN_THREAD
+        .get()
+        .map(|t| unsafe { libc::pthread_equal(libc::pthread_self(), *t) != 0 })
+        .unwrap_or(false);
     unsafe {
-        RedisModule_ThreadSafeContextUnlock.unwrap()(inner);
+        if !is_main {
+            RedisModule_ThreadSafeContextUnlock.unwrap()(inner);
+        }
     }
+
+    CTX_LOCK_GUARD.with(|cell| {
+        // drop the guard, unlocking the mutex
+        cell.borrow_mut().take();
+    });
 }
 
 fn strin_record_new(s: String) -> StringRecord {
@@ -856,6 +892,7 @@ fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
+    let _ = MAIN_THREAD.set(unsafe { libc::pthread_self() });
 
     let mut args_iter = args.iter();
     let pass = args_iter
