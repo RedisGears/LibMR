@@ -298,6 +298,9 @@ void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg,
 }
 
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver) {
+    for (functionId fid = 0; fid < array_len(clusterCtx.callbacks); fid++)
+        if (clusterCtx.callbacks[fid] == receiver)
+            return fid;
     clusterCtx.callbacks = array_append(clusterCtx.callbacks, receiver);
     return array_len(clusterCtx.callbacks) - 1;
 }
