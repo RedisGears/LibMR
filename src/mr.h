@@ -11,6 +11,7 @@
 #define SRC_MR_H_
 
 #include <limits.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -18,6 +19,7 @@
 
 typedef struct MRError MRError;
 
+struct RedisModuleString;
 extern struct RedisModuleCtx* mr_staticCtx;
 
 /* Opaque struct build an execution */
@@ -69,15 +71,15 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
 /* Execution Callback definition */
 typedef void(*ExecutionCallback)(ExecutionCtx* ectx, void* pd);
 
-/* step functions signiture */
+typedef void (*MR_RunOnKey_OnDone)(void *pd, Record* result);
+typedef void (*MR_RunOnKey_OnError)(void *pd, MRError* err);
+
+/* step functions signatures */
 typedef Record* (*ExecutionReader)(ExecutionCtx* ectx, void* args);
 typedef Record* (*ExecutionMapper)(ExecutionCtx* ectx, Record* r, void* args);
 typedef int (*ExecutionFilter)(ExecutionCtx* ectx, Record* r, void* args);
 typedef Record* (*ExecutionAccumulator)(ExecutionCtx* ectx, Record* accumulator, Record* r, void* args);
-typedef void (*RemoteTask)(Record* r, void* args, void (*onDone)(void* PD, Record *r), void (*onError)(void* PD, MRError *r), void *pd);
-
-typedef void (*MR_RunOnKey_OnError)(void *pd, MRError* err);
-typedef void (*MR_RunOnKey_OnDone)(void *pd, Record* result);
+typedef void (*RemoteTask)(Record* r, void* args, MR_RunOnKey_OnDone onDone, MR_RunOnKey_OnError onError, void *pd);
 
 /* Run a remote task on a shard responsible for a given key.
  * There is not guarantee on which thread the task will run, if
@@ -98,6 +100,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            size_t timeout);
 
 typedef void (*MR_RunOnShards_OnDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs);
+
+typedef void (*MR_ClusterMessageReceiver)(struct RedisModuleCtx *ctx, const char *sender_id, uint8_t type, struct RedisModuleString* payload);
 
 LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  void* args,
