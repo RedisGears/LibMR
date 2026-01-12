@@ -65,7 +65,7 @@ static MRRecordType ErrorRecordType = {
     .hashTag = NULL,
 };
 
-void MR_RecorInitialize() {
+void MR_RecordInitialize() {
     MR_RegisterRecord(&ErrorRecordType);
 }
 

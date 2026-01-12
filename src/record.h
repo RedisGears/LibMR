@@ -13,7 +13,7 @@
 #include "mr.h"
 #include "utils/buffer.h"
 
-void MR_RecorInitialize();
+void MR_RecordInitialize();
 void MR_RecordSerialize(Record* r, mr_BufferWriter* writer);
 Record* MR_RecordDeSerialize(mr_BufferReader* reader);
 

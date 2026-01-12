@@ -64,7 +64,7 @@ static Record* MR_RunStep(Execution* e, Step* s);
 void MR_FreeExecution(Execution* e);
 
 /* Remote functions declaration */
-static void MR_NewExecutionRecieved(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
+static void MR_NewExecutionReceived(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
 static void MR_AckExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
 static void MR_InvokeExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
 static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
@@ -77,8 +77,8 @@ static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
 /* Remote functions array */
 static RemoteFunctionDef remoteFunctions[] = {
         {
-                .funcIdPointer = &NEW_EXECUTION_RECIEVED_FUNCTION_ID,
-                .functionPointer = MR_NewExecutionRecieved,
+                .funcIdPointer = &NEW_EXECUTION_RECEIVED_FUNCTION_ID,
+                .functionPointer = MR_NewExecutionReceived,
         },
         {
                 .funcIdPointer = &ACK_EXECUTION_FUNCTION_ID,
@@ -275,7 +275,7 @@ struct Execution {
     pthread_mutex_t eLock; /* lock for critical sections of the execution */
     mr_list* tasks;
 
-    size_t nRecieved;
+    size_t nReceived;
     size_t nCompleted;
     ARR(Record*) results;
     ARR(Record*) errors;
@@ -336,17 +336,17 @@ ExecutionBuilder* MR_CreateEmptyExecutionBuilder() {
 ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args) {
     ExecutionBuilder* builder = MR_CreateEmptyExecutionBuilder();
 
-    StepDefinition* rsd = mr_dictFetchValue(mrCtx.readerDict, readerName);
-    RedisModule_Assert(rsd);
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.readerDict, readerName);
+    RedisModule_Assert(sd);
     ExecutionBuilderStep s = {
             .args = args,
-            .argsType = rsd->type,
+            .argsType = sd->type,
             .name = MR_STRDUP(readerName),
             .type = StepType_Reader,
     };
-    ret->steps = array_append(ret->steps, s);
+    builder->steps = array_append(builder->steps, s);
 
-    return ret;
+    return builder;
 }
 
 void MR_ExecutionBuilderCollect(ExecutionBuilder* builder) {
@@ -362,11 +362,13 @@ void MR_ExecutionBuilderCollect(ExecutionBuilder* builder) {
 }
 
 void MR_ExecutionBuilderMap(ExecutionBuilder* builder, const char* name, void* args) {
-    StepDefinition* msd = mr_dictFetchValue(mrCtx.mappersDict, name);
-    RedisModule_Assert(msd);
+    RedisModule_Assert(array_len(builder->steps) > 0);
+    RedisModule_Assert(builder->steps[0].type != StepType_InternalCommand);
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.mappersDict, name);
+    RedisModule_Assert(sd);
     ExecutionBuilderStep s = {
             .args = args,
-            .argsType = msd->type,
+            .argsType = sd->type,
             .name = MR_STRDUP(name),
             .type = StepType_Mapper,
     };
@@ -442,15 +444,15 @@ void MR_FreeExecutionBuilder(ExecutionBuilder* builder) {
 }
 
 static void SetId(char* idBuf, char* idBufStr, size_t id){
-    char noneClusterId[REDISMODULE_NODE_ID_LEN] = {0};
-    const char* sharId;
+    char nonClusterId[REDISMODULE_NODE_ID_LEN] = {0};
+    const char* shardId;
     if(MR_ClusterIsClusterMode()){
-        sharId = MR_ClusterGetMyId();
+        shardId = MR_ClusterGetMyId();
     }else{
-        memset(noneClusterId, '0', REDISMODULE_NODE_ID_LEN);
-        sharId = noneClusterId;
+        memset(nonClusterId, '0', REDISMODULE_NODE_ID_LEN);
+        shardId = nonClusterId;
     }
-    memcpy(idBuf, sharId, REDISMODULE_NODE_ID_LEN);
+    memcpy(idBuf, shardId, REDISMODULE_NODE_ID_LEN);
     memcpy(idBuf + REDISMODULE_NODE_ID_LEN, &id, sizeof(size_t));
     snprintf(idBufStr, STR_ID_LEN, "%.*s-%lld", REDISMODULE_NODE_ID_LEN, idBuf, *(long long*)&idBuf[REDISMODULE_NODE_ID_LEN]);
 }
@@ -508,7 +510,7 @@ static Execution* MR_ExecutionAlloc() {
     pthread_mutex_init(&e->eLock, NULL);
     e->tasks = mr_listCreate();
     mr_listSetFreeMethod(e->tasks, MR_FREE);
-    e->nRecieved = 0;
+    e->nReceived = 0;
     e->nCompleted = 0;
     e->results = array_new(Record*, 10);
     e->errors = array_new(Record*, 10);
@@ -985,7 +987,7 @@ static void MR_DisposeExecution(Execution* e, void* pd) {
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
     mr_dictDelete(mrCtx.executionsDict, e->id);
-    /* Send dispose execution task, this will be last task this execution will ever recieve. */
+    /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
 }
 
@@ -1019,7 +1021,7 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     ++e->nCompleted;
     if (e->nCompleted == MR_ClusterGetSize() - 1) {
         /* Execution is finished on all the shards,
-         * We will not recieve any more messages on it.
+         * We will not receive any more messages on it.
          * We can ask all the shards to drop it and we can
          * drop it ourself. */
         MR_ClusterCopyAndSendMsg(NULL, DROP_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
@@ -1074,9 +1076,9 @@ static void MR_AckExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t 
         return;
     }
 
-    ++e->nRecieved;
-    if (e->nRecieved == MR_ClusterGetSize() - 1) {
-        /* all shards have recieved the execution, we can invoke it. */
+    ++e->nReceived;
+    if (e->nReceived == MR_ClusterGetSize() - 1) {
+        /* all shards have received the execution, we can invoke it. */
         MR_ClusterCopyAndSendMsg(NULL, INVOKE_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
         /* run the execution on the thread pool */
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
@@ -1194,15 +1196,15 @@ static void MR_ReceiveExecution(void* pd) {
     /* Finish deserializing the execution, we need to
      * return to the event loop and save the execution
      * in the executions dictionary */
-    MR_EventLoopAddTask(MR_RecievedExecution, e);
+    MR_EventLoopAddTask(MR_ReceivedExecution, e);
 
 }
 
 /* Remote function call, runs on the event loop */
-static void MR_NewExecutionRecieved(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
+static void MR_NewExecutionReceived(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
     /* We can directly move the job to the thread pool.
      * We need to deserialize the execution and reply to the initiator. */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RecieveExecution, RedisModule_HoldString(NULL, payload));
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ReceiveExecution, RedisModule_HoldString(NULL, payload));
 }
 
 static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
@@ -1218,7 +1220,7 @@ static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
         mr_BufferWriterWriteLongLong(buffWriter, 1); /* args exists */
         MRError* err = NULL;
         s->bStep.argsType->serialize(buffWriter, s->bStep.args, &err);
-        // todo: handle serilization failure
+        // todo: handle serialization failure
         RedisModule_Assert(!err);
     } else {
         mr_BufferWriterWriteLongLong(buffWriter, 0); /* args does not exists */
@@ -1226,7 +1228,7 @@ static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
 }
 
 static void MR_ExecutionSerialize(mr_BufferWriter* buffWriter, Execution* e) {
-    mr_BufferWriterWriteBuff(buffWriter, e->id, ID_LEN); /* write the exectuion id */
+    mr_BufferWriterWriteBuff(buffWriter, e->id, ID_LEN); /* write the execution id */
     mr_BufferWriterWriteLongLong(buffWriter, e->timeoutMS); /* max idle time */
     mr_BufferWriterWriteLongLong(buffWriter, array_len(e->steps)); /* number of steps */
     for (size_t i = 0 ; i < array_len(e->steps) ; ++i) {
@@ -1294,7 +1296,7 @@ static void MR_ExecutionMain(void* pd) {
     /* check if there are more tasks to run */
     if (mr_listLength(e->tasks) > 0) {
         /* more work to do, for fairness we will not run now.
-         * We will add ourselfs to the thread pool */
+         * We will add ourselves to the thread pool */
         mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ExecutionMain, e);
     } else {
         e->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_ExecutionTimedOut, e, e->timeoutMS);
@@ -1324,7 +1326,7 @@ static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, vo
     pthread_mutex_unlock(&e->eLock);
 }
 
-/* Happends on the event loop,
+/* Happens on the event loop,
  * Preper the execution to run and send
  * it to run on the thread pool. */
 static void MR_ExecutionStart(void* ctx) {
@@ -1334,8 +1336,9 @@ static void MR_ExecutionStart(void* ctx) {
     mr_dictAdd(mrCtx.executionsDict, e->id, e);
 
     if (e->flags & ExecutionFlag_Local) {
-        /* not need to distribute the executio,
-         * we can simply start running it */
+        /* not need to distribute the execution,
+         * we can simply start running it.
+         * Note: it will run in the event-loop thread! */
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
     } else {
         MR_ExecutionAddTask(e, MR_ExecutionDistribute, NULL);
@@ -1508,7 +1511,7 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
         *(rf->funcIdPointer) = MR_ClusterRegisterMsgReceiver(rf->functionPointer);
     }
 
-    MR_RecorInitialize();
+    MR_RecordInitialize();
 
     MR_EventLoopStart();
 
@@ -1534,57 +1537,68 @@ MRObjectType* MR_GetObjectType(size_t id) {
 
 void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.readerDict, name));
-    StepDefinition* rsd = MR_ALLOC(sizeof(*rsd));
-    *rsd = (StepDefinition) {
+    StepDefinition* sd = MR_ALLOC(sizeof(*sd));
+    *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = reader,
     };
-    mr_dictAdd(mrCtx.readerDict, rsd->name, rsd);
+    mr_dictAdd(mrCtx.readerDict, sd->name, sd);
+}
+
+void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType) {
+    RedisModule_Assert(!mr_dictFetchValue(mrCtx.internalCommandsDict, name));
+    StepDefinition* sd = MR_ALLOC(sizeof(*sd));
+    *sd = (StepDefinition) {
+        .name = MR_STRDUP(name),
+        .type = argType,
+        .callback = callback,
+    };
+    mr_dictAdd(mrCtx.internalCommandsDict, sd->name, sd);
 }
 
 void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.mappersDict, name));
-    StepDefinition* msd = MR_ALLOC(sizeof(*msd));
-    *msd = (StepDefinition) {
+    StepDefinition* sd = MR_ALLOC(sizeof(*sd));
+    *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = mapper,
     };
-    mr_dictAdd(mrCtx.mappersDict, msd->name, msd);
+    mr_dictAdd(mrCtx.mappersDict, sd->name, sd);
 }
 
 void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* argType) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.filtersDict, name));
-    StepDefinition* msd = MR_ALLOC(sizeof(*msd));
-    *msd = (StepDefinition) {
+    StepDefinition* sd = MR_ALLOC(sizeof(*sd));
+    *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = filter,
     };
-    mr_dictAdd(mrCtx.filtersDict, msd->name, msd);
+    mr_dictAdd(mrCtx.filtersDict, sd->name, sd);
 }
 
 LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator accumulator, MRObjectType* argType) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.accumulatorsDict, name));
-    StepDefinition* asd = MR_ALLOC(sizeof(*asd));
-    *asd = (StepDefinition) {
+    StepDefinition* sd = MR_ALLOC(sizeof(*sd));
+    *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = accumulator,
     };
-    mr_dictAdd(mrCtx.accumulatorsDict, asd->name, asd);
+    mr_dictAdd(mrCtx.accumulatorsDict, sd->name, sd);
 }
 
 LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObjectType* argType) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.remoteTasksDict, name));
-    StepDefinition* asd = MR_ALLOC(sizeof(*asd));
-    *asd = (StepDefinition) {
+    StepDefinition* sd = MR_ALLOC(sizeof(*sd));
+    *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = remote,
     };
-    mr_dictAdd(mrCtx.remoteTasksDict, asd->name, asd);
+    mr_dictAdd(mrCtx.remoteTasksDict, sd->name, sd);
 }
 
 long long MR_SerializationCtxReadLongLong(ReaderSerializationCtx* sctx, MRError** err) {
@@ -1622,7 +1636,7 @@ void MR_SerializationCtxWriteDouble(WriteSerializationCtx* sctx, double val, MRE
 }
 
 size_t MR_CalculateSlot(const char* buff, size_t len) {
-    return MR_ClusterGetSlotdByKey(buff, len);
+    return MR_ClusterGetSlotByKey(buff, len);
 }
 
 LIBMR_API int MR_IsMySlot(size_t slot) {
@@ -1700,7 +1714,7 @@ typedef struct RunOnShardsMsg {
     ARR(MRError*) errs;
     size_t expectedNResults;
     size_t nResultsArrived;
-    StepDefinition* msd;
+    StepDefinition* sd;
 } RunOnShardsMsg;
 
 /* Run on thread pool */
@@ -1873,11 +1887,11 @@ static void MR_RemoteTaskInternal(void* pd) {
     RedisModule_Assert(idLen == ID_LEN);
 
     const char *remoteTaskName = mr_BufferReaderReadString(&buffReader, NULL);
-    StepDefinition* msd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
-    RedisModule_Assert(msd);
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
+    RedisModule_Assert(sd);
 
     MRError* error = NULL;
-    void *args = msd->type->deserialize(&buffReader, &error);
+    void *args = sd->type->deserialize(&buffReader, &error);
     /* todo: handler serialization failure */
 
     Record *r = MR_RecordDeSerialize(&buffReader);
@@ -1888,7 +1902,7 @@ static void MR_RemoteTaskInternal(void* pd) {
     replyMsg->id = MR_ALLOC(idLen);
     memcpy(replyMsg->id, id, idLen);
 
-    ((RemoteTask)msd->callback)(r, args, MR_RemoteTaskDoneOnRemote, MR_RemoteTaskErrorOnRemote, replyMsg);
+    ((RemoteTask)sd->callback)(r, args, MR_RemoteTaskDoneOnRemote, MR_RemoteTaskErrorOnRemote, replyMsg);
 
     /* We must take the Redis GIL to free the payload,
      * RedisModuleString refcount are not thread safe.
@@ -1953,11 +1967,11 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
                            void *pd,
                            size_t timeout)
 {
-    StepDefinition* msd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
-    RedisModule_Assert(msd);
-    size_t slot = MR_ClusterGetSlotdByKey(keyName, keyNameSize);
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
+    RedisModule_Assert(sd);
+    size_t slot = MR_ClusterGetSlotByKey(keyName, keyNameSize);
     if (!MR_ClusterIsInClusterMode() || MR_ClusterIsMySlot(slot)) {
-        ((RemoteTask)msd->callback)(r, args, onDone, onError, pd);
+        ((RemoteTask)sd->callback)(r, args, onDone, onError, pd);
         return;
     }
 
@@ -1985,8 +1999,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
     /* mapped name to invoke */
     mr_BufferWriterWriteString(&buffWriter, remoteTaskName);
     /* Serialize args */
-    msd->type->serialize(&buffWriter, args, &error);
-    msd->type->free(args);
+    sd->type->serialize(&buffWriter, args, &error);
+    sd->type->free(args);
     /* todo: handler serialization failure */
     /* serialize the record */
     MR_RecordSerialize(r, &buffWriter);
@@ -2000,7 +2014,7 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
 
 typedef struct RemoteTaskLocalRun{
     char id[ID_LEN];
-    StepDefinition* msd;
+    StepDefinition* sd;
     void* args;
     Record* r;
     RemoteTaskResult result;
@@ -2035,7 +2049,7 @@ static void MR_RemoteTaskRunOnLocal(void *pd) {
     Record* r = localRun->r;
     localRun->args = NULL;
     localRun->r = NULL;
-    ((RemoteTask)localRun->msd->callback)(r, args, MR_RemoteTaskDoneOnLocal, MR_RemoteTaskErrorOnLocal, localRun);
+    ((RemoteTask)localRun->sd->callback)(r, args, MR_RemoteTaskDoneOnLocal, MR_RemoteTaskErrorOnLocal, localRun);
 }
 
 /* Invoked on the event look */
@@ -2076,7 +2090,7 @@ static void MR_RunOnAllShardsInternal(void* ctx) {
     memcpy(localRun->id, msg->remoteTaskBase.id, ID_LEN);
     localRun->args = msg->args;
     localRun->r = msg->r;
-    localRun->msd = msg->msd;
+    localRun->sd = msg->sd;
     mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskRunOnLocal, localRun);
     msg->args = NULL;
     msg->r = NULL;
@@ -2092,8 +2106,8 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  MR_RunOnShards_OnDone onDone,
                                  void *pd,
                                  size_t timeout) {
-    StepDefinition* msd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
-    RedisModule_Assert(msd);
+    StepDefinition* sd = mr_dictFetchValue(mrCtx.remoteTasksDict, remoteTaskName);
+    RedisModule_Assert(sd);
 
     RunOnShardsMsg *msg = MR_ALLOC(sizeof(*msg));
     msg->onDone = onDone;
@@ -2107,7 +2121,7 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
     msg->nResultsArrived = 0;
     msg->results = array_new(Record*, 10);
     msg->errs = array_new(MRError*, 10);
-    msg->msd = msd;
+    msg->sd = sd;
 
             /* Set id */
     size_t id = __atomic_add_fetch(&mrCtx.lastExecutionId, 1, __ATOMIC_RELAXED);
@@ -2125,7 +2139,7 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
     /* mapped name to invoke */
     mr_BufferWriterWriteString(&buffWriter, remoteTaskName);
     /* Serialize args */
-    msd->type->serialize(&buffWriter, args, &error);
+    sd->type->serialize(&buffWriter, args, &error);
     /* todo: handler serialization failure */
     /* serialize the record */
     MR_RecordSerialize(r, &buffWriter);
