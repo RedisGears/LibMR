@@ -1330,9 +1330,17 @@ int MR_ForceShardsConnectionCommand(RedisModuleCtx *ctx, RedisModuleString **arg
     return REDISMODULE_OK;
 }
 
+extern int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, const char *senderId, RedisModuleString *msg);
+
 int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
     if(argc != 6){
         return RedisModule_WrongArity(ctx);
+    }
+
+    functionId fid = (functionId)strtoull(RedisModule_StringPtrLen(argv[3], NULL), NULL, 10);
+    if (fid & FUNCTION_ID_INTERNAL) {
+        const char *senderId = RedisModule_StringPtrLen(argv[1], NULL);
+        return MR_ClusterExecuteInternalCommands(ctx, senderId, argv[4]);
     }
 
     // we must copy argv because if the client will disconnect the redis will free it
