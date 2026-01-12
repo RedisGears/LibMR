@@ -130,7 +130,7 @@ LIBMR_API void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* 
 /* Add accumulate step to the given builder.
  * The function takes ownership on the given
  * args so the user is not allow to use it anymore. */
-LIBMR_API void MR_ExecutionBuilderBuilAccumulate(ExecutionBuilder* builder, const char* name, void* args);
+LIBMR_API void MR_ExecutionBuilderBuildAccumulate(ExecutionBuilder* builder, const char* name, void* args);
 
 /* Add a collect step to the builder.
  * Will return all the records to the initiator */

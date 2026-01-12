@@ -133,7 +133,7 @@ struct ClusterCtx {
     size_t clusterSize;
     char myId[REDISMODULE_NODE_ID_LEN + 1];
     int isOss;
-    functionId networkTestMsgReciever;
+    functionId networkTestMsgReceiver;
     char *password;
 }clusterCtx;
 
@@ -1236,7 +1236,7 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
 }
 
 int MR_NetworkTestCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    MR_ClusterCopyAndSendMsg(NULL, clusterCtx.networkTestMsgReciever, "test msg", strlen("test msg"));
+    MR_ClusterCopyAndSendMsg(NULL, clusterCtx.networkTestMsgReceiver, "test msg", strlen("test msg"));
     RedisModule_ReplyWithSimpleString(ctx, "OK");
     return REDISMODULE_OK;
 }
@@ -1403,7 +1403,7 @@ static unsigned int keyHashSlot(const char *key, int keylen) {
     return MR_Crc16(key+s+1,e-s-1) & 0x3FFF;
 }
 
-size_t MR_ClusterGetSlotdByKey(const char* key, size_t len) {
+size_t MR_ClusterGetSlotByKey(const char* key, size_t len) {
     return keyHashSlot(key, len);
 }
 
@@ -1491,7 +1491,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
         return REDISMODULE_ERR;
     }
 
-    clusterCtx.networkTestMsgReciever = MR_ClusterRegisterMsgReceiver(MR_NetworkTest);
+    clusterCtx.networkTestMsgReceiver = MR_ClusterRegisterMsgReceiver(MR_NetworkTest);
 
     return REDISMODULE_OK;
 }
