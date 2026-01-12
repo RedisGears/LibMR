@@ -7,13 +7,18 @@
  * GNU Affero General Public License v3 (AGPLv3).
  */
 
-#include "cluster.h"
+#include "redismodule.h"
+
 #include "common.h"
 #include "mr.h"
+#include "cluster.h"
 #include "event_loop.h"
 #include "utils/arr_rm_alloc.h"
+#include "utils/buffer.h"
 #include "utils/dict.h"
 #include "utils/adlist.h"
+
+#include <ctype.h>
 
 #include <hiredis.h>
 #include <hiredis_ssl.h>

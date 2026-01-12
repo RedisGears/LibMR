@@ -7,8 +7,10 @@
  * GNU Affero General Public License v3 (AGPLv3).
  */
 
-#include "mr.h"
+#include "redismodule.h"
+
 #include "common.h"
+#include "mr.h"
 #include "utils/arr_rm_alloc.h"
 #include "utils/dict.h"
 #include "mr_memory.h"
@@ -116,6 +118,8 @@ typedef struct MRStats {
     size_t nMissedExecutions;
     size_t nMaxIdleReached;
 }MRStats;
+
+struct StepDefinition;
 
 struct MRCtx {
     size_t lastExecutionId;
