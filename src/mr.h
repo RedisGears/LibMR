@@ -51,6 +51,11 @@ typedef struct MRObjectType{
     ObjectToString tostring;
 }MRObjectType;
 
+typedef size_t functionId;
+
+// or-ed with a functionId to indicate internal commands (that should run on the recipient server's main message loop)
+#define FUNCTION_ID_INTERNAL    ((functionId)1 << (sizeof(functionId) * 8 - 1))
+
 LIBMR_API int MR_ClusterIsInClusterMode();
 
 /* Opaque struct that is given to execution steps */
@@ -101,8 +106,12 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  void *pd,
                                  size_t timeout);
 
-/* Creatign a new execution builder */
+/* Create either an empty execution builder or one that already includes the initial reader */
+LIBMR_API ExecutionBuilder* MR_CreateEmptyExecutionBuilder();
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
+
+/* Add an internal command step (usually to an empty builder or a builder with internal commands only) */
+LIBMR_API void MR_ExecutionBuilderInternalCommand(ExecutionBuilder* builder, const char *name, void *args);
 
 /* Add map step to the given builder.
  * The function takes ownership on the given
@@ -163,6 +172,10 @@ LIBMR_API int MR_RegisterObject(MRObjectType* t);
 
 /* Register a reader */
 LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType);
+
+/* Register an internal command */
+typedef void MR_ClusterInternalCommand(struct RedisModuleCtx *ctx, const char *sender_id, void *args);
+LIBMR_API void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType);
 
 /* Register a map step */
 LIBMR_API void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType);

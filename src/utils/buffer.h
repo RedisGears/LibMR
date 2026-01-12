@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-#define DEFAULT_INITIAL_CAP 50
+#define DEFAULT_INITIAL_CAP 64
 
 typedef struct mr_Buffer{
     size_t cap;
