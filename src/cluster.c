@@ -240,9 +240,10 @@ static void MR_ClusterSendMsgTask(void* ctx) {
         mr_dictEntry *entry = NULL;
         while((entry = mr_dictNext(iter))){
             Node* n = mr_dictGetVal(entry);
-            if(!n->isMe){
+            bool isInternalCommand = (sendMsg->function & FUNCTION_ID_INTERNAL) != 0;
+            bool shouldSendToNode = !n->isMe || isInternalCommand;
+            if (shouldSendToNode)
                 MR_ClusterSendMsgToNode(n, sendMsg);
-            }
         }
         mr_dictReleaseIterator(iter);
     } else if (sendMsg->sendMsgType == SendMsgType_BySlot) {
