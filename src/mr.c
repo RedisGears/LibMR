@@ -658,9 +658,10 @@ static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
 
     /* run the execution on the thread pool */
     /* IMPORTANT: the payload passed by Redis may share the client's query buffer.
-     * Copy it while we're still on the Redis main thread, before the buffer can
-     * be trimmed/reallocated, and pass the owned copy to the worker thread. */
-    MR_ExecutionAddTask(e, MR_SetRecord, RedisModule_CreateStringFromString(NULL, payload));
+     * Deep-copy the raw bytes while we're still on the Redis main thread, before
+     * the buffer can be trimmed/reallocated, and pass the owned copy to workers. */
+    RedisModuleString* payloadCopy = RedisModule_CreateString(NULL, data, dataLen);
+    MR_ExecutionAddTask(e, MR_SetRecord, payloadCopy);
 }
 
 static void MR_SendRecordToSlot(Execution* e, Step* s, Record* r, size_t slot) {
@@ -714,8 +715,9 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
     }
 
     /* run the execution on the thread pool */
-    /* See MR_PassRecord(): pass an owned copy to the worker thread. */
-    MR_ExecutionAddTask(e, MR_StepDone, RedisModule_CreateStringFromString(NULL, payload));
+    /* See MR_PassRecord(): pass an owned deep-copy to the worker thread. */
+    RedisModuleString* payloadCopy = RedisModule_CreateString(NULL, data, dataLen);
+    MR_ExecutionAddTask(e, MR_StepDone, payloadCopy);
 }
 
 static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
@@ -1155,8 +1157,11 @@ static void MR_RecieveExecution(void* pd) {
 static void MR_NewExecutionRecieved(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
     /* We can directly move the job to the thread pool.
      * We need to deserialize the execution and reply to the initiator. */
-    /* Pass an owned copy to the worker thread (see MR_PassRecord()). */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RecieveExecution, RedisModule_CreateStringFromString(NULL, payload));
+    /* Pass an owned deep-copy to the worker thread (see MR_PassRecord()). */
+    size_t dataLen = 0;
+    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+    RedisModuleString* payloadCopy = RedisModule_CreateString(NULL, data, dataLen);
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RecieveExecution, payloadCopy);
 }
 
 static void MR_ExecutionStepSerialize(mr_BufferWriter* buffWriter, Step* s) {
@@ -1837,8 +1842,11 @@ static void MR_RemoteTaskInternal(void* pd) {
 /* Runs on the event loop */
 static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
     /* We can directly move the job to the thread pool for deserialization and execution */
-    /* Pass an owned copy to the worker thread (see MR_PassRecord()). */
-    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskInternal, RedisModule_CreateStringFromString(NULL, payload));
+    /* Pass an owned deep-copy to the worker thread (see MR_PassRecord()). */
+    size_t dataLen = 0;
+    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+    RedisModuleString* payloadCopy = RedisModule_CreateString(NULL, data, dataLen);
+    mr_thpool_add_work(mrCtx.executionsThreadPool, MR_RemoteTaskInternal, payloadCopy);
 }
 
 /* Invoked on the event look */
