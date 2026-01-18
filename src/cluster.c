@@ -1118,6 +1118,8 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
      * All RedisModule API calls must be done under the module GIL. */
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
 
+    char *combinedId = NULL;
+
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
         msgCtx->reply = MessageReply_ClusterNull;
@@ -1164,17 +1166,18 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     size_t senderRunIdLen;
     const char* senderRunIdStr = RedisModule_StringPtrLen(senderRunId, &senderRunIdLen);
 
-    char combinedId[senderIdLen + senderRunIdLen + 1]; // +1 is for '\0'
+    size_t combinedIdLen = senderIdLen + senderRunIdLen;
+    combinedId = MR_ALLOC(combinedIdLen + 1); // +1 is for '\0'
     memcpy(combinedId, senderIdStr, senderIdLen);
     memcpy(combinedId + senderIdLen, senderRunIdStr, senderRunIdLen);
-    combinedId[senderIdLen + senderRunIdLen] = '\0';
+    combinedId[combinedIdLen] = '\0';
 
     mr_dictEntry* entity = mr_dictFind(clusterCtx.nodesMsgIds, combinedId);
     long long currId = -1;
     if(entity){
         currId = mr_dictGetSignedIntegerVal(entity);
     }else{
-        entity = mr_dictAddRaw(clusterCtx.nodesMsgIds, (char*)combinedId, NULL);
+        entity = mr_dictAddRaw(clusterCtx.nodesMsgIds, combinedId, NULL);
     }
     if(msgId <= currId){
         RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
@@ -1188,6 +1191,10 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
 
 unblock:
     RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+    if (combinedId) {
+        /* key is duplicated by the dict type (mr_dictTypeHeapStrings) */
+        MR_FREE(combinedId);
+    }
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
     return;
 }
