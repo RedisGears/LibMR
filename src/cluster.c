@@ -1113,18 +1113,21 @@ int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 /* run on the event loop */
 static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     MessageCtx* msgCtx = ctx;
+
+    /* This function runs on the LibMR event-loop thread (not Redis main thread).
+     * All RedisModule API calls must be done under the module GIL. */
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
         msgCtx->reply = MessageReply_ClusterNull;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto unblock;
     }
 
     if(!MR_IsClusterInitialize()){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
         msgCtx->reply = MessageReply_ClusterUninitialized;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto unblock;
     }
 
     RedisModuleString** argv = msgCtx->argv;
@@ -1140,23 +1143,20 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     if(RedisModule_StringToLongLong(msgIdStr, &msgId) != REDISMODULE_OK){
         RedisModule_Log(mr_staticCtx, "warning", "bad msg id given");
         msgCtx->reply = MessageReply_BadMsgId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto unblock;
     }
 
     long long functionId;
     if(RedisModule_StringToLongLong(functionToCall, &functionId) != REDISMODULE_OK){
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
         msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto unblock;
     }
 
     if (functionId < 0 || functionId >= array_len(clusterCtx.callbacks)) {
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
         msgCtx->reply = MessageReply_BadFunctionId;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto unblock;
     }
 
     size_t senderIdLen;
@@ -1179,14 +1179,16 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     if(msgId <= currId){
         RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
         msgCtx->reply = MessageReply_DuplicateMsg;
-        RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        return;
+        goto unblock;
     }
     mr_dictSetSignedIntegerVal(entity, msgId);
     clusterCtx.callbacks[functionId](mr_staticCtx, senderIdStr, 0, msg);
 
     msgCtx->reply = MessageReply_OK;
+
+unblock:
     RedisModule_UnblockClient(msgCtx->bc, msgCtx);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
     return;
 }
 
@@ -1335,10 +1337,13 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
         return RedisModule_WrongArity(ctx);
     }
 
-    // we must copy argv because if the client will disconnect the redis will free it
+    /* We must copy argv because this command defers processing to the LibMR
+     * event-loop thread. Using RedisModule_HoldString() here is unsafe: strings
+     * originating from client command arguments may share the client's query
+     * buffer, which Redis can trim/realloc after the command returns. */
     RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
     for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+        argvNew[i] = RedisModule_CreateStringFromString(NULL, argv[i]);
     }
 
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
