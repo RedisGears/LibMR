@@ -285,6 +285,41 @@ typedef struct ExecutionTask {
     void* pd;
 }ExecutionTask;
 
+/* In worker threads we must not access RedisModuleString internal buffers without
+ * holding the Redis GIL: Redis may realloc/trim the SDS concurrently.
+ * To avoid use-after-free/races, copy payload bytes under the GIL and free the
+ * RedisModuleString before deserializing. */
+static void MR_CopyPayloadToOwnedBufferAndFree(RedisModuleString* payload, mr_Buffer* out) {
+    RedisModule_Assert(out);
+
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+
+    size_t dataLen = 0;
+    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
+
+    out->cap = dataLen;
+    out->size = dataLen;
+    out->buff = dataLen ? MR_ALLOC(dataLen) : NULL;
+    if (dataLen) {
+        memcpy(out->buff, data, dataLen);
+    }
+
+    /* RedisModuleString refcount is not thread-safe. */
+    RedisModule_FreeString(NULL, payload);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+}
+
+static inline void MR_FreeOwnedBuffer(mr_Buffer* buff) {
+    if (buff && buff->buff) {
+        MR_FREE(buff->buff);
+        buff->buff = NULL;
+    }
+    if (buff) {
+        buff->cap = 0;
+        buff->size = 0;
+    }
+}
+
 typedef enum MRErrorType {
     MRErrorType_Static, MRErrorType_Dynamic,
 }MRErrorType;
@@ -555,29 +590,23 @@ static void MR_StepDone(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
 
     /* deserialize record, set it on the right step. */
-    size_t dataLen;
-    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
-    mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
-            .size = dataLen,
-            .cap = dataLen,
-    };
+    mr_Buffer buff = (mr_Buffer){0};
+    MR_CopyPayloadToOwnedBufferAndFree(payload, &buff);
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
     const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
+    (void)executionId;
 
     size_t stepIndex = mr_BufferReaderReadLongLong(&reader, NULL);
-
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
     if (MR_PerformStepDoneOp(e, stepIndex) == MR_ClusterGetSize() - 1){
         /* All shards are done running the step, we can continue the execution. */
         MR_RunExecution(e, NULL);
     }
+
+    MR_FreeOwnedBuffer(&buff);
 }
 
 /* Execution task */
@@ -585,31 +614,25 @@ static void MR_SetRecord(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
 
     /* deserialize record, set it on the right step. */
-    size_t dataLen;
-    const char* data = RedisModule_StringPtrLen(payload, &dataLen);
-    mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
-            .size = dataLen,
-            .cap = dataLen,
-    };
+    mr_Buffer buff = (mr_Buffer){0};
+    MR_CopyPayloadToOwnedBufferAndFree(payload, &buff);
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
     size_t executionIdLen;
     const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
+    (void)executionId;
 
     size_t stepIndex = mr_BufferReaderReadLongLong(&reader, NULL);
 
     Record* r = MR_RecordDeSerialize(&reader);
 
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
-
     if (MR_SetRecordToStep(e, stepIndex, r) > 10000){
         /* There is enough records to process, lets continue running. */
         MR_RunExecution(e, NULL);
     }
+
+    MR_FreeOwnedBuffer(&buff);
 }
 
 /* Remote function call, runs on the event loop */
@@ -1109,31 +1132,18 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
 
 static void MR_RecieveExecution(void* pd) {
     RedisModuleString* payload = pd;
-    size_t dataSize;
-    const char* data = RedisModule_StringPtrLen(payload, &dataSize);
-    mr_Buffer buff = {
-            .buff = (char*)data,
-            .size = dataSize,
-            .cap = dataSize,
-    };
+    mr_Buffer buff = (mr_Buffer){0};
+    MR_CopyPayloadToOwnedBufferAndFree(payload, &buff);
     mr_BufferReader buffReader;
     mr_BufferReaderInit(&buffReader, &buff);
     Execution* e = MR_ExecutionDeserialize(&buffReader);
-
-    /* We must take the Redis GIL to free the payload,
-     * RedisModuleString refcount are not thread safe.
-     * We better do it here and stuck on of the threads
-     * in the thread pool then do it on the event loop.
-     * Possible optimization would be to batch multiple
-     * payloads into one GIL locking */
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
     /* Finish deserializing the execution, we need to
      * return to the event loop and save the execution
      * in the executions dictionary */
     MR_EventLoopAddTask(MR_RecievedExecution, e);
+
+    MR_FreeOwnedBuffer(&buff);
 
 }
 
@@ -1786,13 +1796,8 @@ static void MR_RemoteTaskDoneOnRemote(void *pd, Record *res) {
 /* Runs on thread pool */
 static void MR_RemoteTaskInternal(void* pd) {
     RedisModuleString* payload = pd;
-    size_t dataSize;
-    const char* data = RedisModule_StringPtrLen(payload, &dataSize);
-    mr_Buffer buff = {
-            .buff = (char*)data,
-            .size = dataSize,
-            .cap = dataSize,
-    };
+    mr_Buffer buff = (mr_Buffer){0};
+    MR_CopyPayloadToOwnedBufferAndFree(payload, &buff);
     mr_BufferReader buffReader;
     mr_BufferReaderInit(&buffReader, &buff);
 
@@ -1821,15 +1826,7 @@ static void MR_RemoteTaskInternal(void* pd) {
 
     ((RemoteTask)msd->callback)(r, args, MR_RemoteTaskDoneOnRemote, MR_RemoteTaskErrorOnRemote, replyMsg);
 
-    /* We must take the Redis GIL to free the payload,
-     * RedisModuleString refcount are not thread safe.
-     * We better do it here and stuck on of the threads
-     * in the thread pool then do it on the event loop.
-     * Possible optimization would be to batch multiple
-     * payloads into one GIL locking */
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    RedisModule_FreeString(NULL, payload);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    MR_FreeOwnedBuffer(&buff);
 }
 
 /* Runs on the event loop */
