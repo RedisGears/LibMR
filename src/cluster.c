@@ -637,8 +637,9 @@ static void MR_ConnectToShard(Node* n){
         return;
     }
     if (c->err) {
-        /* Let *c leak for now... */
+        /* Connection context was created but is in an error state - free it. */
         RedisModule_Log(mr_staticCtx, "warning", "Error: %s\n", c->errstr);
+        redisAsyncFree(c);
         return;
     }
     c->data = n;
