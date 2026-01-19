@@ -1335,10 +1335,13 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
         return RedisModule_WrongArity(ctx);
     }
 
-    // we must copy argv because if the client will disconnect the redis will free it
+    /* We must copy argv because this command defers processing to the LibMR
+     * event-loop thread. Using RedisModule_HoldString() here is unsafe: strings
+     * originating from client command arguments may share the client's query
+     * buffer, which Redis can trim/realloc after the command returns. */
     RedisModuleString **argvNew = MR_ALLOC(sizeof(RedisModuleString *) * argc);
     for(size_t i = 0 ; i < argc ; ++i){
-        argvNew[i] = RedisModule_HoldString(NULL, argv[i]);
+        argvNew[i] = RedisModule_CreateStringFromString(NULL, argv[i]);
     }
 
     MessageCtx* msgCtx = MR_ALLOC(sizeof(*msgCtx));
