@@ -1113,15 +1113,10 @@ int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
 /* run on the event loop */
 static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
     MessageCtx* msgCtx = ctx;
-    /* This function runs on the LibMR event-loop thread (not Redis main thread).
-     * All RedisModule API calls must be done under the module GIL. */
-    RedisModule_ThreadSafeContextLock(mr_staticCtx);
-
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is NULL");
         msgCtx->reply = MessageReply_ClusterNull;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
@@ -1129,7 +1124,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         RedisModule_Log(mr_staticCtx, "warning", "Got msg from another shard while cluster is not initialized");
         msgCtx->reply = MessageReply_ClusterUninitialized;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
@@ -1147,7 +1141,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         RedisModule_Log(mr_staticCtx, "warning", "bad msg id given");
         msgCtx->reply = MessageReply_BadMsgId;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
@@ -1156,7 +1149,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
         msgCtx->reply = MessageReply_BadFunctionId;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
@@ -1164,7 +1156,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         RedisModule_Log(mr_staticCtx, "warning", "bad function id given");
         msgCtx->reply = MessageReply_BadFunctionId;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
 
@@ -1189,7 +1180,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
         RedisModule_Log(mr_staticCtx, "warning", "duplicate message ignored, msgId: %lld, currId: %lld", msgId, currId);
         msgCtx->reply = MessageReply_DuplicateMsg;
         RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         return;
     }
     mr_dictSetSignedIntegerVal(entity, msgId);
@@ -1197,7 +1187,6 @@ static void MR_ClusterInnerCommunicationMsgRun(void* ctx) {
 
     msgCtx->reply = MessageReply_OK;
     RedisModule_UnblockClient(msgCtx->bc, msgCtx);
-    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
     return;
 }
 
