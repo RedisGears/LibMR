@@ -107,6 +107,7 @@ typedef struct Node{
     mr_list* pendingMessages;
     mr_list* slotRanges;
     bool isMe;
+    unsigned short index;  // A small int unique node identifier for internal usage
     NodeStatus status;
     MR_LoopTaskCtx* reconnectEvent;
     MR_LoopTaskCtx* resendHelloEvent;
@@ -161,7 +162,8 @@ typedef struct MessageCtx {
     MessageReply reply;
 }MessageCtx;
 
-static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b);
+static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* a, void* b);
+static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* a, void* b);  // A response to an internal-commands command
 static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static Node* MR_GetNode(const char* id);
@@ -193,8 +195,11 @@ static void MR_ClusterFreeNodeMsg(void* ptr){
 }
 
 static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
+    if (!node->isMe) return;  // debugme
     // CLUSTER_INNER_COMMUNICATION_COMMAND <myid> <runid> <functionid> <msg> <msgId>
-    redisAsyncCommand(node->c, MR_OnResponseArrived, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
+    void (*onResponse)(struct redisAsyncContext*, void*, void*) =
+        (nodeMsg->msg->function & FUNCTION_ID_INTERNAL) ? MR_OnDataResponseArrived : MR_OnStatusResponseArrived;
+    redisAsyncCommand(node->c, onResponse, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
             clusterCtx.CurrCluster->myId,
             clusterCtx.CurrCluster->runId,
             nodeMsg->msg->function,
@@ -306,28 +311,47 @@ functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver) {
     return array_len(clusterCtx.callbacks) - 1;
 }
 
-static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b){
-    redisReply* reply = (redisReply*)a;
-    if(!reply){
+static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* r, void* n) {
+    redisReply* reply = r;
+    if (!reply || !c->data) return;
+    Node* node = n;
+    if (reply->type != REDIS_REPLY_ARRAY) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect.",
+            node->id, node->ip, node->port);
+        redisAsyncDisconnect(c);
         return;
     }
-    if(!c->data){
-        return;
-    }
-    Node* n = (Node*)b;
+
+    mr_listNode* pendingMessage = mr_listFirst(node->pendingMessages);
+    NodeSendMsg *message = pendingMessage->value;
+    MR_SetResultsToSteps(node->index, message->msg->msg, message->msg->msgLen, reply);
+    mr_listDelNode(node->pendingMessages, pendingMessage);
+}
+
+static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* r, void* n){
+    redisReply* reply = r;
+    if (!reply || !c->data) return;
+    Node* node = n;
+
     if(reply->type == REDIS_REPLY_ERROR && strncmp(reply->str, CLUSTER_ERROR, strlen(CLUSTER_ERROR)) == 0){
-        n->sendClusterTopologyOnNextConnect = true;
-        RedisModule_Log(mr_staticCtx, "warning", "Received ERRCLUSTER reply from shard %s (%s:%d), will send cluster topology to the shard on next connect", n->id, n->ip, n->port);
+        node->sendClusterTopologyOnNextConnect = true;
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Received ERRCLUSTER reply from shard %s (%s:%d), will send cluster topology to the shard on next connect",
+            node->id, node->ip, node->port);
         redisAsyncDisconnect(c);
         return;
     }
     if(reply->type != REDIS_REPLY_STATUS){
-        RedisModule_Log(mr_staticCtx, "warning", "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect. This is usually because the Redis server's 'proto-max-bulk-len' configuration setting is too low.", n->id, n->ip, n->port);
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect. "
+            "This is usually because the Redis server's 'proto-max-bulk-len' configuration setting is too low.",
+            node->id, node->ip, node->port);
         redisAsyncDisconnect(c);
         return;
     }
-    mr_listNode* node = mr_listFirst(n->pendingMessages);
-    mr_listDelNode(n->pendingMessages, node);
+    mr_listNode* pendingMessage = mr_listFirst(node->pendingMessages);
+    mr_listDelNode(node->pendingMessages, pendingMessage);
 }
 
 static void MR_ClusterResendHelloMessage(void* ctx){
@@ -774,14 +798,16 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .pendingMessages = pendingMessages,
             .slotRanges = slotRanges,
             .isMe = false,
+            .index = 0,
             .status = NodeStatus_Uninitialized,
             .sendClusterTopologyOnNextConnect = false,
             .runId = NULL,
             .reconnectEvent = NULL,
             .resendHelloEvent = NULL,
     };
-    mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
+    n->index = mr_dictSize(clusterCtx.CurrCluster->nodes);
     n->isMe = strcmp(id, clusterCtx.CurrCluster->myId) == 0;
+    mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
 
     return n;
 }

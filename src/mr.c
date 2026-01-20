@@ -22,8 +22,9 @@
 #include "utils/buffer.h"
 
 #include <pthread.h>
+#include <hiredis.h>
 
-#define EXECUTION_DEFAULT_MAX_IDLE_MS 5000
+#define EXECUTION_DEFAULT_MAX_IDLE_MS 1000000  // debugme
 
 #define ID_LEN REDISMODULE_NODE_ID_LEN + sizeof(size_t)
 #define STR_ID_LEN  REDISMODULE_NODE_ID_LEN + 13
@@ -187,6 +188,7 @@ typedef struct StepDefinition {
     char* name;
     MRObjectType* type;
     void* callback;
+    void* extra;  // More private data, when needed
 }StepDefinition;
 
 typedef struct ReadStep {
@@ -203,9 +205,13 @@ typedef struct AccumulateStep {
 }AccumulateStep;
 
 typedef int (*ExecutionInternalCommand)(RedisModuleCtx *ctx, const char *senderId, void* args);
+typedef struct RedisModuleSlotRangeArray RedisModuleSlotRangeArray;
 
 typedef struct InternalCommandStep {
     ExecutionInternalCommand callback;
+    RedisReplyParser replyParser;
+    ARR(void*) nodesReplies;
+    size_t nDone;
 }InternalCommandStep;
 
 typedef struct FilterStep {
@@ -252,8 +258,8 @@ struct ExecutionBuilder {
     ARR(ExecutionBuilderStep) steps;
 };
 
-#define ExecutionFlag_Initiator 1<<0
-#define ExecutionFlag_Local 1<<1
+#define ExecutionFlag_Initiator (1 << 0)
+#define ExecutionFlag_Local     (1 << 1)
 
 typedef struct ExecutionCallbackData {
     void* pd;
@@ -482,8 +488,16 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
         s->accumulate.accumulator = NULL;
         break;
     case StepType_InternalCommand:
+    {
         s->internalCommand.callback = sd->callback;
+        s->internalCommand.replyParser = sd->extra;
+        size_t clusterSize = MR_ClusterGetSize();
+        s->internalCommand.nodesReplies = array_new(void*, clusterSize);
+        while (clusterSize--)
+            array_append(s->internalCommand.nodesReplies, NULL);
+        s->internalCommand.nDone = 0;
         break;
+    }
     default:
         RedisModule_Assert(false);
     }
@@ -557,6 +571,31 @@ Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err) {
     return e;
 }
 
+void MR_SetResultsToSteps(unsigned short nodeIndex, char *data, size_t dataLength, redisReply* reply) {
+    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY);
+    mr_Buffer buff = (mr_Buffer){
+        .buff = data,
+        .size = dataLength,
+        .cap = dataLength,
+    };
+    mr_BufferReader reader;
+    mr_BufferReaderInit(&reader, &buff);
+    size_t executionIdLen;
+    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
+    RedisModule_Assert(executionIdLen == ID_LEN);
+
+    Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
+    RedisModule_Assert(e);
+    RedisModule_Assert(array_len(e->steps) == reply->elements);
+
+    for (size_t i = 0; i < reply->elements; i++) {
+        Step *s = e->steps + i;
+        RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
+        struct redisReply *element = reply->element[i];
+        s->internalCommand.nodesReplies[nodeIndex] = s->internalCommand.replyParser(element);
+    }
+}
+
 static size_t MR_SetRecordToStep(Execution* e, size_t stepIndex, Record* r) {
     RedisModule_Assert(stepIndex < array_len(e->steps));
     Step* s = e->steps + stepIndex;
@@ -567,8 +606,6 @@ static size_t MR_SetRecordToStep(Execution* e, size_t stepIndex, Record* r) {
     case StepType_Collect:
         s->collect.collectedRecords = array_append(s->collect.collectedRecords, r);
         return array_len(s->collect.collectedRecords);
-    default:
-        RedisModule_Assert(0);
     }
     RedisModule_Assert(0);
     return 0;
@@ -578,14 +615,9 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
     RedisModule_Assert(stepIndex < array_len(e->steps));
     Step* s = e->steps + stepIndex;
     switch (s->bStep.type) {
-    case StepType_Reshuffle:
-        ++s->reshuffle.nDone;
-        return s->reshuffle.nDone;
-    case StepType_Collect:
-        ++s->collect.nDone;
-        return s->collect.nDone;
-    default:
-        RedisModule_Assert(0);
+        case StepType_Reshuffle:        return ++s->reshuffle.nDone;
+        case StepType_Collect:          return ++s->collect.nDone;
+        case StepType_InternalCommand:  return ++s->internalCommand.nDone;
     }
     RedisModule_Assert(0);
     return 0;
@@ -1398,7 +1430,6 @@ static void MR_StepDispose(Step* s) {
     case StepType_Mapper:
     case StepType_Filter:
     case StepType_Reader:
-    case StepType_InternalCommand:
         break;
     case StepType_Accumulator:
         if (s->accumulate.accumulator) {
@@ -1416,6 +1447,11 @@ static void MR_StepDispose(Step* s) {
             MR_RecordFree(s->collect.collectedRecords[i]);
         }
         array_free(s->collect.collectedRecords);
+        break;
+    case StepType_InternalCommand:
+        for (size_t i = 0; i < array_len(s->internalCommand.nodesReplies); ++i)
+            MR_FREE(s->internalCommand.nodesReplies[i]);
+        array_free(s->internalCommand.nodesReplies);
         break;
     default:
         RedisModule_Assert(0);
@@ -1542,17 +1578,19 @@ void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* a
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = reader,
+        .extra = NULL,
     };
     mr_dictAdd(mrCtx.readerDict, sd->name, sd);
 }
 
-void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType) {
+void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType, RedisReplyParser replyParser) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.internalCommandsDict, name));
     StepDefinition* sd = MR_ALLOC(sizeof(*sd));
     *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = callback,
+        .extra = replyParser,
     };
     mr_dictAdd(mrCtx.internalCommandsDict, sd->name, sd);
 }
@@ -1564,6 +1602,7 @@ void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* a
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = mapper,
+        .extra = NULL,
     };
     mr_dictAdd(mrCtx.mappersDict, sd->name, sd);
 }
@@ -1575,6 +1614,7 @@ void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* a
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = filter,
+        .extra = NULL,
     };
     mr_dictAdd(mrCtx.filtersDict, sd->name, sd);
 }
@@ -1586,6 +1626,7 @@ LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator acc
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = accumulator,
+        .extra = NULL,
     };
     mr_dictAdd(mrCtx.accumulatorsDict, sd->name, sd);
 }
@@ -1597,6 +1638,7 @@ LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObje
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = remote,
+        .extra = NULL,
     };
     mr_dictAdd(mrCtx.remoteTasksDict, sd->name, sd);
 }
