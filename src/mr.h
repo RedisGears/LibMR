@@ -156,6 +156,10 @@ LIBMR_API void MR_FreeExecutionBuilder(ExecutionBuilder* builder);
  * Return NULL on error and set the error on err out param */
 LIBMR_API Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err);
 
+/* Set internal commands results in the Execution's steps' internalCommand; Run in event-loop */
+typedef struct redisReply redisReply;
+LIBMR_API void MR_SetResultsToSteps(unsigned short nodeIndex, char *data, size_t dataLength, redisReply* reply);
+
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
 
@@ -178,8 +182,9 @@ LIBMR_API int MR_RegisterObject(MRObjectType* t);
 LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType);
 
 /* Register an internal command */
-typedef void MR_ClusterInternalCommand(struct RedisModuleCtx *ctx, const char *sender_id, void *args);
-LIBMR_API void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType);
+typedef void (*MR_ClusterInternalCommand)(struct RedisModuleCtx *ctx, const char *sender_id, void *args);
+typedef void* (*RedisReplyParser)(const redisReply*);
+LIBMR_API void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType, RedisReplyParser replyParser);
 
 /* Register a map step */
 LIBMR_API void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType);
