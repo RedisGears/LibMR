@@ -236,7 +236,7 @@ typedef struct ExecutionBuilderStep {
     StepType type;
 }ExecutionBuilderStep;
 
-#define StepFlag_Done 1<<0
+#define StepFlag_Done   (1 << 0)
 
 struct Step {
     int flags;
@@ -803,7 +803,7 @@ static Record* MR_RunReshuffleStep(Execution* e, Step* s) {
 
         if (s->reshuffle.nDone == MR_ClusterGetSize() - 1) {
             /* all shards finished sending all the record, we are done. */
-            s->flags &= StepFlag_Done;
+            s->flags |= StepFlag_Done;
             return NULL;
         } else {
             /* hold the execution, wait for shards to send data */
@@ -822,7 +822,7 @@ static Record* MR_RunAccumulateStep(Execution* e, Step* s) {
         if (!r) {
             r = s->accumulate.accumulator;
             s->accumulate.accumulator = NULL;
-            s->flags &= StepFlag_Done;
+            s->flags |= StepFlag_Done;
             return r;
         }
 
@@ -869,7 +869,7 @@ static Record* MR_RunCollectStep(Execution* e, Step* s) {
             mr_BufferWriterWriteLongLong(&buffWriter, s->index);
             MR_ClusterSendMsg(e->id, NOTIFY_STEP_DONE_FUNCTION_ID, buff.buff, buff.size);
             /* we are not the initiator, we have nothing to give here */
-            s->flags &= StepFlag_Done;
+            s->flags |= StepFlag_Done;
             return NULL;
         }
 
@@ -880,7 +880,7 @@ static Record* MR_RunCollectStep(Execution* e, Step* s) {
 
         if (s->collect.nDone == MR_ClusterGetSize() - 1) {
             /* all shards finished sending all the record, we are done. */
-            s->flags &= StepFlag_Done;
+            s->flags |= StepFlag_Done;
             return NULL;
         } else {
             /* hold the execution, wait for shards to send data */
@@ -896,7 +896,7 @@ static Record* MR_RunFilterStep(Execution* e, Step* s) {
             return r;
         }
         if (!r) {
-            s->flags &= StepFlag_Done;
+            s->flags |= StepFlag_Done;
             return NULL;
         }
         ExecutionCtx eCtx = {
@@ -922,7 +922,7 @@ static Record* MR_RunMapStep(Execution* e, Step* s) {
         return r;
     }
     if (!r) {
-        s->flags &= StepFlag_Done;
+        s->flags |= StepFlag_Done;
         return NULL;
     }
     ExecutionCtx eCtx = {
@@ -946,7 +946,7 @@ static Record* MR_RunReaderStep(Execution* e, Step* s) {
         return eCtx.err;
     }
     if (!r) {
-        s->flags &= StepFlag_Done;
+        s->flags |= StepFlag_Done;
     }
     return r;
 }
