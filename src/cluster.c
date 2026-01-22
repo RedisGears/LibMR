@@ -195,7 +195,6 @@ static void MR_ClusterFreeNodeMsg(void* ptr){
 }
 
 static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
-    if (!node->isMe) return;  // debugme
     // CLUSTER_INNER_COMMUNICATION_COMMAND <myid> <runid> <functionid> <msg> <msgId>
     void (*onResponse)(struct redisAsyncContext*, void*, void*) =
         (nodeMsg->msg->function & FUNCTION_ID_INTERNAL) ? MR_OnDataResponseArrived : MR_OnStatusResponseArrived;
@@ -326,18 +325,9 @@ static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* r, void*
     mr_listNode* pendingMessage = mr_listFirst(node->pendingMessages);
     NodeSendMsg *message = pendingMessage->value;
     Execution *e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
-    MR_SetResultsToSteps(node->index, reply, e);
     mr_listDelNode(node->pendingMessages, pendingMessage);
 
-    ++e->nCompleted;
-    if (e->nCompleted == MR_ClusterGetSize() - 1) {
-        /* Execution is finished on all the shards,
-         * We will not receive any more messages on it.
-         * We can ask all the shards to drop it and we can
-         * drop it ourself. */
-        MR_ClusterCopyAndSendMsg(NULL, DROP_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
-        MR_DeleteExecution(e);
-    }
+    MR_SetInternalCommandResults(node->index, reply, e);
 }
 
 static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* r, void* n){

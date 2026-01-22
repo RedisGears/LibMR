@@ -586,23 +586,6 @@ Execution *MR_GetExecution(const char *message, size_t messageLength) {
     return mr_dictFetchValue(mrCtx.executionsDict, executionId);
 }
 
-void MR_SetResultsToSteps(unsigned short nodeIndex, redisReply* reply, Execution *e) {
-    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY);
-    if (!e) {
-        ++mrCtx.stats.nMissedExecutions;
-        return;
-    }
-    RedisModule_Assert(array_len(e->steps) == reply->elements);
-
-    for (size_t i = 0; i < reply->elements; i++) {
-        Step *s = e->steps + i;
-        RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
-        struct redisReply *element = reply->element[i];
-        s->internalCommand.nodesReplies[nodeIndex] = s->internalCommand.replyParser(element);  // debugme: todo - dispose properly (need different dispose functions)
-static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
-    }
-}
-
 static size_t MR_SetRecordToStep(Execution* e, size_t stepIndex, Record* r) {
     RedisModule_Assert(stepIndex < array_len(e->steps));
     Step* s = e->steps + stepIndex;
@@ -628,6 +611,34 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
     }
     RedisModule_Assert(0);
     return 0;
+}
+
+/* Runs on the event loop */
+void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e) {
+    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY);
+    if (!e) {
+        ++mrCtx.stats.nMissedExecutions;
+        return;
+    }
+    RedisModule_Assert(array_len(e->steps) == reply->elements);
+
+    size_t nodesDone = 0;
+    for (size_t i = 0; i < reply->elements; i++) {
+        Step *s = e->steps + i;
+        RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
+        struct redisReply *element = reply->element[i];
+        s->internalCommand.nodesReplies[nodeIndex] = s->internalCommand.replyParser(element);  // debugme: todo - dispose properly (need different dispose functions)
+        // All steps should return the same number of done nodes because we update all steps of a single node in one go
+        if (nodesDone == 0)
+            nodesDone = MR_PerformStepDoneOp(e, i);
+        else if (nodesDone != MR_PerformStepDoneOp(e, i))
+            RedisModule_Assert(false);
+    }
+
+    if (nodesDone == MR_ClusterGetSize()) {
+        // All nodes (shards), including myself, have answered
+        MR_ExecutionAddTask(e, MR_RunExecution, NULL);
+    }
 }
 
 /* Execution task */

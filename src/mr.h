@@ -158,9 +158,10 @@ LIBMR_API Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err
 
 LIBMR_API Execution *MR_GetExecution(const char *message, size_t messageLength);
 
-/* Set internal commands results in the Execution's steps' internalCommand; Run in event-loop */
 typedef struct redisReply redisReply;
-LIBMR_API void MR_SetResultsToSteps(unsigned short nodeIndex, redisReply* reply, Execution *e);
+/* Set internal commands results in *all* Execution's steps' internalCommand; Run in event-loop */
+/* Return the total number of nodes that completed the execution (and responded with RESP results) */
+LIBMR_API void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e);
 
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
