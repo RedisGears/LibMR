@@ -325,8 +325,19 @@ static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* r, void*
 
     mr_listNode* pendingMessage = mr_listFirst(node->pendingMessages);
     NodeSendMsg *message = pendingMessage->value;
-    MR_SetResultsToSteps(node->index, message->msg->msg, message->msg->msgLen, reply);
+    Execution *e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
+    MR_SetResultsToSteps(node->index, reply, e);
     mr_listDelNode(node->pendingMessages, pendingMessage);
+
+    ++e->nCompleted;
+    if (e->nCompleted == MR_ClusterGetSize() - 1) {
+        /* Execution is finished on all the shards,
+         * We will not receive any more messages on it.
+         * We can ask all the shards to drop it and we can
+         * drop it ourself. */
+        MR_ClusterCopyAndSendMsg(NULL, DROP_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
+        MR_DeleteExecution(e);
+    }
 }
 
 static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* r, void* n){

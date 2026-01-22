@@ -571,12 +571,11 @@ Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err) {
     return e;
 }
 
-void MR_SetResultsToSteps(unsigned short nodeIndex, char *data, size_t dataLength, redisReply* reply) {
-    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY);
+Execution *MR_GetExecution(const char *message, size_t messageLength) {
     mr_Buffer buff = (mr_Buffer){
-        .buff = data,
-        .size = dataLength,
-        .cap = dataLength,
+        .buff = (char*)message,
+        .size = messageLength,
+        .cap = messageLength,
     };
     mr_BufferReader reader;
     mr_BufferReaderInit(&reader, &buff);
@@ -584,15 +583,23 @@ void MR_SetResultsToSteps(unsigned short nodeIndex, char *data, size_t dataLengt
     const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
 
-    Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
-    RedisModule_Assert(e);
+    return mr_dictFetchValue(mrCtx.executionsDict, executionId);
+}
+
+void MR_SetResultsToSteps(unsigned short nodeIndex, redisReply* reply, Execution *e) {
+    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY);
+    if (!e) {
+        ++mrCtx.stats.nMissedExecutions;
+        return;
+    }
     RedisModule_Assert(array_len(e->steps) == reply->elements);
 
     for (size_t i = 0; i < reply->elements; i++) {
         Step *s = e->steps + i;
         RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
         struct redisReply *element = reply->element[i];
-        s->internalCommand.nodesReplies[nodeIndex] = s->internalCommand.replyParser(element);
+        s->internalCommand.nodesReplies[nodeIndex] = s->internalCommand.replyParser(element);  // debugme: todo - dispose properly (need different dispose functions)
+static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
     }
 }
 
@@ -689,18 +696,7 @@ static void MR_SetRecord(Execution* e, void* pd) {
 static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
     size_t dataLen;
     const char* data = RedisModule_StringPtrLen(payload, &dataLen);
-    mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
-            .size = dataLen,
-            .cap = dataLen,
-    };
-    mr_BufferReader reader;
-    mr_BufferReaderInit(&reader, &buff);
-    size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
-    RedisModule_Assert(executionIdLen == ID_LEN);
-
-    Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
+    Execution* e = MR_GetExecution(data, dataLen);
     if (!e) {
         ++mrCtx.stats.nMissedExecutions;
         return;
@@ -744,17 +740,7 @@ static void MR_SendRecord(Execution* e, Step* s, Record* r, const char* nodeId) 
 static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload) {
     size_t dataLen;
     const char* data = RedisModule_StringPtrLen(payload, &dataLen);
-    mr_Buffer buff = (mr_Buffer){
-            .buff = (char*)data,
-            .size = dataLen,
-            .cap = dataLen,
-    };
-    mr_BufferReader reader;
-    mr_BufferReaderInit(&reader, &buff);
-    size_t executionIdLen;
-    const char* executionId = mr_BufferReaderReadBuff(&reader, &executionIdLen, NULL);
-    RedisModule_Assert(executionIdLen == ID_LEN);
-    Execution* e = mr_dictFetchValue(mrCtx.executionsDict, executionId);
+    Execution* e = MR_GetExecution(data, dataLen);
     if (!e) {
         ++mrCtx.stats.nMissedExecutions;
         return;
