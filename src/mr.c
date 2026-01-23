@@ -633,6 +633,7 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
             nodesDone = MR_PerformStepDoneOp(e, i);
         else if (nodesDone != MR_PerformStepDoneOp(e, i))
             RedisModule_Assert(false);
+        s->flags |= StepFlag_Done;
     }
 
     if (nodesDone == MR_ClusterGetSize()) {
