@@ -1366,7 +1366,7 @@ int MR_ForceShardsConnectionCommand(RedisModuleCtx *ctx, RedisModuleString **arg
     return REDISMODULE_OK;
 }
 
-extern int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, const char *senderId, RedisModuleString *msg);
+int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *msg);
 
 int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
     if(argc != 6){
@@ -1374,8 +1374,8 @@ int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **arg
     }
     functionId fid = (functionId)strtoull(RedisModule_StringPtrLen(argv[3], NULL), NULL, 10);
     if (fid & FUNCTION_ID_INTERNAL) {
-        const char *senderId = RedisModule_StringPtrLen(argv[1], NULL);
-        return MR_ClusterExecuteInternalCommands(ctx, senderId, argv[4]);
+        RedisModuleString *msg = argv[4];
+        return MR_ClusterExecuteInternalCommands(ctx, msg);
     }
 
     /* We must copy argv because this command defers processing to the LibMR
