@@ -185,9 +185,15 @@ LIBMR_API int MR_RegisterObject(MRObjectType* t);
 LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType);
 
 /* Register an internal command */
-typedef void (*MR_ClusterInternalCommand)(struct RedisModuleCtx *ctx, const char *sender_id, void *args);
-typedef void* (*RedisReplyParser)(const redisReply*);
-LIBMR_API void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType, RedisReplyParser replyParser);
+typedef void (*InternalCommand)(struct RedisModuleCtx *ctx, void *args);  // Replies to caller client via the RedisModule_Reply...() family of functions
+typedef Record* (*InternalCommandReplyParser)(const redisReply *reply);  // Creates an object that's "derived from" Record that should be freed by the caller
+typedef struct InternalCommandCallbacks
+{
+    InternalCommand command;
+    InternalCommandReplyParser replyParser;
+} InternalCommandCallbacks;
+LIBMR_API void MR_RegisterInternalCommand(const char* name, InternalCommandCallbacks*, MRObjectType* argType);
+
 
 /* Register a map step */
 LIBMR_API void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType);

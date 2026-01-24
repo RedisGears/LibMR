@@ -188,7 +188,6 @@ typedef struct StepDefinition {
     char* name;
     MRObjectType* type;
     void* callback;
-    void* extra;  // More private data, when needed
 }StepDefinition;
 
 typedef struct ReadStep {
@@ -204,13 +203,10 @@ typedef struct AccumulateStep {
     Record* accumulator;
 }AccumulateStep;
 
-typedef int (*ExecutionInternalCommand)(RedisModuleCtx *ctx, const char *senderId, void* args);
-typedef struct RedisModuleSlotRangeArray RedisModuleSlotRangeArray;
-
 typedef struct InternalCommandStep {
-    ExecutionInternalCommand callback;
-    RedisReplyParser replyParser;
-    ARR(void*) nodesReplies;
+    InternalCommand command;
+    InternalCommandReplyParser replyParser;
+    redisReply *reply;  // to be parsed by the replyParser
     size_t nDone;
 }InternalCommandStep;
 
@@ -489,12 +485,10 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
         break;
     case StepType_InternalCommand:
     {
-        s->internalCommand.callback = sd->callback;
-        s->internalCommand.replyParser = sd->extra;
-        size_t clusterSize = MR_ClusterGetSize();
-        s->internalCommand.nodesReplies = array_new(void*, clusterSize);
-        while (clusterSize--)
-            array_append(s->internalCommand.nodesReplies, NULL);
+        InternalCommandCallbacks *callbacks = sd->callback;
+        s->internalCommand.command = callbacks->command;
+        s->internalCommand.replyParser = callbacks->replyParser;
+        s->internalCommand.reply = NULL;
         s->internalCommand.nDone = 0;
         break;
     }
@@ -613,33 +607,8 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
     return 0;
 }
 
-/* Runs on the event loop */
-void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e) {
-    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY);
-    if (!e) {
-        ++mrCtx.stats.nMissedExecutions;
-        return;
-    }
-    RedisModule_Assert(array_len(e->steps) == reply->elements);
-
-    size_t nodesDone = 0;
-    for (size_t i = 0; i < reply->elements; i++) {
-        Step *s = e->steps + i;
-        RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
-        struct redisReply *element = reply->element[i];
-        s->internalCommand.nodesReplies[nodeIndex] = s->internalCommand.replyParser(element);  // debugme: todo - dispose properly (need different dispose functions)
-        // All steps should return the same number of done nodes because we update all steps of a single node in one go
-        if (nodesDone == 0)
-            nodesDone = MR_PerformStepDoneOp(e, i);
-        else if (nodesDone != MR_PerformStepDoneOp(e, i))
-            RedisModule_Assert(false);
-        s->flags |= StepFlag_Done;
-    }
-
-    if (nodesDone == MR_ClusterGetSize()) {
-        // All nodes (shards), including myself, have answered
-        MR_ExecutionAddTask(e, MR_RunExecution, NULL);
-    }
+static Record* MR_RunInternalCommandStep(Execution* e, Step* s) {
+    return s->internalCommand.replyParser(s->internalCommand.reply);  // debugme: maybe align with other callbacks (i.e., use an ExecutionCtx, etc.)?
 }
 
 /* Execution task */
@@ -970,7 +939,7 @@ static Record* MR_RunStep(Execution* e, Step* s) {
     case StepType_Accumulator:
         return MR_RunAccumulateStep(e, s);
     case StepType_InternalCommand:
-        RedisModule_Assert(false);
+        RedisModule_Assert(false);  // Steps of internal commands are done in the el thread, not here
     }
     RedisModule_Assert(false);
     return NULL;
@@ -1128,7 +1097,7 @@ static void MR_ReceivedExecution(void* ctx) {
     MR_ClusterCopyAndSendMsg(e->id, ACK_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
 }
 
-Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
+static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     size_t executionIdLen;
     const char* executionId = mr_BufferReaderReadBuff(buffReader, &executionIdLen, NULL);
     RedisModule_Assert(executionIdLen == ID_LEN);
@@ -1179,7 +1148,7 @@ Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
 }
 
 /* Runs on redis-server's main loop */
-int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, const char *senderId, void *msg) {
+int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *msg) {
     size_t dataSize;
     const char* data = RedisModule_StringPtrLen(msg, &dataSize);
     mr_Buffer buff = {
@@ -1194,10 +1163,44 @@ int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, const char *senderId,
     for (int i = 0; i < array_len(e->steps); i++) {
         Step *s = e->steps + i;
         RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
-        s->internalCommand.callback(ctx, senderId, s->bStep.args);
+        s->internalCommand.command(ctx, s->bStep.args);
     }
     MR_FreeExecution(e);
     return REDISMODULE_OK;
+}
+
+/* Runs on the event loop */
+void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e) {
+    // Since this function is a callback for hiredis the reply will vanish when we return.
+    // Instead of copying it and then invoke executions tasks to parse the replies we simply
+    // parse them here (in the el thread) and leave only the aggregation part (i.e., after all
+    // the nodes have answered) to a worker thread (in the Execution's on-done handler callback).
+    if (!e) {
+        ++mrCtx.stats.nMissedExecutions;
+        return;
+    }
+    RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY && reply->elements > 0);
+    RedisModule_Assert(array_len(e->steps) == reply->elements);
+    size_t nodesDone = 0;
+    for (size_t i = 0; i < reply->elements; i++) {
+        Step *s = e->steps + i;
+        s->internalCommand.reply = reply->element[i]; // First set the reply to be parsed
+        Record *record = MR_RunInternalCommandStep(e, s); // Then run the step to parse it
+        s->internalCommand.reply = NULL;  // Keep things tidy
+
+        e->results = array_append(e->results, record);
+        // All steps should return the same number of done nodes because we update all steps of a single node in one go
+        if (nodesDone == 0)
+            nodesDone = MR_PerformStepDoneOp(e, i);
+        else if (nodesDone != MR_PerformStepDoneOp(e, i))
+            RedisModule_Assert(false);
+        s->flags |= StepFlag_Done;
+    }
+
+    if (nodesDone == MR_ClusterGetSize()) {
+        // All nodes (shards), including myself, have answered
+        MR_ExecutionAddTask(e, MR_RunExecution, NULL);
+    }
 }
 
 static void MR_ReceiveExecution(void* pd) {
@@ -1428,6 +1431,7 @@ static void MR_StepDispose(Step* s) {
     case StepType_Mapper:
     case StepType_Filter:
     case StepType_Reader:
+    case StepType_InternalCommand:
         break;
     case StepType_Accumulator:
         if (s->accumulate.accumulator) {
@@ -1445,11 +1449,6 @@ static void MR_StepDispose(Step* s) {
             MR_RecordFree(s->collect.collectedRecords[i]);
         }
         array_free(s->collect.collectedRecords);
-        break;
-    case StepType_InternalCommand:
-        for (size_t i = 0; i < array_len(s->internalCommand.nodesReplies); ++i)
-            MR_FREE(s->internalCommand.nodesReplies[i]);
-        array_free(s->internalCommand.nodesReplies);
         break;
     default:
         RedisModule_Assert(0);
@@ -1576,19 +1575,17 @@ void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* a
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = reader,
-        .extra = NULL,
     };
     mr_dictAdd(mrCtx.readerDict, sd->name, sd);
 }
 
-void MR_RegisterInternalCommand(const char* name, MR_ClusterInternalCommand callback, MRObjectType* argType, RedisReplyParser replyParser) {
+void MR_RegisterInternalCommand(const char* name, InternalCommandCallbacks *callbacks, MRObjectType* argType) {
     RedisModule_Assert(!mr_dictFetchValue(mrCtx.internalCommandsDict, name));
     StepDefinition* sd = MR_ALLOC(sizeof(*sd));
     *sd = (StepDefinition) {
         .name = MR_STRDUP(name),
         .type = argType,
-        .callback = callback,
-        .extra = replyParser,
+        .callback = callbacks
     };
     mr_dictAdd(mrCtx.internalCommandsDict, sd->name, sd);
 }
@@ -1600,7 +1597,6 @@ void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* a
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = mapper,
-        .extra = NULL,
     };
     mr_dictAdd(mrCtx.mappersDict, sd->name, sd);
 }
@@ -1612,7 +1608,6 @@ void MR_RegisterFilter(const char* name, ExecutionFilter filter, MRObjectType* a
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = filter,
-        .extra = NULL,
     };
     mr_dictAdd(mrCtx.filtersDict, sd->name, sd);
 }
@@ -1624,7 +1619,6 @@ LIBMR_API void MR_RegisterAccumulator(const char* name, ExecutionAccumulator acc
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = accumulator,
-        .extra = NULL,
     };
     mr_dictAdd(mrCtx.accumulatorsDict, sd->name, sd);
 }
@@ -1636,7 +1630,6 @@ LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObje
         .name = MR_STRDUP(name),
         .type = argType,
         .callback = remote,
-        .extra = NULL,
     };
     mr_dictAdd(mrCtx.remoteTasksDict, sd->name, sd);
 }
