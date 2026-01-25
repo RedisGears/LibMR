@@ -24,7 +24,7 @@
 #include <pthread.h>
 #include <hiredis.h>
 
-#define EXECUTION_DEFAULT_MAX_IDLE_MS 1000000  // debugme
+#define EXECUTION_DEFAULT_MAX_IDLE_MS 5000
 
 #define ID_LEN REDISMODULE_NODE_ID_LEN + sizeof(size_t)
 #define STR_ID_LEN  REDISMODULE_NODE_ID_LEN + 13
@@ -607,10 +607,6 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
     return 0;
 }
 
-static Record* MR_RunInternalCommandStep(Execution* e, Step* s) {
-    return s->internalCommand.replyParser(s->internalCommand.reply);  // debugme: maybe align with other callbacks (i.e., use an ExecutionCtx, etc.)?
-}
-
 /* Execution task */
 static void MR_StepDone(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
@@ -1185,8 +1181,8 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
     for (size_t i = 0; i < reply->elements; i++) {
         Step *s = e->steps + i;
         s->internalCommand.reply = reply->element[i]; // First set the reply to be parsed
-        Record *record = MR_RunInternalCommandStep(e, s); // Then run the step to parse it
-        s->internalCommand.reply = NULL;  // Keep things tidy
+        Record *record = s->internalCommand.replyParser(s->internalCommand.reply);  // Then parse it
+        s->internalCommand.reply = NULL;  // And keep things tidy
 
         e->results = array_append(e->results, record);
         // All steps should return the same number of done nodes because we update all steps of a single node in one go
