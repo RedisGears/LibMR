@@ -43,8 +43,8 @@ functionId NEW_EXECUTION_RECEIVED_FUNCTION_ID = 0;
 functionId ACK_EXECUTION_FUNCTION_ID = 0;
 functionId INVOKE_EXECUTION_FUNCTION_ID = 0;
 functionId PASS_RECORD_FUNCTION_ID = 0;
-functionId NOTIFY_STEP_DONE_FUNCTION_ID = 0;
 functionId NOTIFY_DONE_FUNCTION_ID = 0;
+functionId NOTIFY_STEP_DONE_FUNCTION_ID = 0;
 functionId DROP_EXECUTION_FUNCTION_ID = 0;
 functionId REMOTE_TASK_FUNCTION_ID = 0;
 functionId REMOTE_TASK_DONE_FUNCTION_ID = 0;
@@ -1031,7 +1031,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
         MR_ExecutionInvokeCallback(e, &e->callbacks.done);
         e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
         if (e->flags & ExecutionFlag_Local) {
-            /* not need to wait to any shard, delete the execution */
+            /* no need to wait to any shard, delete the execution */
             MR_EventLoopAddTask(MR_DeleteExecution, e);
             return;
         }
@@ -1414,6 +1414,10 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
     memcpy(error, err, len);
     error[len] = '\0';
     ectx->err = MR_ErrorRecordCreate(error);
+}
+
+LIBMR_API void MR_ExecutionCtxSetDone(ExecutionCtx* ectx) {
+    MR_EventLoopAddTask(MR_DeleteExecution, ectx->e);
 }
 
 static void MR_StepDispose(Step* s) {
