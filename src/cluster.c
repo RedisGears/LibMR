@@ -636,7 +636,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
             }
         }
 
-        RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d\r\n", c->c.tcp.host, c->c.tcp.port, status);
+        RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d", c->c.tcp.host, c->c.tcp.port, status);
 
         if (n->password){
             /* If password is provided to us we will use it (it means it was given to us with clusterset) */
