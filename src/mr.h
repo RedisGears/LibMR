@@ -193,6 +193,7 @@ typedef struct InternalCommandCallbacks
     InternalCommand command;
     InternalCommandReplyParser replyParser;
 } InternalCommandCallbacks;
+/* Note: pass static InternalCommandCallback structs since the pointer is opaque to some of the functions and we don't really need to delete it */
 LIBMR_API void MR_RegisterInternalCommand(const char* name, InternalCommandCallbacks*, MRObjectType* argType);
 
 
