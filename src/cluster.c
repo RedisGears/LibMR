@@ -413,7 +413,10 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second, %s.", n->id, n->ip, n->port, reply->str);
             // This might happen if the AUTH has failed because we sent it too early when `n`
             // accepted connections but did not set its internal secret to the cluster's yet.
-            SendAuthCommandIfNeeded(c, n);
+            // In such cases we will have a regular (i.e., non-internal) connection and the
+            // hidden commands (including `<module>.HELLO`) will not be visible to us.
+            if (!MR_IsEnterpriseBuild() && strstr(reply->str, "unknown command") != NULL)
+                SendAuthCommandIfNeeded(c, n);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
         return;
