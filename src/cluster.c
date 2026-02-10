@@ -375,6 +375,23 @@ static void MR_ClusterResendHelloMessage(void* ctx){
     redisAsyncCommand((redisAsyncContext*)n->c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
 }
 
+static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Node *n) {
+    if (n->password){
+        /* If password is provided to us we will use it (it means it was given to us with clusterset) */
+        redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
+        return;
+    }
+    if (RedisModule_GetInternalSecret && !MR_IsEnterpriseBuild()) {
+        /* OSS deployment that support internal secret, lets use it. */
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        size_t len;
+        const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
+        RedisModule_Assert(secret);
+        redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    }
+}
+
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b){
     redisReply* reply = (redisReply*)a;
     if(!reply){
@@ -394,6 +411,9 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             n->sendClusterTopologyOnNextConnect = true;
         }else{
             RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second, %s.", n->id, n->ip, n->port, reply->str);
+            // This might happen if the AUTH has failed because we sent it too early when `n`
+            // accepted connections but did not set its internal secret to the cluster's yet.
+            SendAuthCommandIfNeeded(c, n);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
         return;
@@ -597,71 +617,61 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         // connection failed lets try again
         n->c = NULL;
         n->reconnectEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterReconnect, n, RETRY_INTERVAL);
-    }else{
-        char* client_cert = NULL;
-        char* client_key = NULL;
-        char* ca_cert = NULL;
-        char* key_file_pass = NULL;
-        if(checkTLS(&client_key, &client_cert, &ca_cert, &key_file_pass)){
-            redisSSLContextError ssl_error = 0;
-            SSL_CTX *ssl_context = MR_CreateSSLContext(ca_cert, client_cert, client_key, key_file_pass, &ssl_error);
-            MR_FREE(client_key);
-            MR_FREE(client_cert);
-            MR_FREE(ca_cert);
-            if (key_file_pass) {
-            	MR_FREE(key_file_pass);
-            }
-            if(ssl_context == NULL || ssl_error != 0) {
-                RedisModule_Log(mr_staticCtx, "warning", "SSL context generation to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
-                // disconnect async, its not possible to free redisAsyncContext here
-                MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
-                return;
-            }
-            SSL *ssl = SSL_new(ssl_context);
-            SSL_CTX_free(ssl_context);
-            const redisContextFuncs *old_callbacks = c->c.funcs;
-            if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
-                const char *err = "Unknown error";
-                if (c->c.err != 0) {
-                    err = c->c.errstr;
-                }
-                // This is a temporary fix to the bug describe on https://github.com/redis/hiredis/issues/1233.
-                // In case of SSL initialization failure. We need to reset the callbacks value, as the `redisInitiateSSL`
-                // function will not do it for us.
-                ((struct redisAsyncContext*)c)->c.funcs = old_callbacks;
-                RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry. %s.", c->c.tcp.host, c->c.tcp.port, err);
-                // disconnect async, its not possible to free redisAsyncContext here
-                MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
-                return;
-            }
-        }
-
-        RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d", c->c.tcp.host, c->c.tcp.port, status);
-
-        if (n->password){
-            /* If password is provided to us we will use it (it means it was given to us with clusterset) */
-            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
-        } else if (RedisModule_GetInternalSecret && !MR_IsEnterpriseBuild()) {
-            /* OSS deployment that support internal secret, lets use it. */
-            RedisModule_ThreadSafeContextLock(mr_staticCtx);
-            size_t len;
-            const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
-            RedisModule_Assert(secret);
-            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
-            RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
-        }
-
-        if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
-            RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
-            clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
-            redisAsyncCommandArgv((redisAsyncContext*)c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
-            MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX]);
-            clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = NULL;
-            n->sendClusterTopologyOnNextConnect = false;
-        }
-        redisAsyncCommand((redisAsyncContext*)c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
-        n->status = NodeStatus_HelloSent;
+        return;
     }
+
+    char* client_cert = NULL;
+    char* client_key = NULL;
+    char* ca_cert = NULL;
+    char* key_file_pass = NULL;
+    if(checkTLS(&client_key, &client_cert, &ca_cert, &key_file_pass)){
+        redisSSLContextError ssl_error = 0;
+        SSL_CTX *ssl_context = MR_CreateSSLContext(ca_cert, client_cert, client_key, key_file_pass, &ssl_error);
+        MR_FREE(client_key);
+        MR_FREE(client_cert);
+        MR_FREE(ca_cert);
+        if (key_file_pass) {
+            MR_FREE(key_file_pass);
+        }
+        if(ssl_context == NULL || ssl_error != 0) {
+            RedisModule_Log(mr_staticCtx, "warning", "SSL context generation to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
+            // disconnect async, its not possible to free redisAsyncContext here
+            MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
+            return;
+        }
+        SSL *ssl = SSL_new(ssl_context);
+        SSL_CTX_free(ssl_context);
+        const redisContextFuncs *old_callbacks = c->c.funcs;
+        if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
+            const char *err = "Unknown error";
+            if (c->c.err != 0) {
+                err = c->c.errstr;
+            }
+            // This is a temporary fix to the bug describe on https://github.com/redis/hiredis/issues/1233.
+            // In case of SSL initialization failure. We need to reset the callbacks value, as the `redisInitiateSSL`
+            // function will not do it for us.
+            ((struct redisAsyncContext*)c)->c.funcs = old_callbacks;
+            RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry. %s.", c->c.tcp.host, c->c.tcp.port, err);
+            // disconnect async, its not possible to free redisAsyncContext here
+            MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
+            return;
+        }
+    }
+
+    RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d", c->c.tcp.host, c->c.tcp.port, status);
+
+    SendAuthCommandIfNeeded(c, n);
+
+    if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
+        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
+        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
+        redisAsyncCommandArgv((redisAsyncContext*)c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
+        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX]);
+        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = NULL;
+        n->sendClusterTopologyOnNextConnect = false;
+    }
+    redisAsyncCommand((redisAsyncContext*)c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
+    n->status = NodeStatus_HelloSent;
 }
 
 static void MR_ConnectToShard(Node* n){
