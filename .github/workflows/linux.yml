@@ -40,7 +40,7 @@ jobs:
         make clean
     - name: Python test deps
       run: |
-        python3 -m pip install -U pip setuptools
+        python3 -m pip install -U pip "setuptools<81"
         python3 -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent "redis>=5"
     - name: install redis
       run: |
