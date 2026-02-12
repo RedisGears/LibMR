@@ -63,6 +63,7 @@ static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, vo
 static void MR_RunExecution(Execution* e, void* pd);
 static Record* MR_RunStep(Execution* e, Step* s);
 void MR_FreeExecution(Execution* e);
+static void MR_FreeExecutionInternal(Execution* e);
 
 /* Remote functions declaration */
 static void MR_NewExecutionReceived(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
@@ -1323,7 +1324,9 @@ static void MR_ExecutionMain(void* pd) {
     ExecutionTaskCallback callback = task->callback;
     callback(e, task->pd);
     if (callback == MR_DisposeExecution || callback == MR_ExecutionTimedOutInternal) {
-        __atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
+        if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) == 0) {
+            MR_FreeExecutionInternal(e);
+        }
         return;
     }
 
@@ -1465,10 +1468,7 @@ static void MR_StepDispose(Step* s) {
     }
 }
 
-void MR_FreeExecution(Execution* e) {
-    if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) > 0) {
-        return;
-    }
+static void MR_FreeExecutionInternal(Execution* e) {
     for (size_t i = 0 ; i < array_len(e->steps) ; ++i) {
         MR_StepDispose(e->steps + i);
     }
@@ -1483,6 +1483,13 @@ void MR_FreeExecution(Execution* e) {
     }
     array_free(e->errors);
     MR_FREE(e);
+}
+
+void MR_FreeExecution(Execution* e) {
+    if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) > 0) {
+        return;
+    }
+    MR_FreeExecutionInternal(e);
 }
 
 static void MR_GetRedisVersion() {
