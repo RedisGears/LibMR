@@ -982,9 +982,12 @@ static void MR_DisposeExecution(Execution* e, void* pd) {
  * executions dictionary and send a dispose task */
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
+    /* Hold a ref so a worker in MR_ExecutionMain cannot free e before we add the dispose task. */
+    __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
     mr_dictDelete(mrCtx.executionsDict, e->id);
     /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
+    __atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
 }
 
 /* Remote function call, runs on the event loop */
