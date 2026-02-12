@@ -979,11 +979,10 @@ static void MR_DisposeExecution(Execution* e, void* pd) {
 }
 
 /* runs on the event loop, remove the execution from the
- * executions dictionary and send a dispose task */
+ * executions dictionary and send a dispose task.
+ * Caller or scheduler must have taken a ref on e (released here). */
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
-    /* Hold a ref so a worker in MR_ExecutionMain cannot free e before we add the dispose task. */
-    __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
     mr_dictDelete(mrCtx.executionsDict, e->id);
     /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
@@ -1001,7 +1000,7 @@ static void MR_DropExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t
         ++mrCtx.stats.nMissedExecutions;
         return;
     }
-
+    __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
     MR_DeleteExecution(e);
 }
 
@@ -1024,6 +1023,7 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
          * We can ask all the shards to drop it and we can
          * drop it ourself. */
         MR_ClusterCopyAndSendMsg(NULL, DROP_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
+        __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
         MR_DeleteExecution(e);
     }
 }
