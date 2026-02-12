@@ -1036,6 +1036,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
         e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
         if (e->flags & ExecutionFlag_Local) {
             /* no need to wait to any shard, delete the execution */
+            __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
             MR_EventLoopAddTask(MR_DeleteExecution, e);
             return;
         }
@@ -1433,6 +1434,7 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
 }
 
 LIBMR_API void MR_ExecutionCtxSetDone(ExecutionCtx* ectx) {
+    __atomic_add_fetch(&ectx->e->refCount, 1, __ATOMIC_RELAXED);
     MR_EventLoopAddTask(MR_DeleteExecution, ectx->e);
 }
 
