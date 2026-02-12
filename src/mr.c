@@ -1307,18 +1307,28 @@ static void MR_ExecutionMain(void* pd) {
     Execution* e = pd;
     pthread_mutex_lock(&e->eLock);
     mr_listNode *head = mr_listFirst(e->tasks);
+    if (head == NULL) {
+        pthread_mutex_unlock(&e->eLock);
+        return;
+    }
     ExecutionTask* task = mr_listNodeValue(head);
+    if (task == NULL) {
+        pthread_mutex_unlock(&e->eLock);
+        return;
+    }
+    /* Hold ref so execution cannot be freed while we run the callback. */
+    __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
     pthread_mutex_unlock(&e->eLock);
 
     ExecutionTaskCallback callback = task->callback;
     callback(e, task->pd);
     if (callback == MR_DisposeExecution || callback == MR_ExecutionTimedOutInternal) {
-        /* MR_DisposeExecution means we will not longer gets any events
-         * on this execution and we should not longer touch it. */
+        __atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
         return;
     }
 
     pthread_mutex_lock(&e->eLock);
+    __atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
     /* pop current task out */
     mr_listDelNode(e->tasks, head);
 
