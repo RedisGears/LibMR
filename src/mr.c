@@ -63,6 +63,7 @@ static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, vo
 static void MR_RunExecution(Execution* e, void* pd);
 static Record* MR_RunStep(Execution* e, Step* s);
 void MR_FreeExecution(Execution* e);
+static void MR_FreeExecutionInternal(Execution* e);
 
 /* Remote functions declaration */
 static void MR_NewExecutionReceived(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
@@ -256,6 +257,7 @@ struct ExecutionBuilder {
 
 #define ExecutionFlag_Initiator (1 << 0)
 #define ExecutionFlag_Local     (1 << 1)
+#define ExecutionFlag_TimedOut  (1 << 2)
 
 typedef struct ExecutionCallbackData {
     void* pd;
@@ -978,12 +980,14 @@ static void MR_DisposeExecution(Execution* e, void* pd) {
 }
 
 /* runs on the event loop, remove the execution from the
- * executions dictionary and send a dispose task */
+ * executions dictionary and send a dispose task.
+ * Caller or scheduler must have taken a ref on e (released here). */
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
     mr_dictDelete(mrCtx.executionsDict, e->id);
     /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
+    __atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
 }
 
 /* Remote function call, runs on the event loop */
@@ -997,7 +1001,7 @@ static void MR_DropExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t
         ++mrCtx.stats.nMissedExecutions;
         return;
     }
-
+    __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
     MR_DeleteExecution(e);
 }
 
@@ -1020,6 +1024,7 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
          * We can ask all the shards to drop it and we can
          * drop it ourself. */
         MR_ClusterCopyAndSendMsg(NULL, DROP_EXECUTION_FUNCTION_ID, e->id, ID_LEN);
+        __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
         MR_DeleteExecution(e);
     }
 }
@@ -1032,6 +1037,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
         e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
         if (e->flags & ExecutionFlag_Local) {
             /* no need to wait to any shard, delete the execution */
+            __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
             MR_EventLoopAddTask(MR_DeleteExecution, e);
             return;
         }
@@ -1296,6 +1302,7 @@ static void MR_ExecutionTimedOut(void* ctx) {
     Execution* e = ctx;
     /* execution timed out */
     e->timeoutTask = NULL;
+    e->flags |= ExecutionFlag_TimedOut;
     ++mrCtx.stats.nMaxIdleReached;
     /* Delete the execution from the executions dictionary,
      * We will ignore further messages on this execution. */
@@ -1305,9 +1312,26 @@ static void MR_ExecutionTimedOut(void* ctx) {
 
 static void MR_ExecutionMain(void* pd) {
     Execution* e = pd;
+    if (e == NULL) {
+        return;
+    }
     pthread_mutex_lock(&e->eLock);
     mr_listNode *head = mr_listFirst(e->tasks);
+    if (head == NULL) {
+        pthread_mutex_unlock(&e->eLock);
+        if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) == 0) {
+            MR_FreeExecutionInternal(e);
+        }
+        return;
+    }
     ExecutionTask* task = mr_listNodeValue(head);
+    if (task == NULL) {
+        pthread_mutex_unlock(&e->eLock);
+        if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) == 0) {
+            MR_FreeExecutionInternal(e);
+        }
+        return;
+    }
     pthread_mutex_unlock(&e->eLock);
 
     ExecutionTaskCallback callback = task->callback;
@@ -1315,6 +1339,9 @@ static void MR_ExecutionMain(void* pd) {
     if (callback == MR_DisposeExecution || callback == MR_ExecutionTimedOutInternal) {
         /* MR_DisposeExecution means we will not longer gets any events
          * on this execution and we should not longer touch it. */
+        if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) == 0) {
+            MR_FreeExecutionInternal(e);
+        }
         return;
     }
 
@@ -1326,12 +1353,16 @@ static void MR_ExecutionMain(void* pd) {
     if (mr_listLength(e->tasks) > 0) {
         /* more work to do, for fairness we will not run now.
          * We will add ourselves to the thread pool */
+        __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
         mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ExecutionMain, e);
     } else {
         e->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_ExecutionTimedOut, e, e->timeoutMS);
     }
 
     pthread_mutex_unlock(&e->eLock);
+    if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) == 0) {
+        MR_FreeExecutionInternal(e);
+    }
 }
 
 /* should be invoked only from the event loop */
@@ -1349,6 +1380,7 @@ static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, vo
 
     if (lenBeforeTask == 0) {
         /* nothing is currently running, add a task to the thread pool */
+        __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
         mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ExecutionMain, e);
     }
 
@@ -1417,6 +1449,10 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
 }
 
 LIBMR_API void MR_ExecutionCtxSetDone(ExecutionCtx* ectx) {
+    if (ectx->e->flags & ExecutionFlag_TimedOut) {
+        return;
+    }
+    __atomic_add_fetch(&ectx->e->refCount, 1, __ATOMIC_RELAXED);
     MR_EventLoopAddTask(MR_DeleteExecution, ectx->e);
 }
 
@@ -1455,10 +1491,7 @@ static void MR_StepDispose(Step* s) {
     }
 }
 
-void MR_FreeExecution(Execution* e) {
-    if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) > 0) {
-        return;
-    }
+static void MR_FreeExecutionInternal(Execution* e) {
     for (size_t i = 0 ; i < array_len(e->steps) ; ++i) {
         MR_StepDispose(e->steps + i);
     }
@@ -1473,6 +1506,13 @@ void MR_FreeExecution(Execution* e) {
     }
     array_free(e->errors);
     MR_FREE(e);
+}
+
+void MR_FreeExecution(Execution* e) {
+    if (__atomic_sub_fetch(&e->refCount, 1, __ATOMIC_RELAXED) > 0) {
+        return;
+    }
+    MR_FreeExecutionInternal(e);
 }
 
 static void MR_GetRedisVersion() {
