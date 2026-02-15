@@ -963,14 +963,16 @@ static int MR_RunExecutionInternal(Execution* e) {
     return 1;
 }
 
-static void MR_ExecutionInvokeCallback(Execution* e, ExecutionCallbackData* callback) {
+static bool MR_ExecutionInvokeCallback(Execution* e, ExecutionCallbackData* callback) {
+    if (!callback || !callback->callback)
+        return false;
+
     ExecutionCtx eCtx = {
             .e = e,
             .err = NULL
     };
-    if (callback->callback) {
-        callback->callback(&eCtx, callback->pd);
-    }
+    callback->callback(&eCtx, callback->pd);
+    return true;
 }
 
 static void MR_DisposeExecution(Execution* e, void* pd) {
@@ -1028,10 +1030,12 @@ static void MR_RunExecution(Execution* e, void* pd) {
     MR_ExecutionInvokeCallback(e, &e->callbacks.resume);
     if (MR_RunExecutionInternal(e)) {
         /* we are done, invoke on done callback and perform termination process. */
-        MR_ExecutionInvokeCallback(e, &e->callbacks.done);
+        if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
+            return;
         e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
-        if (e->flags & ExecutionFlag_Local) {
-            /* no need to wait to any shard, delete the execution */
+        bool allDone = (e->flags & ExecutionFlag_Local) != 0;   // either no need to wait to any shard
+        allDone = allDone || MR_IsInternalCommandsExecution(e); // or we don't need a NOTIFY_DONE message
+        if (allDone) {
             MR_EventLoopAddTask(MR_DeleteExecution, e);
             return;
         }
@@ -1273,9 +1277,8 @@ static void MR_ExecutionDistribute(Execution* e, void* pd) {
     mr_BufferWriterInit(&buffWriter, &buff);
     MR_ExecutionSerialize(&buffWriter, e);
     functionId fid = NEW_EXECUTION_RECEIVED_FUNCTION_ID;
-    if (e->steps[0].bStep.type == StepType_InternalCommand) {
-        // This means all steps are internal commands (because we do not allow to mix them with other step types).
-        // So we signal it to the INNER_COMMUNICATION handler function using this tiny hack:
+    if (MR_IsInternalCommandsExecution(e)) {
+        // We signal it to the INNER_COMMUNICATION handler function using this tiny hack:
         fid |= FUNCTION_ID_INTERNAL;
     }
     MR_ClusterSendMsg(NULL, fid, buff.buff, buff.size);
@@ -1286,7 +1289,8 @@ static void MR_ExecutionDistribute(Execution* e, void* pd) {
 static void MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution max idle reached"));
     /* we are done, invoke on done callback. */
-    MR_ExecutionInvokeCallback(e, &e->callbacks.done);
+    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
+        return;
     e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
     MR_FreeExecution(e);
 }
@@ -1393,6 +1397,11 @@ void MR_Run(Execution* e) {
     MR_EventLoopAddTask(MR_ExecutionStart, e);
 }
 
+bool MR_IsInternalCommandsExecution(const Execution* e) {
+    return array_len(e->steps) > 0 && e->steps[0].bStep.type == StepType_InternalCommand;
+    // This means all steps are internal commands (because we do not allow to mix them with other step types)
+}
+
 Record* MR_ExecutionCtxGetResult(ExecutionCtx* ectx, size_t i) {
     return ectx->e->results[i];
 }
@@ -1414,10 +1423,6 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
     memcpy(error, err, len);
     error[len] = '\0';
     ectx->err = MR_ErrorRecordCreate(error);
-}
-
-LIBMR_API void MR_ExecutionCtxSetDone(ExecutionCtx* ectx) {
-    MR_EventLoopAddTask(MR_DeleteExecution, ectx->e);
 }
 
 static void MR_StepDispose(Step* s) {

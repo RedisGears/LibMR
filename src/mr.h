@@ -67,7 +67,6 @@ LIBMR_API size_t MR_ExecutionCtxGetResultsLen(ExecutionCtx* ectx);
 LIBMR_API const char* MR_ExecutionCtxGetError(ExecutionCtx* ectx, size_t i);
 LIBMR_API size_t MR_ExecutionCtxGetErrorsLen(ExecutionCtx* ectx);
 LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size_t len);
-LIBMR_API void MR_ExecutionCtxSetDone(ExecutionCtx* ectx);
 
 /* Execution Callback definition */
 typedef void(*ExecutionCallback)(ExecutionCtx* ectx, void* pd);
@@ -172,6 +171,9 @@ LIBMR_API void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDo
 
 /* Run the given execution, should at most once on each execution. */
 LIBMR_API void MR_Run(Execution* e);
+
+/* Check if the execution is for internal commands */
+LIBMR_API bool MR_IsInternalCommandsExecution(const Execution* e);
 
 /* Free the given execution */
 LIBMR_API void MR_FreeExecution(Execution* e);
