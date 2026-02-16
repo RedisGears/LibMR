@@ -475,7 +475,7 @@ static int checkTLS(char** client_key, char** client_cert, char** ca_cert, char*
             MR_FREE(*client_cert);
         }
         if (*ca_cert) {
-            MR_FREE(*client_cert);
+            MR_FREE(*ca_cert);
         }
     }
 
@@ -637,8 +637,8 @@ static void MR_ConnectToShard(Node* n){
         return;
     }
     if (c->err) {
-        /* Let *c leak for now... */
         RedisModule_Log(mr_staticCtx, "warning", "Error: %s\n", c->errstr);
+        redisAsyncFree(c);
         return;
     }
     c->data = n;
