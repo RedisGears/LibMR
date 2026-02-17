@@ -87,13 +87,17 @@ def shardsConnections(env):
     for s in range(1, env.shardsCount + 1):
         yield env.getConnection(shardId=s)
 
+def try_promote_internal_client(conn):
+    try:
+        conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
+    except Exception:
+        # Not all Redis builds support this debug subcommand.
+        pass
+
 def verifyClusterInitialized(env):
     for conn in shardsConnections(env):
-        try:
-            # try to promote to internal connection
-            conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
-        except Exception:
-            pass
+        # Try to promote to an internal connection when supported.
+        try_promote_internal_client(conn)
         allConnected = False
         while not allConnected:
             res = conn.execute_command('MRTESTS.INFOCLUSTER')
@@ -114,11 +118,7 @@ def initialiseCluster(env):
         # or mac, it is needed.
         env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
         for conn in shardsConnections(env):
-            try:
-                conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
-            except Exception as e:
-                print(e)
-                pass
+            try_promote_internal_client(conn)
             conn.execute_command('MRTESTS.FORCESHARDSCONNECTION')
         with TimeLimit(2):
             verifyClusterInitialized(env)
@@ -152,10 +152,10 @@ def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False
                 raise unittest.SkipTest()
             if skipOnVersionLowerThan:
                 skip_if_redis_version_is_lower_than(skipOnVersionLowerThan)
+            # Always keep password-based auth available in tests.
+            # Some Redis 8+ builds (for example, certain CI binaries) do not
+            # include DEBUG MARK-INTERNAL-CLIENT/internal-secret support.
             defaultModuleArgs = 'password'
-            if not is_redis_version_is_lower_than('8.0.0'):
-                # We provide password only if version < 8.0.0. If version is greater, we have internal command and we do not need the password.
-                defaultModuleArgs = None
             envArgs['moduleArgs'] = moduleArgs or defaultModuleArgs
             envArgs['redisConfigFile'] = create_config_file(redisConfigFileContent) if redisConfigFileContent else None
             env = Env(**envArgs)
