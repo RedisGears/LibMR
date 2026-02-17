@@ -1030,14 +1030,15 @@ static void MR_RunExecution(Execution* e, void* pd) {
     MR_ExecutionInvokeCallback(e, &e->callbacks.resume);
     if (MR_RunExecutionInternal(e)) {
         /* we are done, invoke on done callback and perform termination process. */
-        if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
-            return;
+        bool doneInvoked = MR_ExecutionInvokeCallback(e, &e->callbacks.done);
         e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
-        bool allDone = (e->flags & ExecutionFlag_Local) != 0;   // either no need to wait to any shard
-        allDone = allDone || MR_IsInternalCommandsExecution(e); // or we don't need a NOTIFY_DONE message
-        if (allDone) {
-            MR_EventLoopAddTask(MR_DeleteExecution, e);
-            return;
+        if (doneInvoked) {
+            bool executionDone = (e->flags & ExecutionFlag_Local) != 0;   // either no need to wait to any shard
+            executionDone = executionDone || MR_IsInternalCommandsExecution(e); // or we don't need a NOTIFY_DONE message
+            if (executionDone) {
+                MR_EventLoopAddTask(MR_DeleteExecution, e);
+                return;
+            }
         }
         if (!(e->flags & ExecutionFlag_Initiator)) {
             MR_ClusterCopyAndSendMsg(e->id, NOTIFY_DONE_FUNCTION_ID, e->id, ID_LEN);
