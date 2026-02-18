@@ -1290,7 +1290,8 @@ static void MR_ExecutionDistribute(Execution* e, void* pd) {
 static void MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution max idle reached"));
     /* we are done, invoke on done callback. */
-    !MR_ExecutionInvokeCallback(e, &e->callbacks.done);
+    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
+        return;
     e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
     MR_FreeExecution(e);
 }
