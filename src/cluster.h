@@ -10,14 +10,9 @@
 #ifndef SRC_CLUSTER_H_
 #define SRC_CLUSTER_H_
 
-#include "redismodule.h"
 #include <stdbool.h>
 
 #define CLUSTER_ERROR "ERRCLUSTER"
-
-typedef size_t functionId;
-
-typedef void (*MR_ClusterMessageReceiver)(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
 
 /* Send a message to a shard by shard id,
  * NULL id means to send the message to all the shards.
@@ -42,7 +37,7 @@ size_t MR_ClusterGetSize();
 
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
 
-size_t MR_ClusterGetSlotdByKey(const char* key, size_t len);
+size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
 
 int MR_ClusterIsMySlot(size_t slot);
 

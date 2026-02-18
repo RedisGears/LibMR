@@ -28,7 +28,7 @@
 #include <assert.h>
 #include <stdbool.h>
 
-/* Definition of malloc & friedns that can be overridden before including arr.h.
+/* Definition of malloc & friends that can be overridden before including arr.h.
  * Alternatively you can include arr_rm_alloc.h, which wraps arr.h and sets the allcoation functions
  * to those of the RM_ family
  */
@@ -55,7 +55,7 @@ typedef void *array_t;
 #define array_sizeof(hdr) (sizeof(array_hdr_t) + hdr->cap * hdr->elem_sz)
 /* Internal - get a pointer to the array header */
 #define array_hdr(arr) ((array_hdr_t *)(((char *)arr) - sizeof(array_hdr_t)))
-/* Interanl - get a pointer to an element inside the array at a given index */
+/* Internal - get a pointer to an element inside the array at a given index */
 #define array_elem(arr, idx) (*((void **)((char *)arr + (idx * array_hdr(arr)->elem_sz))))
 
 /* Initialize a new array with a given element size and capacity. Should not be used directly - use
@@ -70,7 +70,7 @@ static array_t array_new_sz(uint32_t elem_sz, uint32_t cap, uint32_t len) {
 }
 
 /* Initialize an array for a given type T with a given capacity and zero length. The array should be
- * case to a pointer to that type. e.g.
+ * casted to a pointer to that type. e.g.
  *
  *  int *arr = array_new(int, 4);
  *
@@ -145,7 +145,7 @@ static inline uint32_t array_len(array_t arr) {
   return arr ? array_hdr(arr)->len : 0;
 }
 
-static inline void *array_trimm(array_t arr, uint32_t len, uint32_t cap) {
+static inline void *array_trim(array_t arr, uint32_t len, uint32_t cap) {
   array_hdr_t *arr_hdr = array_hdr(arr);
   RedisModule_Assert(len >= 0 && "trimming len is negative");
   RedisModule_Assert((cap == -1 || cap > 0 || len == cap) && "trimming capacity is illegal");
@@ -159,8 +159,8 @@ static inline void *array_trimm(array_t arr, uint32_t len, uint32_t cap) {
   return arr_hdr->buf;
 }
 
-#define array_trimm_len(arr, len) array_trimm(arr, len, -1)
-#define array_trimm_cap(arr, len) array_trimm(arr, len, len)
+#define array_trim_len(arr, len) array_trim(arr, len, -1)
+#define array_trim_cap(arr, len) array_trim(arr, len, len)
 
 /* Free the array, without dealing with individual elements */
 static void array_free(array_t arr) {
@@ -168,7 +168,7 @@ static void array_free(array_t arr) {
   if (!arr_hdr->on_stack) array_free_fn(array_hdr(arr));
 }
 
-/* Repeate the code in "blk" for each element in the array, and give it the name of "as".
+/* Repeat the code in "blk" for each element in the array, and give it the name of "as".
  * e.g:
  *  int *arr = array_new(int, 10);
  *  arr = array_append(arr, 1);

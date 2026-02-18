@@ -7,13 +7,18 @@
  * GNU Affero General Public License v3 (AGPLv3).
  */
 
-#include "cluster.h"
+#include "redismodule.h"
+
 #include "common.h"
 #include "mr.h"
+#include "cluster.h"
 #include "event_loop.h"
 #include "utils/arr_rm_alloc.h"
+#include "utils/buffer.h"
 #include "utils/dict.h"
 #include "utils/adlist.h"
+
+#include <ctype.h>
 
 #include <hiredis.h>
 #include <hiredis_ssl.h>
@@ -102,6 +107,7 @@ typedef struct Node{
     mr_list* pendingMessages;
     mr_list* slotRanges;
     bool isMe;
+    unsigned short index;  // A small int unique node identifier for internal usage
     NodeStatus status;
     MR_LoopTaskCtx* reconnectEvent;
     MR_LoopTaskCtx* resendHelloEvent;
@@ -128,7 +134,7 @@ struct ClusterCtx {
     size_t clusterSize;
     char myId[REDISMODULE_NODE_ID_LEN + 1];
     int isOss;
-    functionId networkTestMsgReciever;
+    functionId networkTestMsgReceiver;
     char *password;
 }clusterCtx;
 
@@ -156,7 +162,8 @@ typedef struct MessageCtx {
     MessageReply reply;
 }MessageCtx;
 
-static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b);
+static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* a, void* b);
+static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* a, void* b);  // A response to an internal-commands command
 static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static Node* MR_GetNode(const char* id);
@@ -189,7 +196,9 @@ static void MR_ClusterFreeNodeMsg(void* ptr){
 
 static void MR_ClusterSendMsgToNodeInternal(Node* node, NodeSendMsg* nodeMsg){
     // CLUSTER_INNER_COMMUNICATION_COMMAND <myid> <runid> <functionid> <msg> <msgId>
-    redisAsyncCommand(node->c, MR_OnResponseArrived, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
+    void (*onResponse)(struct redisAsyncContext*, void*, void*) =
+        (nodeMsg->msg->function & FUNCTION_ID_INTERNAL) ? MR_OnDataResponseArrived : MR_OnStatusResponseArrived;
+    redisAsyncCommand(node->c, onResponse, node, CLUSTER_INNER_COMMUNICATION_COMMAND" %s %s %llu %b %llu",
             clusterCtx.CurrCluster->myId,
             clusterCtx.CurrCluster->runId,
             nodeMsg->msg->function,
@@ -235,9 +244,10 @@ static void MR_ClusterSendMsgTask(void* ctx) {
         mr_dictEntry *entry = NULL;
         while((entry = mr_dictNext(iter))){
             Node* n = mr_dictGetVal(entry);
-            if(!n->isMe){
+            bool isInternalCommand = (sendMsg->function & FUNCTION_ID_INTERNAL) != 0;
+            bool shouldSendToNode = !n->isMe || isInternalCommand;
+            if (shouldSendToNode)
                 MR_ClusterSendMsgToNode(n, sendMsg);
-            }
         }
         mr_dictReleaseIterator(iter);
     } else if (sendMsg->sendMsgType == SendMsgType_BySlot) {
@@ -293,32 +303,56 @@ void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg,
 }
 
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver) {
+    for (functionId fid = 0; fid < array_len(clusterCtx.callbacks); fid++)
+        if (clusterCtx.callbacks[fid] == receiver)
+            return fid;
     clusterCtx.callbacks = array_append(clusterCtx.callbacks, receiver);
     return array_len(clusterCtx.callbacks) - 1;
 }
 
-static void MR_OnResponseArrived(struct redisAsyncContext* c, void* a, void* b){
-    redisReply* reply = (redisReply*)a;
-    if(!reply){
+static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* r, void* n) {
+    redisReply* reply = r;
+    if (!reply || !c->data) return;
+    Node* node = n;
+    if (reply->type != REDIS_REPLY_ARRAY) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect.",
+            node->id, node->ip, node->port);
+        redisAsyncDisconnect(c);
         return;
     }
-    if(!c->data){
-        return;
-    }
-    Node* n = (Node*)b;
+
+    mr_listNode* pendingMessage = mr_listFirst(node->pendingMessages);
+    NodeSendMsg *message = pendingMessage->value;
+    Execution *e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
+    mr_listDelNode(node->pendingMessages, pendingMessage);
+
+    MR_SetInternalCommandResults(node->index, reply, e);
+}
+
+static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* r, void* n){
+    redisReply* reply = r;
+    if (!reply || !c->data) return;
+    Node* node = n;
+
     if(reply->type == REDIS_REPLY_ERROR && strncmp(reply->str, CLUSTER_ERROR, strlen(CLUSTER_ERROR)) == 0){
-        n->sendClusterTopologyOnNextConnect = true;
-        RedisModule_Log(mr_staticCtx, "warning", "Received ERRCLUSTER reply from shard %s (%s:%d), will send cluster topology to the shard on next connect", n->id, n->ip, n->port);
+        node->sendClusterTopologyOnNextConnect = true;
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Received ERRCLUSTER reply from shard %s (%s:%d), will send cluster topology to the shard on next connect",
+            node->id, node->ip, node->port);
         redisAsyncDisconnect(c);
         return;
     }
     if(reply->type != REDIS_REPLY_STATUS){
-        RedisModule_Log(mr_staticCtx, "warning", "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect. This is usually because the Redis server's 'proto-max-bulk-len' configuration setting is too low.", n->id, n->ip, n->port);
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect. "
+            "This is usually because the Redis server's 'proto-max-bulk-len' configuration setting is too low.",
+            node->id, node->ip, node->port);
         redisAsyncDisconnect(c);
         return;
     }
-    mr_listNode* node = mr_listFirst(n->pendingMessages);
-    mr_listDelNode(n->pendingMessages, node);
+    mr_listNode* pendingMessage = mr_listFirst(node->pendingMessages);
+    mr_listDelNode(node->pendingMessages, pendingMessage);
 }
 
 static void MR_ClusterResendHelloMessage(void* ctx){
@@ -341,6 +375,23 @@ static void MR_ClusterResendHelloMessage(void* ctx){
     redisAsyncCommand((redisAsyncContext*)n->c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
 }
 
+static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Node *n) {
+    if (n->password){
+        /* If password is provided to us we will use it (it means it was given to us with clusterset) */
+        redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
+        return;
+    }
+    if (RedisModule_GetInternalSecret && !MR_IsEnterpriseBuild()) {
+        /* OSS deployment that support internal secret, lets use it. */
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        size_t len;
+        const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
+        RedisModule_Assert(secret);
+        redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    }
+}
+
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b){
     redisReply* reply = (redisReply*)a;
     if(!reply){
@@ -360,6 +411,12 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             n->sendClusterTopologyOnNextConnect = true;
         }else{
             RedisModule_Log(mr_staticCtx, "warning", "Got bad hello response from %s (%s:%d), will try again in 1 second, %s.", n->id, n->ip, n->port, reply->str);
+            // This might happen if the AUTH has failed because we sent it too early when `n`
+            // accepted connections but did not set its internal secret to the cluster's yet.
+            // In such cases we will have a regular (i.e., non-internal) connection and the
+            // hidden commands (including `<module>.HELLO`) will not be visible to us.
+            if (!MR_IsEnterpriseBuild() && strstr(reply->str, "unknown command") != NULL)
+                SendAuthCommandIfNeeded(c, n);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
         return;
@@ -563,71 +620,61 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         // connection failed lets try again
         n->c = NULL;
         n->reconnectEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterReconnect, n, RETRY_INTERVAL);
-    }else{
-        char* client_cert = NULL;
-        char* client_key = NULL;
-        char* ca_cert = NULL;
-        char* key_file_pass = NULL;
-        if(checkTLS(&client_key, &client_cert, &ca_cert, &key_file_pass)){
-            redisSSLContextError ssl_error = 0;
-            SSL_CTX *ssl_context = MR_CreateSSLContext(ca_cert, client_cert, client_key, key_file_pass, &ssl_error);
-            MR_FREE(client_key);
-            MR_FREE(client_cert);
-            MR_FREE(ca_cert);
-            if (key_file_pass) {
-            	MR_FREE(key_file_pass);
-            }
-            if(ssl_context == NULL || ssl_error != 0) {
-                RedisModule_Log(mr_staticCtx, "warning", "SSL context generation to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
-                // disconnect async, its not possible to free redisAsyncContext here
-                MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
-                return;
-            }
-            SSL *ssl = SSL_new(ssl_context);
-            SSL_CTX_free(ssl_context);
-            const redisContextFuncs *old_callbacks = c->c.funcs;
-            if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
-                const char *err = "Unknown error";
-                if (c->c.err != 0) {
-                    err = c->c.errstr;
-                }
-                // This is a temporary fix to the bug describe on https://github.com/redis/hiredis/issues/1233.
-                // In case of SSL initialization failure. We need to reset the callbacks value, as the `redisInitiateSSL`
-                // function will not do it for us.
-                ((struct redisAsyncContext*)c)->c.funcs = old_callbacks;
-                RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry. %s.", c->c.tcp.host, c->c.tcp.port, err);
-                // disconnect async, its not possible to free redisAsyncContext here
-                MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
-                return;
-            }
-        }
-
-        RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d\r\n", c->c.tcp.host, c->c.tcp.port, status);
-
-        if (n->password){
-            /* If password is provided to us we will use it (it means it was given to us with clusterset) */
-            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
-        } else if (RedisModule_GetInternalSecret && !MR_IsEnterpriseBuild()) {
-            /* OSS deployment that support internal secret, lets use it. */
-            RedisModule_ThreadSafeContextLock(mr_staticCtx);
-            size_t len;
-            const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
-            RedisModule_Assert(secret);
-            redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
-            RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
-        }
-
-        if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
-            RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
-            clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
-            redisAsyncCommandArgv((redisAsyncContext*)c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
-            MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX]);
-            clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = NULL;
-            n->sendClusterTopologyOnNextConnect = false;
-        }
-        redisAsyncCommand((redisAsyncContext*)c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
-        n->status = NodeStatus_HelloSent;
+        return;
     }
+
+    char* client_cert = NULL;
+    char* client_key = NULL;
+    char* ca_cert = NULL;
+    char* key_file_pass = NULL;
+    if(checkTLS(&client_key, &client_cert, &ca_cert, &key_file_pass)){
+        redisSSLContextError ssl_error = 0;
+        SSL_CTX *ssl_context = MR_CreateSSLContext(ca_cert, client_cert, client_key, key_file_pass, &ssl_error);
+        MR_FREE(client_key);
+        MR_FREE(client_cert);
+        MR_FREE(ca_cert);
+        if (key_file_pass) {
+            MR_FREE(key_file_pass);
+        }
+        if(ssl_context == NULL || ssl_error != 0) {
+            RedisModule_Log(mr_staticCtx, "warning", "SSL context generation to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
+            // disconnect async, its not possible to free redisAsyncContext here
+            MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
+            return;
+        }
+        SSL *ssl = SSL_new(ssl_context);
+        SSL_CTX_free(ssl_context);
+        const redisContextFuncs *old_callbacks = c->c.funcs;
+        if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
+            const char *err = "Unknown error";
+            if (c->c.err != 0) {
+                err = c->c.errstr;
+            }
+            // This is a temporary fix to the bug describe on https://github.com/redis/hiredis/issues/1233.
+            // In case of SSL initialization failure. We need to reset the callbacks value, as the `redisInitiateSSL`
+            // function will not do it for us.
+            ((struct redisAsyncContext*)c)->c.funcs = old_callbacks;
+            RedisModule_Log(mr_staticCtx, "warning", "SSL auth to %s:%d failed, will initiate retry. %s.", c->c.tcp.host, c->c.tcp.port, err);
+            // disconnect async, its not possible to free redisAsyncContext here
+            MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
+            return;
+        }
+    }
+
+    RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d", c->c.tcp.host, c->c.tcp.port, status);
+
+    SendAuthCommandIfNeeded(c, n);
+
+    if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
+        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
+        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
+        redisAsyncCommandArgv((redisAsyncContext*)c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
+        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX]);
+        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = NULL;
+        n->sendClusterTopologyOnNextConnect = false;
+    }
+    redisAsyncCommand((redisAsyncContext*)c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
+    n->status = NodeStatus_HelloSent;
 }
 
 static void MR_ConnectToShard(Node* n){
@@ -765,14 +812,16 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .pendingMessages = pendingMessages,
             .slotRanges = slotRanges,
             .isMe = false,
+            .index = 0,
             .status = NodeStatus_Uninitialized,
             .sendClusterTopologyOnNextConnect = false,
             .runId = NULL,
             .reconnectEvent = NULL,
             .resendHelloEvent = NULL,
     };
-    mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
+    n->index = mr_dictSize(clusterCtx.CurrCluster->nodes);
     n->isMe = strcmp(id, clusterCtx.CurrCluster->myId) == 0;
+    mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
 
     return n;
 }
@@ -1228,7 +1277,7 @@ static int MR_ClusterInnerCommunicationMsgUnblock(RedisModuleCtx *ctx, RedisModu
 }
 
 int MR_NetworkTestCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    MR_ClusterCopyAndSendMsg(NULL, clusterCtx.networkTestMsgReciever, "test msg", strlen("test msg"));
+    MR_ClusterCopyAndSendMsg(NULL, clusterCtx.networkTestMsgReceiver, "test msg", strlen("test msg"));
     RedisModule_ReplyWithSimpleString(ctx, "OK");
     return REDISMODULE_OK;
 }
@@ -1330,9 +1379,16 @@ int MR_ForceShardsConnectionCommand(RedisModuleCtx *ctx, RedisModuleString **arg
     return REDISMODULE_OK;
 }
 
+int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *msg);
+
 int MR_ClusterInnerCommunicationMsg(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
     if(argc != 6){
         return RedisModule_WrongArity(ctx);
+    }
+    functionId fid = (functionId)strtoull(RedisModule_StringPtrLen(argv[3], NULL), NULL, 10);
+    if (fid & FUNCTION_ID_INTERNAL) {
+        RedisModuleString *msg = argv[4];
+        return MR_ClusterExecuteInternalCommands(ctx, msg);
     }
 
     /* We must copy argv because this command defers processing to the LibMR
@@ -1388,7 +1444,7 @@ static unsigned int keyHashSlot(const char *key, int keylen) {
     return MR_Crc16(key+s+1,e-s-1) & 0x3FFF;
 }
 
-size_t MR_ClusterGetSlotdByKey(const char* key, size_t len) {
+size_t MR_ClusterGetSlotByKey(const char* key, size_t len) {
     return keyHashSlot(key, len);
 }
 
@@ -1476,7 +1532,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
         return REDISMODULE_ERR;
     }
 
-    clusterCtx.networkTestMsgReciever = MR_ClusterRegisterMsgReceiver(MR_NetworkTest);
+    clusterCtx.networkTestMsgReceiver = MR_ClusterRegisterMsgReceiver(MR_NetworkTest);
 
     return REDISMODULE_OK;
 }

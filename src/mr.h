@@ -11,6 +11,7 @@
 #define SRC_MR_H_
 
 #include <limits.h>
+#include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -18,6 +19,7 @@
 
 typedef struct MRError MRError;
 
+struct RedisModuleString;
 extern struct RedisModuleCtx* mr_staticCtx;
 
 /* Opaque struct build an execution */
@@ -51,6 +53,11 @@ typedef struct MRObjectType{
     ObjectToString tostring;
 }MRObjectType;
 
+typedef size_t functionId;
+
+// or-ed with a functionId to indicate internal commands (that should run on the recipient server's main message loop)
+#define FUNCTION_ID_INTERNAL    ((functionId)1 << (sizeof(functionId) * 8 - 1))
+
 LIBMR_API int MR_ClusterIsInClusterMode();
 
 /* Opaque struct that is given to execution steps */
@@ -64,15 +71,15 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
 /* Execution Callback definition */
 typedef void(*ExecutionCallback)(ExecutionCtx* ectx, void* pd);
 
-/* step functions signiture */
+typedef void (*MR_RunOnKey_OnDone)(void *pd, Record* result);
+typedef void (*MR_RunOnKey_OnError)(void *pd, MRError* err);
+
+/* step functions signatures */
 typedef Record* (*ExecutionReader)(ExecutionCtx* ectx, void* args);
 typedef Record* (*ExecutionMapper)(ExecutionCtx* ectx, Record* r, void* args);
 typedef int (*ExecutionFilter)(ExecutionCtx* ectx, Record* r, void* args);
 typedef Record* (*ExecutionAccumulator)(ExecutionCtx* ectx, Record* accumulator, Record* r, void* args);
-typedef void (*RemoteTask)(Record* r, void* args, void (*onDone)(void* PD, Record *r), void (*onError)(void* PD, MRError *r), void *pd);
-
-typedef void (*MR_RunOnKey_OnError)(void *pd, MRError* err);
-typedef void (*MR_RunOnKey_OnDone)(void *pd, Record* result);
+typedef void (*RemoteTask)(Record* r, void* args, MR_RunOnKey_OnDone onDone, MR_RunOnKey_OnError onError, void *pd);
 
 /* Run a remote task on a shard responsible for a given key.
  * There is not guarantee on which thread the task will run, if
@@ -94,6 +101,8 @@ LIBMR_API void MR_RunOnKey(const char* keyName,
 
 typedef void (*MR_RunOnShards_OnDone)(void *pd, Record** result, size_t nResults, MRError** errs, size_t nErrs);
 
+typedef void (*MR_ClusterMessageReceiver)(struct RedisModuleCtx *ctx, const char *sender_id, uint8_t type, struct RedisModuleString* payload);
+
 LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  void* args,
                                  Record* r,
@@ -101,8 +110,12 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
                                  void *pd,
                                  size_t timeout);
 
-/* Creatign a new execution builder */
+/* Create either an empty execution builder or one that already includes the initial reader */
+LIBMR_API ExecutionBuilder* MR_CreateEmptyExecutionBuilder();
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
+
+/* Add an internal command step (usually to an empty builder or a builder with internal commands only) */
+LIBMR_API void MR_ExecutionBuilderInternalCommand(ExecutionBuilder* builder, const char *name, void *args);
 
 /* Add map step to the given builder.
  * The function takes ownership on the given
@@ -117,7 +130,7 @@ LIBMR_API void MR_ExecutionBuilderFilter(ExecutionBuilder* builder, const char* 
 /* Add accumulate step to the given builder.
  * The function takes ownership on the given
  * args so the user is not allow to use it anymore. */
-LIBMR_API void MR_ExecutionBuilderBuilAccumulate(ExecutionBuilder* builder, const char* name, void* args);
+LIBMR_API void MR_ExecutionBuilderBuildAccumulate(ExecutionBuilder* builder, const char* name, void* args);
 
 /* Add a collect step to the builder.
  * Will return all the records to the initiator */
@@ -143,6 +156,13 @@ LIBMR_API void MR_FreeExecutionBuilder(ExecutionBuilder* builder);
  * Return NULL on error and set the error on err out param */
 LIBMR_API Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err);
 
+LIBMR_API Execution *MR_GetExecution(const char *message, size_t messageLength);
+
+typedef struct redisReply redisReply;
+/* Set internal commands results in *all* Execution's steps' internalCommand; Run in event-loop */
+/* Return the total number of nodes that completed the execution (and responded with RESP results) */
+LIBMR_API void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e);
+
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
 
@@ -151,6 +171,9 @@ LIBMR_API void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDo
 
 /* Run the given execution, should at most once on each execution. */
 LIBMR_API void MR_Run(Execution* e);
+
+/* Check if the execution is for internal commands */
+LIBMR_API bool MR_IsInternalCommandsExecution(const Execution* e);
 
 /* Free the given execution */
 LIBMR_API void MR_FreeExecution(Execution* e);
@@ -163,6 +186,18 @@ LIBMR_API int MR_RegisterObject(MRObjectType* t);
 
 /* Register a reader */
 LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObjectType* argType);
+
+/* Register an internal command */
+typedef void (*InternalCommand)(struct RedisModuleCtx *ctx, void *args);  // Replies to caller client via the RedisModule_Reply...() family of functions
+typedef Record* (*InternalCommandReplyParser)(const redisReply *reply);  // Creates an object that's "derived from" Record that should be freed by the caller
+typedef struct InternalCommandCallbacks
+{
+    InternalCommand command;
+    InternalCommandReplyParser replyParser;
+} InternalCommandCallbacks;
+/* Note: pass static InternalCommandCallback structs since the pointer is opaque to some of the functions and we don't really need to delete it */
+LIBMR_API void MR_RegisterInternalCommand(const char* name, InternalCommandCallbacks*, MRObjectType* argType);
+
 
 /* Register a map step */
 LIBMR_API void MR_RegisterMapper(const char* name, ExecutionMapper mapper, MRObjectType* argType);

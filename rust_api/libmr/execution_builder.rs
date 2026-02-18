@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 
 use crate::libmr_c_raw::bindings::{
     ExecutionBuilder, MRError, MR_CreateExecution, MR_CreateExecutionBuilder, MR_ErrorGetMessage,
-    MR_ExecutionBuilderBuilAccumulate, MR_ExecutionBuilderCollect, MR_ExecutionBuilderFilter,
+    MR_ExecutionBuilderBuildAccumulate, MR_ExecutionBuilderCollect, MR_ExecutionBuilderFilter,
     MR_ExecutionBuilderMap, MR_ExecutionBuilderReshuffle, MR_FreeExecutionBuilder,
 };
 
@@ -86,7 +86,7 @@ impl<R: record::Record> Builder<R> {
     ) -> Builder<Step::Accumulator> {
         let inner_builder = self.take();
         unsafe {
-            MR_ExecutionBuilderBuilAccumulate(
+            MR_ExecutionBuilderBuildAccumulate(
                 inner_builder,
                 Step::get_name().as_ptr() as *const c_char,
                 Box::into_raw(Box::new(step)) as *const Step as *mut c_void,
