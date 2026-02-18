@@ -467,6 +467,11 @@ static void MR_ClusterAsyncDisconnect(void* ctx){
     redisAsyncFree(n->c);
 }
 
+static void MR_FreeAsyncContext(void* ctx){
+    redisAsyncContext* ac = ctx;
+    redisAsyncFree(ac);
+}
+
 static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, int status){
     RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, %s.", c->c.tcp.host, c->c.tcp.port, status,
             c->data ? "will try to reconnect later" : "no context data");
@@ -732,7 +737,12 @@ static void MR_NodeFreeInternals(Node* n){
         MR_FREE(n->runId);
     }
     if(n->c){
-        redisAsyncFree(n->c);
+        /* Dispatch redisAsyncFree to the event loop thread.
+         * redisAsyncContext is not thread-safe; freeing it from the main
+         * thread while the event loop processes events causes a race that
+         * can leak parsed reply objects. n->c->data is already NULL so
+         * callbacks will not access the freed node. */
+        MR_EventLoopAddTask(MR_FreeAsyncContext, n->c);
     }
     mr_listRelease(n->pendingMessages);
     mr_listRelease(n->slotRanges);
