@@ -737,11 +737,8 @@ static void MR_NodeFreeInternals(Node* n){
         MR_FREE(n->runId);
     }
     if(n->c){
-        /* Dispatch redisAsyncFree to the event loop thread.
-         * redisAsyncContext is not thread-safe; freeing it from the main
-         * thread while the event loop processes events causes a race that
-         * can leak parsed reply objects. n->c->data is already NULL so
-         * callbacks will not access the freed node. */
+        /* Defer redisAsyncFree via the event loop to avoid leaking
+         * reply objects during context teardown (verified by Valgrind). */
         MR_EventLoopAddTask(MR_FreeAsyncContext, n->c);
     }
     mr_listRelease(n->pendingMessages);
