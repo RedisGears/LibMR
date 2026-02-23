@@ -1180,6 +1180,25 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         ++mrCtx.stats.nMissedExecutions;
         return;
     }
+
+    if (!reply) {
+        /* Node disconnected (e.g. cluster topology change).  Mark all steps
+         * as done for this node so the execution can complete with an error
+         * instead of leaking while waiting for a response that will never
+         * arrive. */
+        e->errors = array_append(e->errors,
+            MR_ErrorRecordCreate("node disconnected during execution"));
+        size_t nodesDone = 0;
+        for (size_t i = 0; i < array_len(e->steps); i++) {
+            nodesDone = MR_PerformStepDoneOp(e, i);
+            e->steps[i].flags |= StepFlag_Done;
+        }
+        if (nodesDone == MR_ClusterGetSize()) {
+            MR_ExecutionAddTask(e, MR_RunExecution, NULL);
+        }
+        return;
+    }
+
     RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY && reply->elements > 0);
     RedisModule_Assert(array_len(e->steps) == reply->elements);
     size_t nodesDone = 0;

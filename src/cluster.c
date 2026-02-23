@@ -469,6 +469,18 @@ static void MR_ClusterAsyncDisconnect(void* ctx){
 
 static void MR_FreeAsyncContext(void* ctx){
     redisAsyncContext* ac = ctx;
+    /* Work around hiredis: redisReaderFree does not free partially parsed
+     * reply objects on the reader's task stack.  If a connection is torn
+     * down mid-parse, task[0]->obj holds the root of the partially built
+     * reply tree which would otherwise leak (verified by Valgrind). */
+    redisReader *reader = ac->c.reader;
+    if (reader && reader->ridx >= 0 && reader->task &&
+        reader->task[0]->obj != NULL &&
+        reader->task[0]->obj != reader->reply &&
+        reader->fn && reader->fn->freeObject) {
+        reader->fn->freeObject(reader->task[0]->obj);
+        reader->task[0]->obj = NULL;
+    }
     redisAsyncFree(ac);
 }
 
@@ -747,6 +759,17 @@ static void MR_NodeFreeInternals(Node* n){
 }
 
 static void MR_NodeFree(Node* n){
+    /* Drain pending messages and notify the corresponding executions that this
+     * node disconnected.  Without this, orphaned executions would rely on the
+     * idle-timeout (default 5 s) which may not fire before process exit under
+     * Valgrind, leaking the execution and its results. */
+    while(mr_listLength(n->pendingMessages) > 0){
+        mr_listNode* head = mr_listFirst(n->pendingMessages);
+        NodeSendMsg* message = mr_listNodeValue(head);
+        Execution* e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
+        mr_listDelNode(n->pendingMessages, head);
+        MR_SetInternalCommandResults(n->index, NULL, e);
+    }
     if(n->c){
         n->c->data = NULL;
     }
