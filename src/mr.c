@@ -1558,8 +1558,6 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
 }
 
 LIBMR_API void MR_Fini(void) {
-    mr_thpool_destroy(mrCtx.executionsThreadPool);
-    mrCtx.executionsThreadPool = NULL;
     MR_ClusterFini();
 }
 

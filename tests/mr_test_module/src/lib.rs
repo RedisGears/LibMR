@@ -643,7 +643,7 @@ impl MapStep for UnevenWorkMapper {
 
     fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         if !self.is_initiator {
-            let millis = time::Duration::from_millis(5000);
+            let millis = time::Duration::from_millis(30000);
             thread::sleep(millis);
         }
         Ok(r)
