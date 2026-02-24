@@ -50,7 +50,7 @@ def testBasicMRMassiveData(env, conn):
 def testMaxIdle(env, conn):
     env.expect('lmrtest.reachmaxidle').error().contains('execution max idle reached')
 
-@MRTestDecorator(skipOnValgrind=True)
+@MRTestDecorator()
 def testUnevenWork(env, conn):
     env.expect('lmrtest.unevenwork').equal(['record'])
     try:
