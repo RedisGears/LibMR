@@ -1557,6 +1557,10 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     return REDISMODULE_OK;
 }
 
+LIBMR_API void MR_Fini(void) {
+    MR_ClusterFini();
+}
+
 int MR_RegisterObject(MRObjectType* t) {
     mrCtx.objectTypesDict = array_append(mrCtx.objectTypesDict, t);
     t->id = array_len(mrCtx.objectTypesDict) - 1;

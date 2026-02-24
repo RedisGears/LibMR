@@ -9,7 +9,8 @@
 //! This module provides with the Map-Reduce operations supported.
 
 use crate::libmr_c_raw::bindings::{
-    MRRecordType, MR_CalculateSlot, MR_ClusterIsInClusterMode, MR_Init, MR_IsMySlot, RedisModuleCtx,
+    MRRecordType, MR_CalculateSlot, MR_ClusterIsInClusterMode, MR_Fini as MR_Fini_C, MR_Init,
+    MR_IsMySlot, RedisModuleCtx,
 };
 use redis_module::Context;
 
@@ -57,6 +58,10 @@ pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>) {
     for register in REGISTER_LIST {
         register();
     }
+}
+
+pub fn mr_fini() {
+    unsafe { MR_Fini_C() };
 }
 
 pub fn calc_slot(s: &[u8]) -> usize {
