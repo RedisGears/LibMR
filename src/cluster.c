@@ -759,15 +759,16 @@ static void MR_NodeFreeInternals(Node* n){
 }
 
 static void MR_NodeFree(Node* n){
-    /* Drain pending messages and notify the corresponding executions that this
-     * node disconnected.  Without this, orphaned executions would rely on the
-     * idle-timeout (default 5 s) which may not fire before process exit under
-     * Valgrind, leaking the execution and its results. */
-    while(mr_listLength(n->pendingMessages) > 0){
-        mr_listNode* head = mr_listFirst(n->pendingMessages);
-        NodeSendMsg* message = mr_listNodeValue(head);
+    /* Drain internal-command pending messages and notify their executions
+     * about the disconnect so they complete instead of leaking. */
+    mr_listNode* next;
+    for(mr_listNode* ln = mr_listFirst(n->pendingMessages); ln; ln = next){
+        next = ln->next;
+        NodeSendMsg* message = mr_listNodeValue(ln);
+        if(!(message->msg->function & FUNCTION_ID_INTERNAL))
+            continue;
         Execution* e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
-        mr_listDelNode(n->pendingMessages, head);
+        mr_listDelNode(n->pendingMessages, ln);
         MR_SetInternalCommandResults(n->index, NULL, e);
     }
     if(n->c){
