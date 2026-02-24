@@ -467,23 +467,6 @@ static void MR_ClusterAsyncDisconnect(void* ctx){
     redisAsyncFree(n->c);
 }
 
-static void MR_FreeAsyncContext(void* ctx){
-    redisAsyncContext* ac = ctx;
-    /* Work around hiredis: redisReaderFree does not free partially parsed
-     * reply objects on the reader's task stack.  If a connection is torn
-     * down mid-parse, task[0]->obj holds the root of the partially built
-     * reply tree which would otherwise leak (verified by Valgrind). */
-    redisReader *reader = ac->c.reader;
-    if (reader && reader->ridx >= 0 && reader->task &&
-        reader->task[0]->obj != NULL &&
-        reader->task[0]->obj != reader->reply &&
-        reader->fn && reader->fn->freeObject) {
-        reader->fn->freeObject(reader->task[0]->obj);
-        reader->task[0]->obj = NULL;
-    }
-    redisAsyncFree(ac);
-}
-
 static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, int status){
     RedisModule_Log(mr_staticCtx, "warning", "disconnected : %s:%d, status : %d, %s.", c->c.tcp.host, c->c.tcp.port, status,
             c->data ? "will try to reconnect later" : "no context data");
@@ -749,9 +732,7 @@ static void MR_NodeFreeInternals(Node* n){
         MR_FREE(n->runId);
     }
     if(n->c){
-        /* Defer redisAsyncFree via the event loop to avoid leaking
-         * reply objects during context teardown (verified by Valgrind). */
-        MR_EventLoopAddTask(MR_FreeAsyncContext, n->c);
+        redisAsyncFree(n->c);
     }
     mr_listRelease(n->pendingMessages);
     mr_listRelease(n->slotRanges);
@@ -759,18 +740,6 @@ static void MR_NodeFreeInternals(Node* n){
 }
 
 static void MR_NodeFree(Node* n){
-    /* Drain internal-command pending messages and notify their executions
-     * about the disconnect so they complete instead of leaking. */
-    mr_listNode* next;
-    for(mr_listNode* ln = mr_listFirst(n->pendingMessages); ln; ln = next){
-        next = ln->next;
-        NodeSendMsg* message = mr_listNodeValue(ln);
-        if(!(message->msg->function & FUNCTION_ID_INTERNAL))
-            continue;
-        Execution* e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
-        mr_listDelNode(n->pendingMessages, ln);
-        MR_SetInternalCommandResults(n->index, NULL, e);
-    }
     if(n->c){
         n->c->data = NULL;
     }
