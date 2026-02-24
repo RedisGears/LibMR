@@ -1180,7 +1180,6 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         ++mrCtx.stats.nMissedExecutions;
         return;
     }
-
     RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY && reply->elements > 0);
     RedisModule_Assert(array_len(e->steps) == reply->elements);
     size_t nodesDone = 0;
