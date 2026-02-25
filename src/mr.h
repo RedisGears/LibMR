@@ -181,9 +181,6 @@ LIBMR_API void MR_FreeExecution(Execution* e);
 /* Initialize mr library */
 LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password);
 
-/* Teardown mr library (frees cluster state) */
-LIBMR_API void MR_Fini(void);
-
 /* Register a new object type */
 LIBMR_API int MR_RegisterObject(MRObjectType* t);
 

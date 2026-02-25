@@ -747,10 +747,7 @@ static void MR_NodeFree(Node* n){
     MR_NodeFreeInternals(n);
 }
 
-static void MR_ClusterFree(void){
-    if(!clusterCtx.CurrCluster){
-        return;
-    }
+static void MR_ClusterFree(){
     if(clusterCtx.CurrCluster->myId){
         MR_FREE(clusterCtx.CurrCluster->myId);
     }
@@ -780,10 +777,6 @@ static void MR_ClusterFree(void){
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
-}
-
-void MR_ClusterFini(void){
-    MR_ClusterFree();
 }
 
 static Node* MR_GetNode(const char* id){

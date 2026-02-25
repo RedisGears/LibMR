@@ -23,7 +23,7 @@ use redis_module::{
 
 use mr::libmr::{
     accumulator::AccumulateStep, base_object::BaseObject, calc_slot,
-    execution_builder::create_builder, filter::FilterStep, mapper::MapStep, mr_fini, mr_init,
+    execution_builder::create_builder, filter::FilterStep, mapper::MapStep, mr_init,
     reader::Reader, record::Record, remote_task::run_on_all_shards, remote_task::run_on_key,
     remote_task::RemoteTask, RustMRError,
 };
@@ -643,7 +643,7 @@ impl MapStep for UnevenWorkMapper {
 
     fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         if !self.is_initiator {
-            let millis = time::Duration::from_millis(30000);
+            let millis = time::Duration::from_millis(30000 as u64);
             thread::sleep(millis);
         }
         Ok(r)
@@ -867,11 +867,6 @@ fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
     Status::Ok
 }
 
-fn deinit_func(_ctx: &Context) -> Status {
-    mr_fini();
-    Status::Ok
-}
-
 #[cfg(not(test))]
 redis_module! {
     name: "lmrtest",
@@ -879,7 +874,6 @@ redis_module! {
     allocator: (RedisAlloc, RedisAlloc),
     data_types: [],
     init: init_func,
-    deinit: deinit_func,
     commands: [
         ["lmrtest.dbsize", lmr_dbsize, "readonly", 0,0,0, AclCategory::None],
         ["lmrtest.get", lmr_get, "readonly", 0,0,0, AclCategory::None],
