@@ -314,7 +314,7 @@ static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* r, void*
     redisReply* reply = r;
     if (!reply || !c->data) return;
     Node* node = n;
-    if (reply->type != REDIS_REPLY_ARRAY) {
+    if (reply->type != REDIS_REPLY_ARRAY && reply->type != REDIS_REPLY_ERROR) {
         RedisModule_Log(mr_staticCtx, "warning",
             "Received an invalid status reply from shard %s (%s:%d), will disconnect and try to reconnect.",
             node->id, node->ip, node->port);

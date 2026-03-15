@@ -117,5 +117,6 @@ Record* MR_RecordDeSerialize(mr_BufferReader* reader) {
     return r;
 }
 void MR_RecordFree(Record* r){
+    if (!r) return;
     r->recordType->type.free(r);
 }

@@ -1170,27 +1170,60 @@ int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *ms
     return REDISMODULE_OK;
 }
 
+/* Capture a shard-level error: store in e->errors, mark all steps done
+ * with NULL result placeholders, and trigger the execution if all shards
+ * have responded. */
+static void MR_SetShardError(Execution *e, const char *errStr) {
+    e->errors = array_append(e->errors, MR_ErrorRecordCreate(errStr));
+    size_t nodesDone = 0;
+    for (size_t i = 0; i < array_len(e->steps); i++) {
+        Step *s = e->steps + i;
+        e->results = array_append(e->results, NULL);
+        if (nodesDone == 0)
+            nodesDone = MR_PerformStepDoneOp(e, i);
+        else if (nodesDone != MR_PerformStepDoneOp(e, i))
+            RedisModule_Assert(false);
+        s->flags |= StepFlag_Done;
+    }
+    // if all shards have responded, run the execution
+    if (nodesDone == MR_ClusterGetSize()) {
+        MR_ExecutionAddTask(e, MR_RunExecution, NULL);
+    }
+}
+
 /* Runs on the event loop */
 void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e) {
-    // Since this function is a callback for hiredis the reply will vanish when we return.
-    // Instead of copying it and then invoke executions tasks to parse the replies we simply
-    // parse them here (in the el thread) and leave only the aggregation part (i.e., after all
-    // the nodes have answered) to a worker thread (in the Execution's on-done handler callback).
     if (!e) {
         ++mrCtx.stats.nMissedExecutions;
         return;
     }
+
+    // Top-level error: the shard replied with a single error (e.g. NOPERM on
+    // the INNERCOMMUNICATION command itself) instead of the expected array.
+    if (reply->type == REDIS_REPLY_ERROR) {
+        MR_SetShardError(e, reply->str);
+        return;
+    }
+
     RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY && reply->elements > 0);
     RedisModule_Assert(array_len(e->steps) == reply->elements);
     size_t nodesDone = 0;
     for (size_t i = 0; i < reply->elements; i++) {
         Step *s = e->steps + i;
-        s->internalCommand.reply = reply->element[i]; // First set the reply to be parsed
-        Record *record = s->internalCommand.replyParser(s->internalCommand.reply);  // Then parse it
-        s->internalCommand.reply = NULL;  // And keep things tidy
+        s->internalCommand.reply = reply->element[i];
 
-        e->results = array_append(e->results, record);
-        // All steps should return the same number of done nodes because we update all steps of a single node in one go
+        // Per-element error: one internal command failed (e.g. NOPERM on a key).
+        // Capture the error instead of calling the replyParser.
+        if (s->internalCommand.reply->type == REDIS_REPLY_ERROR) {
+            e->errors = array_append(e->errors, MR_ErrorRecordCreate(s->internalCommand.reply->str));
+            s->internalCommand.reply = NULL;
+            e->results = array_append(e->results, NULL);
+        } else {
+            Record *record = s->internalCommand.replyParser(s->internalCommand.reply);
+            s->internalCommand.reply = NULL;
+            e->results = array_append(e->results, record);
+        }
+
         if (nodesDone == 0)
             nodesDone = MR_PerformStepDoneOp(e, i);
         else if (nodesDone != MR_PerformStepDoneOp(e, i))
@@ -1199,7 +1232,6 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
     }
 
     if (nodesDone == MR_ClusterGetSize()) {
-        // All nodes (shards), including myself, have answered
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
     }
 }
