@@ -68,6 +68,8 @@ LIBMR_API const char* MR_ExecutionCtxGetError(ExecutionCtx* ectx, size_t i);
 LIBMR_API size_t MR_ExecutionCtxGetErrorsLen(ExecutionCtx* ectx);
 LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size_t len);
 
+LIBMR_API void MR_AbortRunningExecutions(void);
+
 /* Execution Callback definition */
 typedef void(*ExecutionCallback)(ExecutionCtx* ectx, void* pd);
 

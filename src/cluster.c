@@ -561,10 +561,10 @@ static int MR_TlsPasswordCallback(char *buf, int size, int rwflag, void *u) {
 }
 
 SSL_CTX* MR_CreateSSLContext(const char *cacert_filename,
-							 const char *cert_filename,
-							 const char *private_key_filename,
-							 const char *private_key_pass,
-							 redisSSLContextError *error)
+                             const char *cert_filename,
+                             const char *private_key_filename,
+                             const char *private_key_pass,
+                             redisSSLContextError *error)
 {
     SSL_CTX *ssl_ctx = SSL_CTX_new(SSLv23_client_method());
     if (!ssl_ctx) {
@@ -748,6 +748,8 @@ static void MR_NodeFree(Node* n){
 }
 
 static void MR_ClusterFree(){
+    MR_AbortRunningExecutions();
+
     if(clusterCtx.CurrCluster->myId){
         MR_FREE(clusterCtx.CurrCluster->myId);
     }
