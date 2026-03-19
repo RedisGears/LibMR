@@ -1198,13 +1198,6 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         return;
     }
 
-    // Top-level error: the shard replied with a single error (e.g. NOPERM on
-    // the INNERCOMMUNICATION command itself) instead of the expected array.
-    if (reply->type == REDIS_REPLY_ERROR) {
-        MR_SetShardError(e, reply->str);
-        return;
-    }
-
     RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY && reply->elements > 0);
     RedisModule_Assert(array_len(e->steps) == reply->elements);
     size_t nodesDone = 0;
