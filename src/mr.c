@@ -1170,27 +1170,6 @@ int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *ms
     return REDISMODULE_OK;
 }
 
-/* Capture a shard-level error: store in e->errors, mark all steps done
- * with NULL result placeholders, and trigger the execution if all shards
- * have responded. */
-static void MR_SetShardError(Execution *e, const char *errStr) {
-    e->errors = array_append(e->errors, MR_ErrorRecordCreate(errStr));
-    size_t nodesDone = 0;
-    for (size_t i = 0; i < array_len(e->steps); i++) {
-        Step *s = e->steps + i;
-        e->results = array_append(e->results, NULL);
-        if (nodesDone == 0)
-            nodesDone = MR_PerformStepDoneOp(e, i);
-        else if (nodesDone != MR_PerformStepDoneOp(e, i))
-            RedisModule_Assert(false);
-        s->flags |= StepFlag_Done;
-    }
-    // if all shards have responded, run the execution
-    if (nodesDone == MR_ClusterGetSize()) {
-        MR_ExecutionAddTask(e, MR_RunExecution, NULL);
-    }
-}
-
 /* Runs on the event loop */
 void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e) {
     if (!e) {
