@@ -1148,7 +1148,8 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
     return e;
 }
 
-/* Runs on redis-server's main loop */
+/* Runs on redis-server's main loop.
+ * Lightweight path: deserialize only what's needed (skip full Execution allocation). */
 int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *msg) {
     size_t dataSize;
     const char* data = RedisModule_StringPtrLen(msg, &dataSize);
@@ -1159,14 +1160,37 @@ int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *ms
     };
     mr_BufferReader buffReader;
     mr_BufferReaderInit(&buffReader, &buff);
-    Execution* e = MR_ExecutionDeserialize(&buffReader);
-    RedisModule_ReplyWithArray(ctx, array_len(e->steps));
-    for (int i = 0; i < array_len(e->steps); i++) {
-        Step *s = e->steps + i;
-        RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
-        s->internalCommand.command(ctx, s->bStep.args);
+
+    size_t executionIdLen;
+    mr_BufferReaderReadBuff(&buffReader, &executionIdLen, NULL);
+    mr_BufferReaderReadLongLong(&buffReader, NULL); /* maxIdle - not needed */
+    size_t nSteps = mr_BufferReaderReadLongLong(&buffReader, NULL);
+
+    RedisModule_ReplyWithArray(ctx, nSteps);
+    for (size_t i = 0; i < nSteps; i++) {
+        size_t type = mr_BufferReaderReadLongLong(&buffReader, NULL);
+        const char *name = NULL;
+        if (mr_BufferReaderReadLongLong(&buffReader, NULL)) {
+            name = mr_BufferReaderReadString(&buffReader, NULL);
+        }
+
+        StepDefinition* sd = MR_GetStepDefinition(type, name);
+        RedisModule_Assert(sd);
+
+        void *args = NULL;
+        if (mr_BufferReaderReadLongLong(&buffReader, NULL)) {
+            MRError* err = NULL;
+            args = sd->type->deserialize(&buffReader, &err);
+            RedisModule_Assert(!err);
+        }
+
+        InternalCommandCallbacks *callbacks = sd->callback;
+        callbacks->command(ctx, args);
+
+        if (args && sd->type->free) {
+            sd->type->free(args);
+        }
     }
-    MR_FreeExecution(e);
     return REDISMODULE_OK;
 }
 
@@ -1406,6 +1430,16 @@ static void MR_ExecutionStart(void* ctx) {
          * we can simply start running it.
          * Note: it will run in the event-loop thread! */
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
+    } else if (MR_IsInternalCommandsExecution(e)) {
+        /* For internal commands, serialize and send directly from the event loop.
+         * This avoids 2 thread transitions (event loop → thread pool → event loop). */
+        mr_Buffer buff;
+        mr_BufferInitialize(&buff);
+        mr_BufferWriter buffWriter;
+        mr_BufferWriterInit(&buffWriter, &buff);
+        MR_ExecutionSerialize(&buffWriter, e);
+        functionId fid = NEW_EXECUTION_RECEIVED_FUNCTION_ID | FUNCTION_ID_INTERNAL;
+        MR_ClusterSendMsgDirect(NULL, fid, buff.buff, buff.size);
     } else {
         MR_ExecutionAddTask(e, MR_ExecutionDistribute, NULL);
     }
