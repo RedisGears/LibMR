@@ -206,6 +206,7 @@ typedef struct AccumulateStep {
 typedef struct InternalCommandStep {
     InternalCommand command;
     InternalCommandReplyParser replyParser;
+    InternalCommandLocal localCommand;
     redisReply *reply;  // to be parsed by the replyParser
     size_t nDone;
 }InternalCommandStep;
@@ -285,6 +286,7 @@ struct Execution {
     ExecutionCallbacks callbacks;
     MR_LoopTaskCtx* timeoutTask;
     size_t timeoutMS;
+
 };
 
 struct ExecutionCtx {
@@ -488,6 +490,7 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
         InternalCommandCallbacks *callbacks = sd->callback;
         s->internalCommand.command = callbacks->command;
         s->internalCommand.replyParser = callbacks->replyParser;
+        s->internalCommand.localCommand = callbacks->localCommand;
         s->internalCommand.reply = NULL;
         s->internalCommand.nDone = 0;
         break;
@@ -1209,7 +1212,6 @@ static void MR_SetShardError(Execution *e, const char *errStr) {
             RedisModule_Assert(false);
         s->flags |= StepFlag_Done;
     }
-    // if all shards have responded, run the execution
     if (nodesDone == MR_ClusterGetSize()) {
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
     }
@@ -1416,6 +1418,76 @@ static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, vo
     pthread_mutex_unlock(&e->eLock);
 }
 
+typedef struct LocalExecResult {
+    Execution *e;
+    Record **results;
+    char *error;
+    size_t nSteps;
+} LocalExecResult;
+
+/* Runs on the event loop — merges local results into the execution. */
+static void MR_SetLocalResults(void *pd) {
+    LocalExecResult *ler = pd;
+    Execution *e = ler->e;
+
+    if (ler->error) {
+        MR_SetShardError(e, ler->error);
+        MR_FREE(ler->error);
+    } else {
+        size_t nodesDone = 0;
+        for (size_t i = 0; i < ler->nSteps; i++) {
+            Step *s = e->steps + i;
+            e->results = array_append(e->results, ler->results[i]);
+            if (nodesDone == 0)
+                nodesDone = MR_PerformStepDoneOp(e, i);
+            else if (nodesDone != MR_PerformStepDoneOp(e, i))
+                RedisModule_Assert(false);
+            s->flags |= StepFlag_Done;
+        }
+        if (nodesDone == MR_ClusterGetSize()) {
+            MR_ExecutionAddTask(e, MR_RunExecution, NULL);
+        }
+    }
+
+    MR_FREE(ler->results);
+    MR_FREE(ler);
+}
+
+/* Runs on the thread pool — acquires GIL, executes local commands, posts results to event loop. */
+static void MR_ExecuteLocalSteps(void *pd) {
+    LocalExecResult *ler = pd;
+    Execution *e = ler->e;
+
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+
+    for (size_t i = 0; i < ler->nSteps; i++) {
+        Step *s = e->steps + i;
+        ler->results[i] = s->internalCommand.localCommand(mr_staticCtx, s->bStep.args);
+        if (!ler->results[i]) {
+            ler->error = MR_STRDUP("local command execution failed");
+            for (size_t j = 0; j < i; j++) {
+                if (ler->results[j])
+                    MR_RecordFree(ler->results[j]);
+                ler->results[j] = NULL;
+            }
+            break;
+        }
+    }
+
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+
+    MR_EventLoopAddTask(MR_SetLocalResults, ler);
+}
+
+static bool MR_HasLocalCommand(const Execution *e) {
+    for (size_t i = 0; i < array_len(e->steps); i++) {
+        if (e->steps[i].bStep.type != StepType_InternalCommand ||
+            !e->steps[i].internalCommand.localCommand)
+            return false;
+    }
+    return true;
+}
+
 /* Happens on the event loop,
  * Preper the execution to run and send
  * it to run on the thread pool. */
@@ -1431,15 +1503,26 @@ static void MR_ExecutionStart(void* ctx) {
          * Note: it will run in the event-loop thread! */
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
     } else if (MR_IsInternalCommandsExecution(e)) {
-        /* For internal commands, serialize and send directly from the event loop.
-         * This avoids 2 thread transitions (event loop → thread pool → event loop). */
+        /* For internal commands, serialize and send directly from the event loop. */
         mr_Buffer buff;
         mr_BufferInitialize(&buff);
         mr_BufferWriter buffWriter;
         mr_BufferWriterInit(&buffWriter, &buff);
         MR_ExecutionSerialize(&buffWriter, e);
         functionId fid = NEW_EXECUTION_RECEIVED_FUNCTION_ID | FUNCTION_ID_INTERNAL;
-        MR_ClusterSendMsgDirect(NULL, fid, buff.buff, buff.size);
+
+        if (MR_HasLocalCommand(e)) {
+            MR_ClusterSendMsgDirectToRemotes(fid, buff.buff, buff.size);
+
+            size_t nSteps = array_len(e->steps);
+            LocalExecResult *ler = MR_CALLOC(1, sizeof(*ler));
+            ler->e = e;
+            ler->nSteps = nSteps;
+            ler->results = MR_CALLOC(nSteps, sizeof(Record*));
+            mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ExecuteLocalSteps, ler);
+        } else {
+            MR_ClusterSendMsgDirect(NULL, fid, buff.buff, buff.size);
+        }
     } else {
         MR_ExecutionAddTask(e, MR_ExecutionDistribute, NULL);
     }
@@ -1463,6 +1546,7 @@ void MR_Run(Execution* e) {
     /* add the execution to the event loop */
     MR_EventLoopAddTask(MR_ExecutionStart, e);
 }
+
 
 bool MR_IsInternalCommandsExecution(const Execution* e) {
     return array_len(e->steps) > 0 && e->steps[0].bStep.type == StepType_InternalCommand;

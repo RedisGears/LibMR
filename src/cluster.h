@@ -22,6 +22,12 @@ void MR_ClusterSendMsg(const char* nodeId, functionId function, char* msg, size_
 /* Like MR_ClusterSendMsg but executes synchronously. Only call from the event loop thread. */
 void MR_ClusterSendMsgDirect(const char* nodeId, functionId function, char* msg, size_t len);
 
+/* Send to all nodes EXCEPT the local node. Takes ownership of msg. Event loop only. */
+void MR_ClusterSendMsgDirectToRemotes(functionId function, char* msg, size_t len);
+
+/* Return the cluster-internal index of the local node. */
+unsigned short MR_ClusterGetLocalNodeIndex(void);
+
 void MR_ClusterCopyAndSendMsg(const char* nodeId, functionId function, char* msg, size_t len);
 
 void MR_ClusterSendMsgBySlot(size_t slot, functionId function, char* msg, size_t len);

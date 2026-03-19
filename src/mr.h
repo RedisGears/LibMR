@@ -190,10 +190,12 @@ LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObj
 /* Register an internal command */
 typedef void (*InternalCommand)(struct RedisModuleCtx *ctx, void *args);  // Replies to caller client via the RedisModule_Reply...() family of functions
 typedef Record* (*InternalCommandReplyParser)(const redisReply *reply);  // Creates an object that's "derived from" Record that should be freed by the caller
+typedef Record* (*InternalCommandLocal)(struct RedisModuleCtx *ctx, void *args);  // Returns Record* directly for local shard execution (bypasses RESP)
 typedef struct InternalCommandCallbacks
 {
     InternalCommand command;
     InternalCommandReplyParser replyParser;
+    InternalCommandLocal localCommand;  // optional: if set, used for local shard instead of TCP self-send
 } InternalCommandCallbacks;
 /* Note: pass static InternalCommandCallback structs since the pointer is opaque to some of the functions and we don't really need to delete it */
 LIBMR_API void MR_RegisterInternalCommand(const char* name, InternalCommandCallbacks*, MRObjectType* argType);

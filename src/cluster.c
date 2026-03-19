@@ -188,66 +188,6 @@ static void MR_ClusterFreeMsg(void* ptr){
     MR_FREE(msg);
 }
 
-static redisReply* CallReplyToRedisReply(RedisModuleCallReply *src) {
-    redisReply *dst = MR_CALLOC(1, sizeof(*dst));
-    switch (RedisModule_CallReplyType(src)) {
-    case REDISMODULE_REPLY_STRING: {
-        size_t len;
-        const char *str = RedisModule_CallReplyStringPtr(src, &len);
-        dst->type = REDIS_REPLY_STRING;
-        dst->str = MR_ALLOC(len + 1);
-        memcpy(dst->str, str, len);
-        dst->str[len] = '\0';
-        dst->len = len;
-        break;
-    }
-    case REDISMODULE_REPLY_ERROR: {
-        size_t len;
-        const char *str = RedisModule_CallReplyStringPtr(src, &len);
-        dst->type = REDIS_REPLY_ERROR;
-        dst->str = MR_ALLOC(len + 1);
-        memcpy(dst->str, str, len);
-        dst->str[len] = '\0';
-        dst->len = len;
-        break;
-    }
-    case REDISMODULE_REPLY_INTEGER:
-        dst->type = REDIS_REPLY_INTEGER;
-        dst->integer = RedisModule_CallReplyInteger(src);
-        break;
-    case REDISMODULE_REPLY_ARRAY: {
-        size_t n = RedisModule_CallReplyLength(src);
-        dst->type = REDIS_REPLY_ARRAY;
-        dst->elements = n;
-        if (n > 0) {
-            dst->element = MR_CALLOC(n, sizeof(*dst->element));
-            for (size_t i = 0; i < n; i++)
-                dst->element[i] = CallReplyToRedisReply(
-                    RedisModule_CallReplyArrayElement(src, i));
-        }
-        break;
-    }
-    case REDISMODULE_REPLY_NULL:
-        dst->type = REDIS_REPLY_NIL;
-        break;
-    default:
-        dst->type = REDIS_REPLY_NIL;
-        break;
-    }
-    return dst;
-}
-
-static void FreeLocalRedisReply(redisReply *reply) {
-    if (!reply) return;
-    if (reply->str) MR_FREE(reply->str);
-    if (reply->element) {
-        for (size_t i = 0; i < reply->elements; i++)
-            FreeLocalRedisReply(reply->element[i]);
-        MR_FREE(reply->element);
-    }
-    MR_FREE(reply);
-}
-
 static unsigned short MR_GetLocalNodeIndex(void) {
     if (!clusterCtx.CurrCluster) return 0;
     mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
@@ -369,6 +309,35 @@ void MR_ClusterSendMsgDirect(const char* nodeId, functionId function, char* msg,
     msgStruct->msgLen = len;
     msgStruct->refCount = 1;
     MR_ClusterSendMsgTask(msgStruct);
+}
+
+void MR_ClusterSendMsgDirectToRemotes(functionId function, char* msg, size_t len) {
+    SendMsg* msgStruct = MR_ALLOC(sizeof(*msgStruct));
+    msgStruct->sendMsgType = SendMsgType_ToAll;
+    msgStruct->function = function;
+    msgStruct->msg = msg;
+    msgStruct->msgLen = len;
+    msgStruct->refCount = 1;
+
+    if (!clusterCtx.CurrCluster) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "try to send a message on an uninitialize cluster, message will not be sent.");
+        MR_ClusterFreeMsg(msgStruct);
+        return;
+    }
+    mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
+    mr_dictEntry *entry = NULL;
+    while ((entry = mr_dictNext(iter))) {
+        Node* n = mr_dictGetVal(entry);
+        if (!n->isMe)
+            MR_ClusterSendMsgToNode(n, msgStruct);
+    }
+    mr_dictReleaseIterator(iter);
+    MR_ClusterFreeMsg(msgStruct);
+}
+
+unsigned short MR_ClusterGetLocalNodeIndex(void) {
+    return MR_GetLocalNodeIndex();
 }
 
 void MR_ClusterCopyAndSendMsg(const char* nodeId, functionId function, char* msg, size_t len) {
