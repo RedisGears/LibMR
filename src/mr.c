@@ -207,7 +207,7 @@ typedef struct InternalCommandStep {
     InternalCommand command;
     InternalCommandReplyParser replyParser;
     InternalCommandLocal localCommand;
-    redisReply *reply;  // to be parsed by the replyParser
+    redisReply *reply;
     size_t nDone;
 }InternalCommandStep;
 
@@ -1238,8 +1238,6 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         Step *s = e->steps + i;
         s->internalCommand.reply = reply->element[i];
 
-        // Per-element error: one internal command failed (e.g. NOPERM on a key).
-        // Capture the error instead of calling the replyParser.
         if (s->internalCommand.reply->type == REDIS_REPLY_ERROR) {
             e->errors = array_append(e->errors, MR_ErrorRecordCreate(s->internalCommand.reply->str));
             s->internalCommand.reply = NULL;
