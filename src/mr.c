@@ -1180,17 +1180,25 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         ++mrCtx.stats.nMissedExecutions;
         return;
     }
+
     RedisModule_Assert(reply->type == REDIS_REPLY_ARRAY && reply->elements > 0);
     RedisModule_Assert(array_len(e->steps) == reply->elements);
     size_t nodesDone = 0;
     for (size_t i = 0; i < reply->elements; i++) {
         Step *s = e->steps + i;
-        s->internalCommand.reply = reply->element[i]; // First set the reply to be parsed
-        Record *record = s->internalCommand.replyParser(s->internalCommand.reply);  // Then parse it
-        s->internalCommand.reply = NULL;  // And keep things tidy
+        s->internalCommand.reply = reply->element[i];
 
-        e->results = array_append(e->results, record);
-        // All steps should return the same number of done nodes because we update all steps of a single node in one go
+        // Per-element error: one internal command failed (e.g. NOPERM on a key).
+        // Capture the error instead of calling the replyParser.
+        if (s->internalCommand.reply->type == REDIS_REPLY_ERROR) {
+            e->errors = array_append(e->errors, MR_ErrorRecordCreate(s->internalCommand.reply->str));
+            s->internalCommand.reply = NULL;
+        } else {
+            Record *record = s->internalCommand.replyParser(s->internalCommand.reply);
+            s->internalCommand.reply = NULL;
+            e->results = array_append(e->results, record);
+        }
+
         if (nodesDone == 0)
             nodesDone = MR_PerformStepDoneOp(e, i);
         else if (nodesDone != MR_PerformStepDoneOp(e, i))
@@ -1199,7 +1207,6 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
     }
 
     if (nodesDone == MR_ClusterGetSize()) {
-        // All nodes (shards), including myself, have answered
         MR_ExecutionAddTask(e, MR_RunExecution, NULL);
     }
 }
