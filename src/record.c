@@ -117,10 +117,5 @@ Record* MR_RecordDeSerialize(mr_BufferReader* reader) {
     return r;
 }
 void MR_RecordFree(Record* r){
-    // e->results may contain NULL entries when a per-element error is captured
-    // in MR_SetInternalCommandResults (e.g. NOPERM). The error goes into
-    // e->errors and a NULL placeholder is appended to e->results, so
-    // MR_FreeExecution must be able to skip it safely.
-    if (!r) return;
     r->recordType->type.free(r);
 }

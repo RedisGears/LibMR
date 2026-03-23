@@ -1193,8 +1193,6 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         if (s->internalCommand.reply->type == REDIS_REPLY_ERROR) {
             e->errors = array_append(e->errors, MR_ErrorRecordCreate(s->internalCommand.reply->str));
             s->internalCommand.reply = NULL;
-            e->results = array_append(e->results, NULL);
-            
         } else {
             Record *record = s->internalCommand.replyParser(s->internalCommand.reply);
             s->internalCommand.reply = NULL;
