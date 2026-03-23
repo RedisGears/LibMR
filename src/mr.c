@@ -1172,6 +1172,10 @@ int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *ms
 
 /* Runs on the event loop */
 void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e) {
+    // Since this function is a callback for hiredis the reply will vanish when we return.
+    // Instead of copying it and then invoke executions tasks to parse the replies we simply
+    // parse them here (in the el thread) and leave only the aggregation part (i.e., after all
+    // the nodes have answered) to a worker thread (in the Execution's on-done handler callback).
     if (!e) {
         ++mrCtx.stats.nMissedExecutions;
         return;
@@ -1190,6 +1194,7 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
             e->errors = array_append(e->errors, MR_ErrorRecordCreate(s->internalCommand.reply->str));
             s->internalCommand.reply = NULL;
             e->results = array_append(e->results, NULL);
+            
         } else {
             Record *record = s->internalCommand.replyParser(s->internalCommand.reply);
             s->internalCommand.reply = NULL;
