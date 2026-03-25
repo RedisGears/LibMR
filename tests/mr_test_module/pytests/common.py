@@ -89,11 +89,8 @@ def shardsConnections(env):
 
 def verifyClusterInitialized(env):
     for conn in shardsConnections(env):
-        try:
-            # try to promote to internal connection
-            conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
-        except Exception:
-            pass
+        # try to promote to internal connection
+        promote_internal_client_if_supported(conn=conn)
         allConnected = False
         while not allConnected:
             res = conn.execute_command('MRTESTS.INFOCLUSTER')
@@ -114,11 +111,7 @@ def initialiseCluster(env):
         # or mac, it is needed.
         env.broadcast('CONFIG', 'set', 'cluster-node-timeout', '120000')
         for conn in shardsConnections(env):
-            try:
-                conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
-            except Exception as e:
-                print(e)
-                pass
+            promote_internal_client_if_supported(conn=conn)
             conn.execute_command('MRTESTS.FORCESHARDSCONNECTION')
         with TimeLimit(2):
             verifyClusterInitialized(env)
@@ -143,6 +136,21 @@ def is_redis_version_is_lower_than(required_version):
 def skip_if_redis_version_is_lower_than(required_version):
     if is_redis_version_is_lower_than(required_version):
         raise unittest.SkipTest()
+
+def promote_internal_client_if_supported(conn=None, env=None):
+    """
+    On Redis 8.0+, run DEBUG MARK-INTERNAL-CLIENT on the current client so it can
+    use internal commands. Older Redis versions do not implement this subcommand.
+    """
+    if is_redis_version_is_lower_than('8.0.0'):
+        return
+    try:
+        if conn is not None:
+            conn.execute_command('debug', 'MARK-INTERNAL-CLIENT')
+        elif env is not None:
+            env.cmd('debug', 'MARK-INTERNAL-CLIENT')
+    except Exception:
+        pass
 
 def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False, skipClusterInitialisation=False, skipOnVersionLowerThan=None, skipOnSingleShard=False, skipOnCluster=False, skipOnValgrind=False, envArgs={}):
     def test_func_generator(test_function):
