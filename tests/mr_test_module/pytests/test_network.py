@@ -1,9 +1,8 @@
-from common import MRTestDecorator
+from common import MRTestDecorator, TimeLimit, promote_internal_client_if_supported
 import gevent.server
 import gevent.queue
 import gevent.socket
 import time
-from common import TimeLimit
 import socket
 
 class Connection(object):
@@ -181,11 +180,8 @@ class ShardMock():
         self.new_conns.put(conn)
 
     def _send_cluster_set(self):
-        try:
-            # try to promote to internal connection
-            self.env.cmd('debug', 'MARK-INTERNAL-CLIENT')
-        except Exception:
-            pass
+        # try to promote to internal connection
+        promote_internal_client_if_supported(env=self.env)
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
         # Build arguments according to MR_SetClusterData parser:
@@ -564,11 +560,8 @@ def testClusterSetAfterHelloResponseFailure(env, conn):
             conn.send_error('err')  # hello response, sending runid
 
             # resend cluster set
-            try:
-                # try to promote to internal connection
-                env.cmd('debug', 'MARK-INTERNAL-CLIENT')
-            except Exception:
-                pass
+            # try to promote to internal connection
+            promote_internal_client_if_supported(env=env)
             res = env.cmd('MRTESTS.CLUSTERSET',
                         'HASHFUNC', 'CRC16',
                         'NUMSLOTS', '16384',
@@ -593,11 +586,8 @@ def testClusterSetAfterDisconnect(env, conn):
 
             conn.close()
 
-            try:
-                # try to promote to internal connection
-                env.cmd('debug', 'MARK-INTERNAL-CLIENT')
-            except Exception:
-                pass
+            # try to promote to internal connection
+            promote_internal_client_if_supported(env=env)
             # resend cluster set
             res = env.cmd('MRTESTS.CLUSTERSET',
                         'HASHFUNC', 'CRC16',
