@@ -1564,6 +1564,24 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     return REDISMODULE_OK;
 }
 
+int MR_ResizeExecutionThreadPoolIfUnstarted(size_t numThreads) {
+    mr_threadpool tp = mrCtx.executionsThreadPool;
+
+    /* MR_Init() not called yet. */
+    if (!tp) {
+        return REDISMODULE_OK;
+    }
+
+    if (mr_thpool_workers_started(tp)) {
+        return REDISMODULE_ERR;
+    }
+
+    if (mr_thpool_resize_unstarted(tp, numThreads) != 0) {
+        return REDISMODULE_ERR;
+    }
+    return REDISMODULE_OK;
+}
+
 int MR_RegisterObject(MRObjectType* t) {
     mrCtx.objectTypesDict = array_append(mrCtx.objectTypesDict, t);
     t->id = array_len(mrCtx.objectTypesDict) - 1;

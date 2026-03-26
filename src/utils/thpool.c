@@ -180,6 +180,44 @@ struct mr_thpool_* mr_thpool_init(int num_threads) {
   return thpool_p;
 }
 
+int mr_thpool_workers_started(mr_threadpool thpool) {
+  return thpool != NULL && thpool->is_threads_started;
+}
+
+int mr_thpool_resize_unstarted(mr_threadpool thpool, int num_threads) {
+
+  if (thpool == NULL) {
+    return -1;
+  }
+
+  if (thpool->is_threads_started) {
+    err("mr_thpool_resize_unstarted(): workers already started\n");
+    return -1;
+  }
+
+  if (num_threads < 0) {
+    num_threads = 0;
+  }
+
+  if (num_threads == 0) {
+    MR_FREE(thpool->threads);
+    thpool->threads = NULL;
+    thpool->total_num_of_threads = 0;
+    return 0;
+  }
+
+  mr_thread** new_pool =
+      (mr_thread**)MR_REALLOC(thpool->threads, (size_t)num_threads * sizeof(struct mr_thread*));
+  if (new_pool == NULL) {
+    err("mr_thpool_resize_unstarted(): realloc failed\n");
+    return -1;
+  }
+
+  thpool->threads = new_pool;
+  thpool->total_num_of_threads = num_threads;
+  return 0;
+}
+
 /* Add work to the thread pool */
 int mr_thpool_add_work(mr_thpool_* thpool_p, void (*function_p)(void*), void* arg_p) {
   mr_job* newjob;

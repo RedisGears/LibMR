@@ -181,6 +181,9 @@ LIBMR_API void MR_FreeExecution(Execution* e);
 /* Initialize mr library */
 LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password);
 
+/* Resize the execution thread pool with a new size if worker threads were never started. */
+LIBMR_API int MR_ResizeExecutionThreadPoolIfUnstarted(size_t numThreads);
+
 /* Register a new object type */
 LIBMR_API int MR_RegisterObject(MRObjectType* t);
 
