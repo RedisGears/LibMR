@@ -1567,9 +1567,9 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
 int MR_ResizeExecutionThreadPoolIfUnstarted(size_t numThreads) {
     mr_threadpool tp = mrCtx.executionsThreadPool;
 
-    /* MR_Init() not called yet. */
+    /* Pool is created in MR_Init(); resize cannot apply until then. */
     if (!tp) {
-        return REDISMODULE_OK;
+        return REDISMODULE_ERR;
     }
 
     if (mr_thpool_workers_started(tp)) {
