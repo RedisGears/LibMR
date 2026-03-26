@@ -141,8 +141,9 @@ struct mr_thpool_* mr_thpool_init(int num_threads) {
   threads_on_hold = 0;
   threads_keepalive = 1;
 
-  if (num_threads < 0) {
-    num_threads = 0;
+  if (num_threads <= 0) {
+    err("thpool_init(): num_threads must be greater than 0\n");
+    return NULL;
   }
 
   /* Make new thread pool */
@@ -195,16 +196,11 @@ int mr_thpool_resize_unstarted(mr_threadpool thpool, int num_threads) {
     return -1;
   }
 
-  if (num_threads < 0) {
-    num_threads = 0;
+  if (num_threads <= 0) {
+    err("mr_thpool_resize_unstarted(): num_threads must be greater than 0\n");
+    return -1;
   }
 
-  if (num_threads == 0) {
-    MR_FREE(thpool->threads);
-    thpool->threads = NULL;
-    thpool->total_num_of_threads = 0;
-    return 0;
-  }
 
   mr_thread** new_pool =
       (mr_thread**)MR_REALLOC(thpool->threads, (size_t)num_threads * sizeof(struct mr_thread*));
