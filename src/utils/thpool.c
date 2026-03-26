@@ -191,26 +191,29 @@ int mr_thpool_resize_unstarted(mr_threadpool thpool, int num_threads) {
     return -1;
   }
 
-  if (thpool->is_threads_started) {
-    err("mr_thpool_resize_unstarted(): workers already started\n");
-    return -1;
-  }
-
   if (num_threads <= 0) {
     err("mr_thpool_resize_unstarted(): num_threads must be greater than 0\n");
     return -1;
   }
 
+  pthread_mutex_lock(&thpool->is_threads_started_lock);
+  if (thpool->is_threads_started) {
+    pthread_mutex_unlock(&thpool->is_threads_started_lock);
+    err("mr_thpool_resize_unstarted(): workers already started\n");
+    return -1;
+  }
 
   mr_thread** new_pool =
       (mr_thread**)MR_REALLOC(thpool->threads, (size_t)num_threads * sizeof(struct mr_thread*));
   if (new_pool == NULL) {
+    pthread_mutex_unlock(&thpool->is_threads_started_lock);
     err("mr_thpool_resize_unstarted(): realloc failed\n");
     return -1;
   }
 
   thpool->threads = new_pool;
   thpool->total_num_of_threads = num_threads;
+  pthread_mutex_unlock(&thpool->is_threads_started_lock);
   return 0;
 }
 
