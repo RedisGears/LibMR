@@ -182,7 +182,13 @@ struct mr_thpool_* mr_thpool_init(int num_threads) {
 }
 
 int mr_thpool_workers_started(mr_threadpool thpool) {
-  return thpool != NULL && thpool->is_threads_started;
+  if (thpool == NULL) {
+    return 0;
+  }
+  pthread_mutex_lock(&thpool->is_threads_started_lock);
+  int is_threads_started = thpool->is_threads_started;
+  pthread_mutex_unlock(&thpool->is_threads_started_lock);
+  return is_threads_started;
 }
 
 int mr_thpool_resize_unstarted(mr_threadpool thpool, int num_threads) {
