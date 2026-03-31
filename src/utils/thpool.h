@@ -36,6 +36,15 @@ typedef struct mr_thpool_* mr_threadpool;
  */
 mr_threadpool mr_thpool_init(int num_threads);
 
+/** @return Non-zero if worker pthreads have been started, 0 otherwise. */
+int mr_thpool_workers_started(mr_threadpool thpool);
+
+/**
+ * Resize an unstarted pool: realloc the thread pointer table and update
+ * total_num_of_threads; job queue and sync primitives are unchanged.
+ * @return 0 on success, -1 on failure (pool unchanged on failure).
+ */
+int mr_thpool_resize_unstarted(mr_threadpool thpool, int num_threads);
 
 /**
  * @brief Add work to the job queue
