@@ -1315,6 +1315,15 @@ static void MR_ExecutionTimedOut(void* ctx) {
     MR_ExecutionAddTask(e, MR_ExecutionTimedOutInternal, NULL);
 }
 
+// Thread pool task: fires the done callback with a cluster topology change error
+static void MR_ExecutionAbortedOnClusterChange(Execution* e, void* pd) {
+    e->errors = array_append(e->errors, MR_ErrorRecordCreate("cluster topology changed"));
+    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
+        return;
+    e->callbacks.done.callback = NULL; /* make sure the done callback will not be called again */
+    MR_FreeExecution(e);
+}
+
 static void MR_ExecutionMain(void* pd) {
     Execution* e = pd;
     pthread_mutex_lock(&e->eLock);
@@ -1324,9 +1333,10 @@ static void MR_ExecutionMain(void* pd) {
 
     ExecutionTaskCallback callback = task->callback;
     callback(e, task->pd);
-    if (callback == MR_DisposeExecution || callback == MR_ExecutionTimedOutInternal) {
-        /* MR_DisposeExecution means we will not longer gets any events
-         * on this execution and we should not longer touch it. */
+    if (callback == MR_DisposeExecution ||
+        callback == MR_ExecutionTimedOutInternal ||
+        callback == MR_ExecutionAbortedOnClusterChange) {
+        // These callbacks dispose the execution; we must not touch it afterwards
         return;
     }
 
@@ -1431,6 +1441,33 @@ LIBMR_API void MR_ExecutionCtxSetError(ExecutionCtx* ectx, const char* err, size
     memcpy(error, err, len);
     error[len] = '\0';
     ectx->err = MR_ErrorRecordCreate(error);
+}
+
+LIBMR_API void MR_AbortRunningExecutions(void) {
+    // Collect pointers first to avoid mutating the dict while iterating
+    ARR(Execution*) to_abort = array_new(Execution*, 10);
+    mr_dictIterator* iter = mr_dictGetIterator(mrCtx.executionsDict);
+    mr_dictEntry* entry;
+    while ((entry = mr_dictNext(iter))) {
+        Execution* e = mr_dictGetVal(entry);
+        // We only care about the initiator execution (i.e., to respond an error to the client immediately).
+        // If there are running executions on other nodes, they will be cleaned upon completion or timeout.
+        if (e->flags & ExecutionFlag_Initiator)
+            to_abort = array_append(to_abort, e);
+    }
+    mr_dictReleaseIterator(iter);
+
+    for (size_t i = 0; i < array_len(to_abort); ++i) {
+        Execution* e = to_abort[i];
+        // Cancel the pending idle-timeout timer if it is already armed
+        if (e->timeoutTask) {
+            MR_EventLoopDelayTaskCancel(e->timeoutTask);
+            e->timeoutTask = NULL;
+        }
+        mr_dictDelete(mrCtx.executionsDict, e->id);
+        MR_ExecutionAddTask(e, MR_ExecutionAbortedOnClusterChange, NULL);
+    }
+    array_free(to_abort);
 }
 
 static void MR_StepDispose(Step* s) {
