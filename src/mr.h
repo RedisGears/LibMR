@@ -168,7 +168,9 @@ LIBMR_API void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
 
-/* Set on execution done callbac */
+/* Set on execution done callback */
+/* Note that the `onDone` should not assume the cluster is stable because it might have been torn down
+ * by `MR_ClusterFree` (e.g., in case of an aborted execution) */
 LIBMR_API void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDone, void* pd);
 
 /* Run the given execution, should at most once on each execution. */
