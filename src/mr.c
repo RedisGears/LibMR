@@ -1443,6 +1443,8 @@ LIBMR_API void MR_AbortRunningExecutions(void) {
     mr_dictEntry* entry;
     while ((entry = mr_dictNext(iter))) {
         Execution* e = mr_dictGetVal(entry);
+        // We only care about the initiator execution (i.e., to respond an error to the client immediately).
+        // If there are running executions on other nodes, they will be cleaned upon completion or timeout.
         if (e->flags & ExecutionFlag_Initiator)
             to_abort = array_append(to_abort, e);
     }
