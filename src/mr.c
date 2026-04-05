@@ -23,8 +23,9 @@
 
 #include <pthread.h>
 #include <hiredis.h>
-
+#ifndef EXECUTION_DEFAULT_MAX_IDLE_MS
 #define EXECUTION_DEFAULT_MAX_IDLE_MS 5000
+#endif
 
 #define ID_LEN REDISMODULE_NODE_ID_LEN + sizeof(size_t)
 #define STR_ID_LEN  REDISMODULE_NODE_ID_LEN + 13
