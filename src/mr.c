@@ -207,6 +207,8 @@ typedef struct AccumulateStep {
 typedef struct InternalCommandStep {
     InternalCommand command;
     InternalCommandReplyParser replyParser;
+    InternalCommandRecordProducer recordProducer;
+    InternalCommandRecordTransformer recordTransformer;
     redisReply *reply;  // to be parsed by the replyParser
     size_t nDone;
 }InternalCommandStep;
@@ -489,6 +491,8 @@ static void MR_InitializeFromStepDef(Step*s, StepDefinition* sd) {
         InternalCommandCallbacks *callbacks = sd->callback;
         s->internalCommand.command = callbacks->command;
         s->internalCommand.replyParser = callbacks->replyParser;
+        s->internalCommand.recordProducer = callbacks->recordProducer;
+        s->internalCommand.recordTransformer = callbacks->recordTransformer;
         s->internalCommand.reply = NULL;
         s->internalCommand.nDone = 0;
         break;
@@ -1165,7 +1169,23 @@ int MR_ClusterExecuteInternalCommands(RedisModuleCtx *ctx, RedisModuleString *ms
     for (int i = 0; i < array_len(e->steps); i++) {
         Step *s = e->steps + i;
         RedisModule_Assert(s->bStep.type == StepType_InternalCommand);
-        s->internalCommand.command(ctx, s->bStep.args);
+        if (s->internalCommand.recordProducer) {
+            Record *record = s->internalCommand.recordProducer(ctx, s->bStep.args);
+            if (record) {
+                mr_Buffer serBuff;
+                mr_BufferInit(&serBuff, 1024);
+                mr_BufferWriter writer;
+                mr_BufferWriterInit(&writer, &serBuff);
+                MR_RecordSerialize(record, &writer);
+                RedisModule_ReplyWithStringBuffer(ctx, serBuff.buff, serBuff.size);
+                MR_RecordFree(record);
+                mr_BufferFree(&serBuff);
+            } else {
+                s->internalCommand.command(ctx, s->bStep.args);
+            }
+        } else {
+            s->internalCommand.command(ctx, s->bStep.args);
+        }
     }
     MR_FreeExecution(e);
     return REDISMODULE_OK;
@@ -1194,6 +1214,24 @@ void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, E
         if (s->internalCommand.reply->type == REDIS_REPLY_ERROR) {
             e->errors = array_append(e->errors, MR_ErrorRecordCreate(s->internalCommand.reply->str));
             s->internalCommand.reply = NULL;
+        } else if (s->internalCommand.recordProducer &&
+                   s->internalCommand.reply->type == REDIS_REPLY_STRING) {
+            // Binary path: the reply is a bulk string containing a serialized Record.
+            mr_Buffer dBuff = {
+                .buff = s->internalCommand.reply->str,
+                .size = s->internalCommand.reply->len,
+                .cap = s->internalCommand.reply->len,
+            };
+            mr_BufferReader reader;
+            mr_BufferReaderInit(&reader, &dBuff);
+            Record *record = MR_RecordDeSerialize(&reader);
+            s->internalCommand.reply = NULL;
+            if (s->internalCommand.recordTransformer) {
+                Record *transformed = s->internalCommand.recordTransformer(record);
+                MR_RecordFree(record);
+                record = transformed;
+            }
+            e->results = array_append(e->results, record);
         } else {
             Record *record = s->internalCommand.replyParser(s->internalCommand.reply);
             s->internalCommand.reply = NULL;
