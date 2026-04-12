@@ -28,8 +28,12 @@ mr_Buffer* mr_BufferNew(size_t initialCap){
 }
 
 void mr_BufferFree(mr_Buffer* buff){
-    MR_FREE(buff->buff);
-    MR_FREE(buff);
+    if (buff->buff) {
+        MR_FREE(buff->buff);
+        buff->buff = NULL;
+    }
+    buff->cap = 0;
+    buff->size = 0;
 }
 
 void mr_BufferAdd(mr_Buffer* buff, const char* data, size_t len){

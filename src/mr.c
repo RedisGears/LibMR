@@ -947,6 +947,14 @@ static Record* MR_RunStep(Execution* e, Step* s) {
 }
 
 static int MR_RunExecutionInternal(Execution* e) {
+    if (MR_IsInternalCommandsExecution(e)) {
+        Step *last = e->steps + array_len(e->steps) - 1;
+        if (last->internalCommand.nDone < MR_ClusterGetSize()) {
+            return 0;
+        }
+        return 1;
+    }
+
     Step* lastStep = e->steps + array_len(e->steps) - 1;
     while (1) {
         Record* record = MR_RunStep(e, lastStep);

@@ -372,6 +372,7 @@ static void MR_ClusterResendHelloMessage(void* ctx){
     }
 
     RedisModule_Log(mr_staticCtx, "notice", "Resending hello request to %s (%s:%d)", n->id, n->ip, n->port);
+    redisAsyncCommand((redisAsyncContext *)n->c, NULL, NULL, "HELLO 2");
     redisAsyncCommand((redisAsyncContext*)n->c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
 }
 
@@ -663,6 +664,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
 
     RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d", c->c.tcp.host, c->c.tcp.port, status);
 
+    redisAsyncCommand((redisAsyncContext *)c, NULL, NULL, "HELLO 2");
     SendAuthCommandIfNeeded(c, n);
 
     if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
