@@ -464,7 +464,10 @@ static void MR_ClusterReconnect(void* ctx){
 
 static void MR_ClusterAsyncDisconnect(void* ctx){
     Node* n = ctx;
-    redisAsyncFree(n->c);
+    if (n->c) {
+        redisAsyncFree(n->c);
+        n->c = NULL;
+    }
 }
 
 static void MR_ClusterOnDisconnectCallback(const struct redisAsyncContext* c, int status){
