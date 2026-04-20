@@ -169,6 +169,37 @@ class Connection(object):
             raise Exception('Invalid response: %s' % line)
 
 
+def _maybe_make_ssl_context(env):
+    """Return a gevent SSLContext configured as a TLS server using the same
+    cert bundle Redis is using, or None if the env is not TLS-enabled.
+
+    This lets ShardMock terminate TLS so that single-shard --tls tests can
+    actually exchange RESP traffic with the mock peer instead of dying at the
+    handshake.
+    """
+    if not getattr(env, 'useTLS', False):
+        return None
+    import gevent.ssl as gssl
+    cert = getattr(env, 'tlsCertFile', None)
+    key = getattr(env, 'tlsKeyFile', None)
+    ca = getattr(env, 'tlsCaCertFile', None)
+    passphrase = getattr(env, 'tlsPassphrase', None) or None
+    ctx = gssl.SSLContext(gssl.PROTOCOL_TLS_SERVER)
+    if cert and key:
+        ctx.load_cert_chain(certfile=cert, keyfile=key, password=passphrase)
+    if ca:
+        ctx.load_verify_locations(cafile=ca)
+    ctx.verify_mode = gssl.CERT_NONE
+    return ctx
+
+
+def _make_stream_server(host, port, handler, env):
+    ssl_context = _maybe_make_ssl_context(env)
+    if ssl_context is not None:
+        return gevent.server.StreamServer((host, port), handler, ssl_context=ssl_context)
+    return gevent.server.StreamServer((host, port), handler)
+
+
 class ShardMock():
     def __init__(self, env, host='localhost'):
         self.env = env
@@ -216,7 +247,7 @@ class ShardMock():
         tmp_sock.bind((self.host, 0))
         self.port = tmp_sock.getsockname()[1]
         tmp_sock.close()
-        self.stream_server = gevent.server.StreamServer((self.host, self.port), self._handle_conn)
+        self.stream_server = _make_stream_server(self.host, self.port, self._handle_conn, self.env)
         self.stream_server.start()
         self._send_cluster_set()
         self.runId = self.env.cmd('MRTESTS.INFOCLUSTER')[3]
@@ -243,7 +274,7 @@ class ShardMock():
         self.stream_server.stop()
 
     def StartListening(self):
-        self.stream_server = gevent.server.StreamServer((self.host, self.port), self._handle_conn)
+        self.stream_server = _make_stream_server(self.host, self.port, self._handle_conn, self.env)
         self.stream_server.start()
 
 def _is_ipv6_enabled():
