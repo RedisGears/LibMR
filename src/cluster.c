@@ -57,7 +57,7 @@
  */
 
 #define CLUSTERSET_MYID_LONG_FORM_INDEX  6
-#define CLUSTERSET_MYID_SHORT_FORM_INDEX 4
+#define CLUSTERSET_MYID_SHORT_FORM_INDEX 2
 
 #define CLUSTER_INNER_COMMUNICATION_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATION"
 #define CLUSTER_HELLO_COMMAND               xstr(MODULE_NAME)".HELLO"
@@ -942,13 +942,6 @@ static void MR_RefreshClusterData(){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
-static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
-    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
-
-    clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
-    clusterCtx.CurrCluster->myIdIndex = CLUSTERSET_MYID_SHORT_FORM_INDEX;
-}
-
 static void GenerateRunId(Cluster* cluster){
     RedisModule_GetRandomHexChars(cluster->runId, RUN_ID_SIZE);
     cluster->runId[RUN_ID_SIZE] = '\0';
@@ -974,6 +967,19 @@ static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
     memset(cluster->myId, '0', zerosPadding);
     memcpy(cluster->myId + zerosPadding, myId, myIdLen);
     cluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
+}
+
+static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc, int myIdIndex){
+    clusterCtx.CurrCluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
+    clusterCtx.CurrCluster->clusterSetCommandSize = argc;
+    clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
+    clusterCtx.CurrCluster->myIdIndex = myIdIndex;
+
+    GenerateRunId(clusterCtx.CurrCluster);
+    CopyClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
+    SetMyId(clusterCtx.CurrCluster, argv, argc);
+
+    clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 }
 
 #define INTERNAL_PASSWORD_MAX_SIZE 100
@@ -1068,22 +1074,76 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
     return index;
 }
 
+static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
+    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
+
+    // Verify we have the help we need from the server
+    RedisModule_Assert(RedisModule_ClusterGetNodeSlotRanges != NULL);
+
+    clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
+    InitClusterData(clusterCtx.CurrCluster, argv, argc, CLUSTERSET_MYID_SHORT_FORM_INDEX);
+    memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
+
+    size_t index = clusterCtx.CurrCluster->myIdIndex + 1;
+    const char *token = RedisModule_StringPtrLen(argv[index], NULL);
+    RedisModule_Assert(strcasecmp(token, "AUTH") == 0);
+    index++;
+    const char *password = RedisModule_StringPtrLen(argv[index], NULL);
+
+    size_t numNodes;
+    char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
+    if (!nodeList) {
+        RedisModule_Log(mr_staticCtx, "warning", "Failed to get cluster nodes list");
+        return;
+    }
+
+    for (size_t i = 0; i < numNodes; i++) {
+        const char *nodeId = nodeList[i];
+        char ip[INET6_ADDRSTRLEN];  // INET6_ADDRSTRLEN includes the closing '\0'
+        int port, flags;
+
+        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, ip, NULL, &port, &flags) != REDISMODULE_OK) {
+            RedisModule_Log(mr_staticCtx, "warning", "Failed to get info for node %s", nodeId);
+            continue;
+        }
+
+        if (!(flags & REDISMODULE_NODE_MASTER)) continue;  // Skip replica nodes
+
+        RedisModule_Assert(MR_GetNode(nodeId) == NULL);
+
+        RedisModuleSlotRangeArray *slots = RedisModule_ClusterGetNodeSlotRanges(mr_staticCtx, nodeId);
+        RedisModule_Assert(slots != NULL && slots->num_ranges > 0);
+        uint16_t minSlot = slots->ranges[0].start;
+        uint16_t maxSlot = slots->ranges[0].end;
+
+        Node* aMasterNode = MR_CreateNode(nodeId, ip, port, password, NULL, minSlot, maxSlot);
+        aMasterNode->isMe = (flags & REDISMODULE_NODE_MYSELF) != 0;
+        if (aMasterNode->isMe) {
+            // fill the fallback single-range; see the comment at the declaration of minSlot and maxSlot
+            clusterCtx.minSlot = minSlot;
+            clusterCtx.maxSlot = maxSlot;
+        }
+
+        for (size_t j = 1; j < slots->num_ranges; j++) {
+            minSlot = slots->ranges[j].start;
+            maxSlot = slots->ranges[j].end;
+            mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
+            for (uint16_t k = minSlot ; k <= maxSlot ; k++)
+                clusterCtx.CurrCluster->slots[k] = aMasterNode;
+        }
+
+        RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
+    }
+
+    RedisModule_FreeClusterNodesList(nodeList);
+}
+
 static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
 
-    // Initialize
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
-    clusterCtx.CurrCluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
-    clusterCtx.CurrCluster->clusterSetCommandSize = argc;
-    clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
-    clusterCtx.CurrCluster->myIdIndex = CLUSTERSET_MYID_LONG_FORM_INDEX;
-
-    GenerateRunId(clusterCtx.CurrCluster);
-    CopyClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
-    SetMyId(clusterCtx.CurrCluster, argv, argc);
+    InitClusterData(clusterCtx.CurrCluster, argv, argc, CLUSTERSET_MYID_LONG_FORM_INDEX);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
-
-    clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     size_t index = clusterCtx.CurrCluster->myIdIndex + 1;
     const char *token = RedisModule_StringPtrLen(argv[index], NULL);
