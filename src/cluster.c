@@ -31,9 +31,33 @@
 
 #define RETRY_INTERVAL 1000 // 1 second
 #define MSG_MAX_RETRIES 3
-#define CLUSTER_SET_MY_ID_INDEX 6
 #define MAX_SLOT 16384
 #define RUN_ID_SIZE 40
+
+/*
+ * The CLUSTERSET command can come in a long form (legacy, very explicit):
+ *
+ * <module-name>.CLUSTERSET
+ * HASHFUNC {hashing_function}
+ * NUMSLOTS {number_of_slots}
+ * MYID {current_shard_id}
+ * [HASREPLICATION]
+ * RANGES {num_of_ranges}
+ *   { SHARD {shard_id}
+ *     [SLOTRANGE {start_slot} {end_slot}]
+ *     ADDR {auth@ip:port} [UNIXADDR {unixsock}]
+ *     [MASTER]
+ *   }
+ *
+ *   or short form (new, more compact; the module will get the topology from the server directly):
+ *
+ * <module-name>.CLUSTERSET
+ * MYID {current_shard_id}
+ * AUTH {auth}  // the assumption is that all nodes use the same auth
+ */
+
+#define CLUSTERSET_MYID_LONG_FORM_INDEX  6
+#define CLUSTERSET_MYID_SHORT_FORM_INDEX 4
 
 #define CLUSTER_INNER_COMMUNICATION_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATION"
 #define CLUSTER_HELLO_COMMAND               xstr(MODULE_NAME)".HELLO"
@@ -119,6 +143,7 @@ typedef struct Cluster {
     mr_dict* nodes;
     Node* slots[MAX_SLOT];
     size_t clusterSetCommandSize;
+    size_t myIdIndex;  // in the clusterSetCommand[]
     char** clusterSetCommand;
     char runId[RUN_ID_SIZE + 1];
 }Cluster;
@@ -364,10 +389,11 @@ static void MR_ClusterResendHelloMessage(void* ctx){
     }
     if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
         RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) on rg.hello retry", n->id, n->ip, n->port);
-        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
+        size_t myIdIndex = clusterCtx.CurrCluster->myIdIndex;
+        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = MR_STRDUP(n->id);
         redisAsyncCommandArgv(n->c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
-        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX]);
-        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = NULL;
+        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[myIdIndex]);
+        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = NULL;
         n->sendClusterTopologyOnNextConnect = false;
     }
 
@@ -665,10 +691,11 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
 
     if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
         RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
-        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = MR_STRDUP(n->id);
+        size_t myIdIndex = clusterCtx.CurrCluster->myIdIndex;
+        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = MR_STRDUP(n->id);
         redisAsyncCommandArgv((redisAsyncContext*)c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
-        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX]);
-        clusterCtx.CurrCluster->clusterSetCommand[CLUSTER_SET_MY_ID_INDEX] = NULL;
+        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[myIdIndex]);
+        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = NULL;
         n->sendClusterTopologyOnNextConnect = false;
     }
     redisAsyncCommand((redisAsyncContext*)c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
@@ -915,58 +942,158 @@ static void MR_RefreshClusterData(){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
-static void MR_SetClusterData(RedisModuleString** argv, int argc){
-    if(clusterCtx.CurrCluster){
-        MR_ClusterFree();
-    }
-
-    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command");
-
-    if(argc < 10){
-        RedisModule_Log(mr_staticCtx, "warning", "Could not parse cluster set arguments");
-        return;
-    }
+static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
+    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
+    clusterCtx.CurrCluster->myIdIndex = CLUSTERSET_MYID_SHORT_FORM_INDEX;
+}
 
-    // generate runID
-    RedisModule_GetRandomHexChars(clusterCtx.CurrCluster->runId, RUN_ID_SIZE);
-    clusterCtx.CurrCluster->runId[RUN_ID_SIZE] = '\0';
+static void GenerateRunId(Cluster* cluster){
+    RedisModule_GetRandomHexChars(cluster->runId, RUN_ID_SIZE);
+    cluster->runId[RUN_ID_SIZE] = '\0';
+}
 
-    clusterCtx.CurrCluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
-    clusterCtx.CurrCluster->clusterSetCommandSize = argc;
-
-    clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
-
+static void CopyClusterSetArgs(Cluster* cluster, RedisModuleString** argv, int argc){
     for(int i = 1 ; i < argc ; ++i){
-        if(i == CLUSTER_SET_MY_ID_INDEX){
-            clusterCtx.CurrCluster->clusterSetCommand[i] = NULL;
+        if(i == cluster->myIdIndex){
+            cluster->clusterSetCommand[i] = NULL;
             continue;
         }
         const char* arg = RedisModule_StringPtrLen(argv[i], NULL);
-        clusterCtx.CurrCluster->clusterSetCommand[i] = MR_STRDUP(arg);
+        cluster->clusterSetCommand[i] = MR_STRDUP(arg);
+    }
+}
+
+static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
+    RedisModule_Assert(cluster->myIdIndex < argc);
+    size_t myIdLen;
+    const char* myId = RedisModule_StringPtrLen(argv[cluster->myIdIndex], &myIdLen);
+    cluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
+    size_t zerosPadding = REDISMODULE_NODE_ID_LEN - myIdLen;
+    memset(cluster->myId, '0', zerosPadding);
+    memcpy(cluster->myId + zerosPadding, myId, myIdLen);
+    cluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
+}
+
+#define INTERNAL_PASSWORD_MAX_SIZE 100
+
+// Parse a SHARD entry into the output arguments and return the index of the last parsed token
+static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
+                           char realId[],
+                           char ip[], unsigned short* port, char password[],
+                           long long* minSlot, long long* maxSlot,
+                           bool* shouldSkip){
+    *shouldSkip = false;
+    const char* token;
+
+    RedisModule_Assert(index < argc);
+    token = RedisModule_StringPtrLen(argv[index], NULL);
+    RedisModule_Assert(strcasecmp(token, "SHARD") == 0);
+
+    index++;
+    RedisModule_Assert(index < argc);
+    size_t shardIdLen;
+    const char* shardId = RedisModule_StringPtrLen(argv[index], &shardIdLen);
+    size_t zerosPadding = REDISMODULE_NODE_ID_LEN - shardIdLen;
+    memset(realId, '0', zerosPadding);
+    memcpy(realId + zerosPadding, shardId, shardIdLen);
+    realId[REDISMODULE_NODE_ID_LEN] = '\0';
+    index++;
+
+    *minSlot = 0;
+    *maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
+    RedisModule_Assert(index < argc);
+    token = RedisModule_StringPtrLen(argv[index], NULL);
+    if (strcasecmp(token, "SLOTRANGE") == 0) {
+        index++;
+        RedisModule_Assert(index < argc);
+        RedisModule_Assert(RedisModule_StringToLongLong(argv[index++], minSlot) == REDISMODULE_OK);
+        RedisModule_Assert(index < argc);
+        RedisModule_Assert(RedisModule_StringToLongLong(argv[index++], maxSlot) == REDISMODULE_OK);
     }
 
-    size_t myIdLen;
-    RedisModule_Assert(CLUSTER_SET_MY_ID_INDEX < argc);
-    const char* myId = RedisModule_StringPtrLen(argv[CLUSTER_SET_MY_ID_INDEX], &myIdLen);
-    clusterCtx.CurrCluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
-    size_t zerosPadding = REDISMODULE_NODE_ID_LEN - myIdLen;
-    memset(clusterCtx.CurrCluster->myId, '0', zerosPadding);
-    memcpy(clusterCtx.CurrCluster->myId + zerosPadding, myId, myIdLen);
-    clusterCtx.CurrCluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
+    RedisModule_Assert(index < argc);
+    token = RedisModule_StringPtrLen(argv[index], NULL);
+    RedisModule_Assert(strcasecmp(token, "ADDR") == 0);
+    index++;
+
+    RedisModule_Assert(index < argc);
+    const char* addr = RedisModule_StringPtrLen(argv[index++], NULL);
+    char* passEnd = strstr(addr, "@");
+    RedisModule_Assert(passEnd != NULL);
+    size_t passSize = passEnd - addr;
+    RedisModule_Assert(passSize < INTERNAL_PASSWORD_MAX_SIZE);
+    memcpy(password, addr, passSize);
+    password[passSize] = '\0';
+
+    addr = passEnd + 1;
+
+    if (addr[0] == '[') {
+        addr += 1; /* skip ipv6 opener `[` */
+    }
+
+    /* Find last `:` */
+    const char *ipEnd = strrchr(addr, ':');
+    RedisModule_Assert(ipEnd != NULL);
+
+    size_t ipSize = ipEnd - addr;
+    if (addr[ipSize - 1] == ']') {
+        --ipSize; /* Skip ipv6 closer `]` */
+    }
+    RedisModule_Assert(ipSize < INET6_ADDRSTRLEN);
+
+    memcpy(ip, addr, ipSize);
+    ip[ipSize] = '\0';
+    *port = (unsigned short)atoi(ipEnd + 1);
+
+    if (index >= argc) {
+        *shouldSkip = true;
+        return index;
+    }
+    token = RedisModule_StringPtrLen(argv[index], NULL);
+    if (strcasecmp(token, "UNIXADDR") == 0)
+        index += 2; // Ignore it and its value
+
+    if (index >= argc) {
+        *shouldSkip = true;
+        return index;
+    }
+    token = RedisModule_StringPtrLen(argv[index], NULL);
+    if (strcasecmp(token, "MASTER") != 0) {
+        *shouldSkip = true; // Ignore non-master nodes
+        return index;
+    }
+
+    return index;
+}
+
+static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
+    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
+
+    // Initialize
+    clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
+    clusterCtx.CurrCluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
+    clusterCtx.CurrCluster->clusterSetCommandSize = argc;
+    clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
+    clusterCtx.CurrCluster->myIdIndex = CLUSTERSET_MYID_LONG_FORM_INDEX;
+
+    GenerateRunId(clusterCtx.CurrCluster);
+    CopyClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
+    SetMyId(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
     clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
-    size_t index = 7;
+    size_t index = clusterCtx.CurrCluster->myIdIndex + 1;
     const char *token = RedisModule_StringPtrLen(argv[index], NULL);
     bool hasReplication = strcasecmp(token, "HASREPLICATION") == 0;
-    if (hasReplication) {
+    if (hasReplication) {  // skip this token; we ignore it
         index++;
         RedisModule_Assert(index < argc);
         token = RedisModule_StringPtrLen(argv[index], NULL);
     }
+
     RedisModule_Assert(strcasecmp(token, "RANGES") == 0);
     index++;
     RedisModule_Assert(index < argc);
@@ -978,79 +1105,20 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     index++;
 
     for (size_t j = 0 ; j < numOfRanges ; ++j){
-        RedisModule_Assert(index < argc);
-        token = RedisModule_StringPtrLen(argv[index], NULL);
-        RedisModule_Assert(strcasecmp(token, "SHARD") == 0);
-
-        index++;
-        RedisModule_Assert(index < argc);
-        size_t shardIdLen;
-        const char* shardId = RedisModule_StringPtrLen(argv[index], &shardIdLen);
         char realId[REDISMODULE_NODE_ID_LEN + 1];
-        size_t zerosPadding = REDISMODULE_NODE_ID_LEN - shardIdLen;
-        memset(realId, '0', zerosPadding);
-        memcpy(realId + zerosPadding, shardId, shardIdLen);
-        realId[REDISMODULE_NODE_ID_LEN] = '\0';
-        index++;
+        char ip[INET6_ADDRSTRLEN];  // INET6_ADDRSTRLEN includes the closing '\0'
+        unsigned short port;
+        char password[INTERNAL_PASSWORD_MAX_SIZE + 1];
+        long long minSlot, maxSlot;
+        bool shouldSkip;
 
-        long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
-        RedisModule_Assert(index < argc);
-        token = RedisModule_StringPtrLen(argv[index], NULL);
-        if (strcasecmp(token, "SLOTRANGE") == 0) {
-            index++;
-            RedisModule_Assert(index < argc);
-            RedisModule_Assert(RedisModule_StringToLongLong(argv[index++], &minSlot) == REDISMODULE_OK);
-            RedisModule_Assert(index < argc);
-            RedisModule_Assert(RedisModule_StringToLongLong(argv[index++], &maxSlot) == REDISMODULE_OK);
-        }
-
-        RedisModule_Assert(index < argc);
-        token = RedisModule_StringPtrLen(argv[index], NULL);
-        RedisModule_Assert(strcasecmp(token, "ADDR") == 0);
-        index++;
-
-        RedisModule_Assert(index < argc);
-        const char* addr = RedisModule_StringPtrLen(argv[index++], NULL);
-        char* passEnd = strstr(addr, "@");
-        RedisModule_Assert(passEnd != NULL);
-        size_t passSize = passEnd - addr;
-        char password[passSize + 1];
-        memcpy(password, addr, passSize);
-        password[passSize] = '\0';
-
-        addr = passEnd + 1;
-
-        if (addr[0] == '[') {
-            addr += 1; /* skip ipv6 opener `[` */
-        }
-
-        /* Find last `:` */
-        const char *ipEnd = strrchr(addr, ':');
-        RedisModule_Assert(ipEnd != NULL);
-
-        size_t ipSize = ipEnd - addr;
-        if (addr[ipSize - 1] == ']') {
-            --ipSize; /* Skip ipv6 closer `]` */
-        }
-
-        char ip[ipSize + 1];
-        memcpy(ip, addr, ipSize);
-        ip[ipSize] = '\0';
-        unsigned short port = (unsigned short)atoi(ipEnd + 1);
-
+        index = ParseShardEntry(argv, argc, index, realId, ip, &port, password, &minSlot, &maxSlot, &shouldSkip);
         if (index >= argc)
             break;
-        token = RedisModule_StringPtrLen(argv[index], NULL);
-        if (strcasecmp(token, "UNIXADDR") == 0)
-            index += 2; // Ignore it and its value
+        if (shouldSkip)
+            continue;
 
-        if (index >= argc)
-            break;
-        token = RedisModule_StringPtrLen(argv[index], NULL);
-        if (strcasecmp(token, "MASTER") != 0)
-            continue; // Ignore non-master nodes
-
-        // All info is parsed, create a new node or update an existing one
+        // Create a new node or update an existing one
         Node* aMasterNode = MR_GetNode(realId);
         if(!aMasterNode){
             aMasterNode = MR_CreateNode(realId, ip, port, password, NULL, minSlot, maxSlot);
@@ -1064,6 +1132,7 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
         }
 
         if (aMasterNode->isMe) {
+            // fill the fallback single-range; see the comment at the declaration of minSlot and maxSlot
             clusterCtx.minSlot = minSlot;
             clusterCtx.maxSlot = maxSlot;
         }
@@ -1072,6 +1141,18 @@ static void MR_SetClusterData(RedisModuleString** argv, int argc){
     }
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+}
+
+static void MR_SetClusterData(RedisModuleString** argv, int argc){
+    if(clusterCtx.CurrCluster){
+        MR_ClusterFree();
+    }
+    if (argc >= 10)
+        SetClusterDataLongForm(argv, argc);
+    else if (argc == 5)
+        SetClusterDataShortForm(argv, argc);
+    else
+        RedisModule_Log(mr_staticCtx, "warning", "Could not parse cluster set arguments");
 }
 
 /* runs in the event loop so its safe to update cluster
@@ -1123,7 +1204,7 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 }
 
 static int MR_ClusterSet(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
-    if(argc < 10){
+    if(argc < 10 && argc != 5){  // Long forms are >= 10; short forms are 5
         RedisModule_ReplyWithError(ctx, "Could not parse cluster set arguments");
         return REDISMODULE_OK;
     }
