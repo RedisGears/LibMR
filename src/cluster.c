@@ -51,13 +51,18 @@
  *
  *   or short form (new, more compact; the module will get the topology from the server directly):
  *
- * <module-name>.CLUSTERSET
- * MYID {current_shard_id}
- * AUTH {auth}  // the assumption is that all nodes use the same auth
+ * <module-name>.CLUSTERSET AUTH {auth}  // the assumption is that all nodes use the same auth
  */
 
 #define CLUSTERSET_MYID_LONG_FORM_INDEX  6
-#define CLUSTERSET_MYID_SHORT_FORM_INDEX 2
+
+static bool IsLongFormClusterSet(int argc) {
+    return argc >= 10;
+}
+
+static bool IsShortFormClusterSet(int argc) {
+    return argc == 3;
+}
 
 #define CLUSTER_INNER_COMMUNICATION_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATION"
 #define CLUSTER_HELLO_COMMAND               xstr(MODULE_NAME)".HELLO"
@@ -143,7 +148,6 @@ typedef struct Cluster {
     mr_dict* nodes;
     Node* slots[MAX_SLOT];
     size_t clusterSetCommandSize;
-    size_t myIdIndex;  // in the clusterSetCommand[]
     char** clusterSetCommand;
     char runId[RUN_ID_SIZE + 1];
 }Cluster;
@@ -388,12 +392,16 @@ static void MR_ClusterResendHelloMessage(void* ctx){
         return;
     }
     if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
-        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) on rg.hello retry", n->id, n->ip, n->port);
-        size_t myIdIndex = clusterCtx.CurrCluster->myIdIndex;
-        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = MR_STRDUP(n->id);
+        bool isLongForm = IsLongFormClusterSet(clusterCtx.CurrCluster->clusterSetCommandSize);
+        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster (%s form) topology to %s (%s:%d) on rg.hello retry",
+                isLongForm ? "long" : "short", n->id, n->ip, n->port);
+        if (isLongForm)
+            clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX] = MR_STRDUP(n->id);
         redisAsyncCommandArgv(n->c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
-        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[myIdIndex]);
-        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = NULL;
+        if (isLongForm) {
+            MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX]);
+            clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX] = NULL;
+        }
         n->sendClusterTopologyOnNextConnect = false;
     }
 
@@ -690,12 +698,16 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
     SendAuthCommandIfNeeded(c, n);
 
     if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
-        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster topology to %s (%s:%d) after reconnect", n->id, n->ip, n->port);
-        size_t myIdIndex = clusterCtx.CurrCluster->myIdIndex;
-        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = MR_STRDUP(n->id);
+        bool isLongForm = IsLongFormClusterSet(clusterCtx.CurrCluster->clusterSetCommandSize);
+        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster (%s form) topology to %s (%s:%d) on after reconnect",
+                isLongForm ? "long" : "short", n->id, n->ip, n->port);
+        if (isLongForm)
+            clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX] = MR_STRDUP(n->id);
         redisAsyncCommandArgv((redisAsyncContext*)c, NULL, NULL, clusterCtx.CurrCluster->clusterSetCommandSize, (const char**)clusterCtx.CurrCluster->clusterSetCommand, NULL);
-        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[myIdIndex]);
-        clusterCtx.CurrCluster->clusterSetCommand[myIdIndex] = NULL;
+        if (isLongForm) {
+            MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX]);
+            clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX] = NULL;
+        }
         n->sendClusterTopologyOnNextConnect = false;
     }
     redisAsyncCommand((redisAsyncContext*)c, MR_HelloResponseArrived, n, CLUSTER_HELLO_COMMAND);
@@ -949,7 +961,7 @@ static void GenerateRunId(Cluster* cluster){
 
 static void CopyClusterSetArgs(Cluster* cluster, RedisModuleString** argv, int argc){
     for(int i = 1 ; i < argc ; ++i){
-        if(i == cluster->myIdIndex){
+        if (IsLongFormClusterSet(argc) && i == CLUSTERSET_MYID_LONG_FORM_INDEX) {
             cluster->clusterSetCommand[i] = NULL;
             continue;
         }
@@ -959,9 +971,13 @@ static void CopyClusterSetArgs(Cluster* cluster, RedisModuleString** argv, int a
 }
 
 static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
-    RedisModule_Assert(cluster->myIdIndex < argc);
-    size_t myIdLen;
-    const char* myId = RedisModule_StringPtrLen(argv[cluster->myIdIndex], &myIdLen);
+    const char* myId = RedisModule_GetMyClusterID();
+    size_t myIdLen = REDISMODULE_NODE_ID_LEN;
+    if (IsLongFormClusterSet(argc)) {
+        RedisModule_Assert(CLUSTERSET_MYID_LONG_FORM_INDEX < argc);
+        myId = RedisModule_StringPtrLen(argv[CLUSTERSET_MYID_LONG_FORM_INDEX], &myIdLen);
+    }
+
     cluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
     size_t zerosPadding = REDISMODULE_NODE_ID_LEN - myIdLen;
     memset(cluster->myId, '0', zerosPadding);
@@ -969,11 +985,10 @@ static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
     cluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
 }
 
-static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc, int myIdIndex){
+static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc){
     clusterCtx.CurrCluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
     clusterCtx.CurrCluster->clusterSetCommandSize = argc;
     clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
-    clusterCtx.CurrCluster->myIdIndex = myIdIndex;
 
     GenerateRunId(clusterCtx.CurrCluster);
     CopyClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
@@ -1081,10 +1096,10 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     RedisModule_Assert(RedisModule_ClusterGetNodeSlotRanges != NULL);
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
-    InitClusterData(clusterCtx.CurrCluster, argv, argc, CLUSTERSET_MYID_SHORT_FORM_INDEX);
+    InitClusterData(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
-    size_t index = clusterCtx.CurrCluster->myIdIndex + 1;
+    size_t index = 1;
     const char *token = RedisModule_StringPtrLen(argv[index], NULL);
     RedisModule_Assert(strcasecmp(token, "AUTH") == 0);
     index++;
@@ -1142,10 +1157,10 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
-    InitClusterData(clusterCtx.CurrCluster, argv, argc, CLUSTERSET_MYID_LONG_FORM_INDEX);
+    InitClusterData(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
-    size_t index = clusterCtx.CurrCluster->myIdIndex + 1;
+    size_t index = CLUSTERSET_MYID_LONG_FORM_INDEX + 1;
     const char *token = RedisModule_StringPtrLen(argv[index], NULL);
     bool hasReplication = strcasecmp(token, "HASREPLICATION") == 0;
     if (hasReplication) {  // skip this token; we ignore it
@@ -1204,12 +1219,12 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
 }
 
 static void MR_SetClusterData(RedisModuleString** argv, int argc){
-    if(clusterCtx.CurrCluster){
+    if(clusterCtx.CurrCluster)
         MR_ClusterFree();
-    }
-    if (argc >= 10)
+
+    if (IsLongFormClusterSet(argc))
         SetClusterDataLongForm(argv, argc);
-    else if (argc == 5)
+    else if (IsShortFormClusterSet(argc))
         SetClusterDataShortForm(argv, argc);
     else
         RedisModule_Log(mr_staticCtx, "warning", "Could not parse cluster set arguments");
@@ -1264,7 +1279,7 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 }
 
 static int MR_ClusterSet(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
-    if(argc < 10 && argc != 5){  // Long forms are >= 10; short forms are 5
+    if (!(IsShortFormClusterSet(argc) || IsLongFormClusterSet(argc))) {
         RedisModule_ReplyWithError(ctx, "Could not parse cluster set arguments");
         return REDISMODULE_OK;
     }
@@ -1278,7 +1293,7 @@ static int MR_ClusterSet(RedisModuleCtx *ctx, RedisModuleString **argv, int argc
 }
 
 static int MR_ClusterSetFromShard(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
-    if(argc < 10){
+    if (!(IsShortFormClusterSet(argc) || IsLongFormClusterSet(argc))) {
         RedisModule_ReplyWithError(ctx, "Could not parse cluster set arguments");
         return REDISMODULE_OK;
     }
