@@ -51,7 +51,7 @@
  *
  *   or short form (new, more compact; the module will get the topology from the server directly):
  *
- * <module-name>.CLUSTERSET AUTH {auth}  // the assumption is that all nodes use the same auth
+ * <module-name>.CLUSTERSET [AUTH {pwd}]  // the assumption is that all nodes use the same (or no) password
  */
 
 #define CLUSTERSET_MYID_LONG_FORM_INDEX  6
@@ -61,7 +61,7 @@ static bool IsLongFormClusterSet(int argc) {
 }
 
 static bool IsShortFormClusterSet(int argc) {
-    return argc == 3;
+    return argc == 1 || argc == 3;
 }
 
 #define CLUSTER_INNER_COMMUNICATION_COMMAND xstr(MODULE_NAME)".INNERCOMMUNICATION"
@@ -1099,11 +1099,20 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
-    size_t index = 1;
-    const char *token = RedisModule_StringPtrLen(argv[index], NULL);
-    RedisModule_Assert(strcasecmp(token, "AUTH") == 0);
-    index++;
-    const char *password = RedisModule_StringPtrLen(argv[index], NULL);
+    const char *password = NULL;
+    switch (argc) {
+    case 1:
+        password = NULL;
+        break;
+    case 3: {
+        const char *token = RedisModule_StringPtrLen(argv[1], NULL);
+        RedisModule_Assert(strcasecmp(token, "AUTH") == 0);
+        password = RedisModule_StringPtrLen(argv[2], NULL);
+        break;
+    }
+    default:
+        RedisModule_Assert(0);
+    }
 
     size_t numNodes;
     char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
