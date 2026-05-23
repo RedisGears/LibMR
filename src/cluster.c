@@ -1093,7 +1093,7 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
 
     // Verify we have the help we need from the server
-    RedisModule_Assert(RedisModule_ClusterGetNodeSlotRanges != NULL);
+    RedisModule_Assert(RedisModule_GetClusterNodeSlotRanges != NULL);
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
@@ -1126,7 +1126,7 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
 
         RedisModule_Assert(MR_GetNode(nodeId) == NULL);
 
-        RedisModuleSlotRangeArray *slots = RedisModule_ClusterGetNodeSlotRanges(mr_staticCtx, nodeId);
+        RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
         RedisModule_Assert(slots != NULL && slots->num_ranges > 0);
         uint16_t minSlot = slots->ranges[0].start;
         uint16_t maxSlot = slots->ranges[0].end;
