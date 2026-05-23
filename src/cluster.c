@@ -1149,8 +1149,10 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
 
         RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
     }
-
     RedisModule_FreeClusterNodesList(nodeList);
+
+    clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
+    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
 static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
