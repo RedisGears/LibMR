@@ -31,7 +31,7 @@
 
 #define RETRY_INTERVAL 1000 // 1 second
 #define MSG_MAX_RETRIES 3
-#define MAX_SLOT 16384
+#define NUMBER_OF_SLOTS 16384
 #define RUN_ID_SIZE 40
 
 /*
@@ -146,7 +146,7 @@ typedef struct Node{
 typedef struct Cluster {
     char* myId;
     mr_dict* nodes;
-    Node* slots[MAX_SLOT];
+    Node* slots[NUMBER_OF_SLOTS];
     size_t clusterSetCommandSize;
     char** clusterSetCommand;
     char runId[RUN_ID_SIZE + 1];
@@ -1136,9 +1136,13 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_Assert(MR_GetNode(nodeId) == NULL);
 
         RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
-        RedisModule_Assert(slots != NULL && slots->num_ranges > 0);
-        uint16_t minSlot = slots->ranges[0].start;
-        uint16_t maxSlot = slots->ranges[0].end;
+        RedisModule_Assert(slots != NULL);
+        uint16_t minSlot = 0;
+        uint16_t maxSlot = NUMBER_OF_SLOTS - 1;
+        if (slots->num_ranges > 0) {
+            minSlot = slots->ranges[0].start;
+            maxSlot = slots->ranges[0].end;
+        }
 
         Node* aMasterNode = MR_CreateNode(nodeId, ip, port, password, NULL, minSlot, maxSlot);
         aMasterNode->isMe = (flags & REDISMODULE_NODE_MYSELF) != 0;
