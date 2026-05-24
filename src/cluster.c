@@ -1137,8 +1137,7 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
 
         RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
         RedisModule_Assert(slots != NULL);
-        uint16_t minSlot = 0;
-        uint16_t maxSlot = NUMBER_OF_SLOTS - 1;
+        long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
         if (slots->num_ranges > 0) {
             minSlot = slots->ranges[0].start;
             maxSlot = slots->ranges[0].end;
