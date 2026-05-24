@@ -699,7 +699,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
 
     if(n->sendClusterTopologyOnNextConnect && clusterCtx.CurrCluster->clusterSetCommand){
         bool isLongForm = IsLongFormClusterSet(clusterCtx.CurrCluster->clusterSetCommandSize);
-        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster (%s form) topology to %s (%s:%d) on after reconnect",
+        RedisModule_Log(mr_staticCtx, "notice", "Sending cluster (%s form) topology to %s (%s:%d) after reconnect",
                 isLongForm ? "long" : "short", n->id, n->ip, n->port);
         if (isLongForm)
             clusterCtx.CurrCluster->clusterSetCommand[CLUSTERSET_MYID_LONG_FORM_INDEX] = MR_STRDUP(n->id);
