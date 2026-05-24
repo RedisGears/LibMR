@@ -1142,6 +1142,11 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
         }
 
         Node* aMasterNode = MR_CreateNode(nodeId, ip, port, password, NULL, minSlot, maxSlot);
+        // Note that MR_CreateNode has already set the isMe bool, but since here we have the flags
+        // which are the "formal" way to know if this node is me, we override it here.
+        // Basically they should have the same outcome, but given the various ways we name a node
+        // (e.g., in RE they are the shard uids, left-padded with 0s), it's safer not to assert
+        // that they are the same and use the flags as the actual true value.
         aMasterNode->isMe = (flags & REDISMODULE_NODE_MYSELF) != 0;
         if (aMasterNode->isMe) {
             // fill the fallback single-range; see the comment at the declaration of minSlot and maxSlot
