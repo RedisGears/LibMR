@@ -986,15 +986,15 @@ static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
 }
 
 static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc){
-    clusterCtx.CurrCluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
-    clusterCtx.CurrCluster->clusterSetCommandSize = argc;
-    clusterCtx.CurrCluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
+    cluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
+    cluster->clusterSetCommandSize = argc;
+    cluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
 
-    GenerateRunId(clusterCtx.CurrCluster);
-    CopyClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
-    SetMyId(clusterCtx.CurrCluster, argv, argc);
+    GenerateRunId(cluster);
+    CopyClusterSetArgs(cluster, argv, argc);
+    SetMyId(cluster, argv, argc);
 
-    clusterCtx.CurrCluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    cluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 }
 
 #define INTERNAL_PASSWORD_MAX_SIZE 100
