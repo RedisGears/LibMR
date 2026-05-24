@@ -1133,8 +1133,6 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
 
         if (!(flags & REDISMODULE_NODE_MASTER)) continue;  // Skip replica nodes
 
-        RedisModule_Assert(MR_GetNode(nodeId) == NULL);
-
         RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
         RedisModule_Assert(slots != NULL);
         long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
