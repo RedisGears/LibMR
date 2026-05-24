@@ -1152,10 +1152,11 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
             clusterCtx.maxSlot = maxSlot;
         }
 
-        for (size_t j = 1; j < slots->num_ranges; j++) {
+        for (size_t j = 0; j < slots->num_ranges; j++) {
             minSlot = slots->ranges[j].start;
             maxSlot = slots->ranges[j].end;
-            mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
+            if (j > 0)  // The 0 case is handled by the MR_CreateNode() above
+                mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
             for (uint16_t k = minSlot ; k <= maxSlot ; k++)
                 clusterCtx.CurrCluster->slots[k] = aMasterNode;
         }
