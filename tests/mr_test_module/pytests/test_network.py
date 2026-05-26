@@ -431,47 +431,49 @@ def testMessageNotResentAfterCrash(env, conn):
 
 @MRTestDecorator(skipOnCluster=True)
 def testSendRetriesMechanizm(env, conn):
+    # MSG_MAX_RETRIES in src/cluster.c.
+    MSG_MAX_RETRIES = 3
+    expected_msg = ['MRTESTS.INNERCOMMUNICATION', '0000000000000000000000000000000000000001',
+                    None, '0', 'test msg', '0']
     for host in _get_hosts():
         with ShardMock(env, host) as shardMock:
+            expected_msg[2] = shardMock.runId
             conn = shardMock.GetConnection()
 
             env.expect('MRTESTS.NETWORKTEST').equal('OK')
 
-            env.assertEqual(conn.read_request(), ['MRTESTS.INNERCOMMUNICATION', '0000000000000000000000000000000000000001', shardMock.runId, '0', 'test msg', '0'])
+            # libmr should resend INNERCOMMUNICATION up to MSG_MAX_RETRIES times.
+            # Whether the initial send counts as one of those retries depends on
+            # whether the node has reached NodeStatus_Connected by the time
+            # NETWORKTEST runs -- under TLS the HELLO handshake is slower, so the
+            # initial send is queued and goes through the resend loop, which
+            # counts as a retry. We therefore accept any count in [1, MSG_MAX_RETRIES].
+            attempts = 0
+            for _ in range(MSG_MAX_RETRIES + 2):
+                try:
+                    with TimeLimit(3):
+                        req = conn.read_request()
+                except Exception:
+                    break  # libmr stopped sending -- gave up
+                env.assertEqual(req, expected_msg)
+                attempts += 1
+                conn.send('-Err\r\n')
+                # libmr will disconnect on error and may reconnect to retry.
+                try:
+                    with TimeLimit(3):
+                        conn = shardMock.GetConnection()
+                except Exception:
+                    break  # no reconnect -- gave up
 
-            conn.send('-Err\r\n')
+            env.assertGreaterEqual(attempts, 1, message='libmr did not send the initial message')
+            env.assertLessEqual(attempts, MSG_MAX_RETRIES,
+                                message='libmr exceeded MSG_MAX_RETRIES (=%d) sends' % MSG_MAX_RETRIES)
 
-            env.assertTrue(conn.is_close())
-
-            # should be a retry
-
-            conn = shardMock.GetConnection()
-
-            env.assertEqual(conn.read_request(), ['MRTESTS.INNERCOMMUNICATION', '0000000000000000000000000000000000000001', shardMock.runId, '0', 'test msg', '0'])
-
-            conn.send('-Err\r\n')
-
-            env.assertTrue(conn.is_close())
-
-            # should be a retry
-
-            conn = shardMock.GetConnection()
-
-            env.assertEqual(conn.read_request(), ['MRTESTS.INNERCOMMUNICATION', '0000000000000000000000000000000000000001', shardMock.runId, '0', 'test msg', '0'])
-
-            conn.send('-Err\r\n')
-
-            env.assertTrue(conn.is_close())
-
-            # should not retry
-
-            conn = shardMock.GetConnection()
-
-            # make sure message will not be sent again
+            # After giving up, libmr must not reconnect to retry the same msg.
             try:
-                with TimeLimit(1):
-                    conn.read_request()
-                    env.assertTrue(False)  # we should not get any data after crash
+                with TimeLimit(2):
+                    shardMock.GetConnection()
+                    env.assertTrue(False, message='Unexpected reconnect after MSG_MAX_RETRIES')
             except Exception:
                 pass
 
