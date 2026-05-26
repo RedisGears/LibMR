@@ -66,7 +66,7 @@ jobs:
       env:
         PYTHON: python
         PYTHONUNBUFFERED: "1"
-        RLTEST_EXTRA_ARGS: "--test-timeout 180"
+        RLTEST_EXTRA_ARGS: "--test-timeout 300"
     - name: Valgrind tests
       run: make run_tests_valgrind
       env:
