@@ -1131,7 +1131,10 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     }
 
     for (size_t i = 0; i < numNodes; i++) {
-        const char *nodeId = nodeList[i];
+        char nodeId[REDISMODULE_NODE_ID_LEN + 1];  // nodeList[i] is not null-terminated
+        memcpy(nodeId, nodeList[i], REDISMODULE_NODE_ID_LEN);
+        nodeId[REDISMODULE_NODE_ID_LEN] = '\0';
+
         char ip[INET6_ADDRSTRLEN];  // INET6_ADDRSTRLEN includes the closing '\0'
         int port, flags;
 
