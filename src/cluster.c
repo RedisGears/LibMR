@@ -1092,8 +1092,17 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
 static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
 
-    // Verify we have the help we need from the server
-    RedisModule_Assert(RedisModule_GetClusterNodeSlotRanges != NULL);
+    // RedisModule_GetClusterNodeSlotRanges may be NULL when the host Redis
+    // build does not export it (e.g. OSS Redis without the backport). Skip
+    // the path with a warning instead of crashing; the cluster stays
+    // unconfigured until a long-form CLUSTERSET or REFRESHCLUSTER arrives.
+    if (RedisModule_GetClusterNodeSlotRanges == NULL) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET received, but RedisModule_GetClusterNodeSlotRanges "
+            "is not available in this Redis build. Use long-form CLUSTERSET or "
+            "REFRESHCLUSTER to configure the cluster.");
+        return;
+    }
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
