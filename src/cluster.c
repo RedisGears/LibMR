@@ -1092,8 +1092,20 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
 static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
 
-    // Verify we have the help we need from the server
-    RedisModule_Assert(RedisModule_GetClusterNodeSlotRanges != NULL);
+    // Short-form CLUSTERSET requires RedisModule_GetClusterNodeSlotRanges, which
+    // was added to redis core in https://github.com/redis/redis/pull/14953
+    // (planned for OSS 8.10, backported to Enterprise 8.4). If the host redis
+    // does not export this API the function pointer stays NULL after module
+    // load; bail out with a warning rather than crashing the shard. The cluster
+    // remains unconfigured until a long-form CLUSTERSET or a REFRESHCLUSTER
+    // arrives, which matches OSS-mode expectations.
+    if (RedisModule_GetClusterNodeSlotRanges == NULL) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET received, but RedisModule_GetClusterNodeSlotRanges "
+            "is not available in this Redis build. Use long-form CLUSTERSET or "
+            "REFRESHCLUSTER to configure the cluster.");
+        return;
+    }
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
