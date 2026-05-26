@@ -19,4 +19,4 @@ else
 fi
 
 
-"${PYTHON:-python}" -m RLTest --verbose-information-on-failure --test-timeout 120 --randomize-ports --module $MODULE_PATH --clear-logs "$@" --oss_password "password" --enable-debug-command
+"${PYTHON:-python}" -m RLTest --verbose-information-on-failure --no-progress ${RLTEST_EXTRA_ARGS:-} --randomize-ports --module $MODULE_PATH --clear-logs "$@" --oss_password "password" --enable-debug-command
