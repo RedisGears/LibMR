@@ -1563,31 +1563,6 @@ static void MR_GetRedisVersion() {
     RedisModule_FreeCallReply(reply);
 }
 
-/*
- * Drain the executions threadpool on shutdown so any pending
- * MR_DisposeExecution tasks (queued by MR_DeleteExecution after the
- * synchronous mr_dictDelete) actually run their MR_FreeExecution before
- * redis-server exits. Without this hook, an Execution that was logically
- * cleaned up (removed from mrCtx.executionsDict) but whose dispose task
- * was still sitting in the worker queue at shutdown is "definitely lost"
- * to valgrind -- the dict no longer references it, and the worker pool
- * is torn down with the process without ever running the dispose task.
- *
- * Note: tasks queued during this drain (e.g. NOTIFY_DONE follow-ups)
- * cause mr_thpool_wait to loop until truly idle. In practice these are
- * short MR_FreeExecution calls and the wait completes within milliseconds.
- */
-static void MR_OnShutdown(RedisModuleCtx *ctx, RedisModuleEvent eid,
-                          uint64_t subevent, void *data) {
-    REDISMODULE_NOT_USED(ctx);
-    REDISMODULE_NOT_USED(eid);
-    REDISMODULE_NOT_USED(subevent);
-    REDISMODULE_NOT_USED(data);
-    if (mrCtx.executionsThreadPool) {
-        mr_thpool_wait(mrCtx.executionsThreadPool);
-    }
-}
-
 int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
@@ -1623,13 +1598,6 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
     MR_RecordInitialize();
 
     MR_EventLoopStart();
-
-    /* Drain the executions threadpool on shutdown to flush any pending
-     * MR_DisposeExecution tasks; see MR_OnShutdown comment for rationale. */
-    if (RedisModule_SubscribeToServerEvent) {
-        RedisModule_SubscribeToServerEvent(ctx, RedisModuleEvent_Shutdown,
-                                           MR_OnShutdown);
-    }
 
     return REDISMODULE_OK;
 }
