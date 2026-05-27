@@ -442,15 +442,34 @@ def testSendRetriesMechanizm(env, conn):
 
             env.expect('MRTESTS.NETWORKTEST').equal('OK')
 
-            # libmr sends INNERCOMMUNICATION and retries on -Err up to
-            # MSG_MAX_RETRIES times. The retry counter is incremented inside
-            # MR_HelloResponseArrived's resend loop, so whether the initial
-            # send counts as one of those retries depends on whether the
-            # node has reached NodeStatus_Connected by the time NETWORKTEST
-            # runs -- under TLS the HELLO handshake is slower, so the
-            # initial send is queued and replayed through the resend loop,
-            # which burns retry #1. We therefore accept either
-            # MSG_MAX_RETRIES (non-TLS) or MSG_MAX_RETRIES - 1 (TLS).
+            # libmr sends INNERCOMMUNICATION and retries on -Err. The
+            # OBSERVABLE count of attempts differs by transport:
+            #
+            #   non-TLS: 3 sends. NETWORKTEST hits MR_ClusterSendMsgToNode
+            #            with status == NodeStatus_Connected, the initial
+            #            send goes out synchronously with retries=0; the
+            #            two subsequent reconnects fire the resend loop in
+            #            MR_HelloResponseArrived which bumps retries to 1
+            #            then 2 (each < MSG_MAX_RETRIES=3), so two further
+            #            sends go out, then retries hits 3 and we "Gave up".
+            #
+            #   TLS:     2 sends. The TLS+AUTH+HELLO handshake makes
+            #            NETWORKTEST run while status == NodeStatus_HelloSent,
+            #            so MR_ClusterSendMsgToNode logs "message was not
+            #            sent because status is not connected" and just
+            #            queues the msg. The first actual send happens via
+            #            the same resend loop, which means retries
+            #            increments for that initial transmission too --
+            #            burning one of the three allowed attempts.
+            #
+            # That asymmetry is a latent off-by-one in
+            # MR_HelloResponseArrived (src/cluster.c:439-454): the
+            # `++sentMsg->retries` is unconditional, but for a msg that
+            # has never been sent before, the increment shouldn't count.
+            # Tracking separately rather than fixing in this PR; tighten
+            # this assertion back to `== MSG_MAX_RETRIES` once that lands.
+            #
+            # Until then, accept either count.
             attempts = 0
             for _ in range(MSG_MAX_RETRIES + 2):
                 try:
