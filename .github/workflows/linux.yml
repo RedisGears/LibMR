@@ -71,3 +71,11 @@ jobs:
       run: make run_tests_valgrind
       env:
         PYTHON: python
+    - name: Upload test logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-logs-${{ matrix.redis_version }}
+        path: tests/mr_test_module/logs/
+        if-no-files-found: ignore
+        retention-days: 7
