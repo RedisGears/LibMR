@@ -442,12 +442,15 @@ def testSendRetriesMechanizm(env, conn):
 
             env.expect('MRTESTS.NETWORKTEST').equal('OK')
 
-            # libmr should resend INNERCOMMUNICATION up to MSG_MAX_RETRIES times.
-            # Whether the initial send counts as one of those retries depends on
-            # whether the node has reached NodeStatus_Connected by the time
-            # NETWORKTEST runs -- under TLS the HELLO handshake is slower, so the
-            # initial send is queued and goes through the resend loop, which
-            # counts as a retry. We therefore accept any count in [1, MSG_MAX_RETRIES].
+            # libmr sends INNERCOMMUNICATION and retries on -Err up to
+            # MSG_MAX_RETRIES times. The retry counter is incremented inside
+            # MR_HelloResponseArrived's resend loop, so whether the initial
+            # send counts as one of those retries depends on whether the
+            # node has reached NodeStatus_Connected by the time NETWORKTEST
+            # runs -- under TLS the HELLO handshake is slower, so the
+            # initial send is queued and replayed through the resend loop,
+            # which burns retry #1. We therefore accept either
+            # MSG_MAX_RETRIES (non-TLS) or MSG_MAX_RETRIES - 1 (TLS).
             attempts = 0
             for _ in range(MSG_MAX_RETRIES + 2):
                 try:
@@ -458,24 +461,37 @@ def testSendRetriesMechanizm(env, conn):
                 env.assertEqual(req, expected_msg)
                 attempts += 1
                 conn.send('-Err\r\n')
-                # libmr will disconnect on error and may reconnect to retry.
+                # libmr must disconnect after receiving the -Err.
+                env.assertTrue(conn.is_close(),
+                               message='libmr did not close connection after -Err on attempt %d' % attempts)
+                # libmr may reconnect to retry; bail out if it doesn't.
                 try:
                     with TimeLimit(3):
                         conn = shardMock.GetConnection()
                 except Exception:
-                    break  # no reconnect -- gave up
+                    break
 
-            env.assertGreaterEqual(attempts, 1, message='libmr did not send the initial message')
+            env.assertGreaterEqual(attempts, MSG_MAX_RETRIES - 1,
+                                   message='libmr sent fewer than MSG_MAX_RETRIES-1 (=%d) attempts: %d' %
+                                           (MSG_MAX_RETRIES - 1, attempts))
             env.assertLessEqual(attempts, MSG_MAX_RETRIES,
-                                message='libmr exceeded MSG_MAX_RETRIES (=%d) sends' % MSG_MAX_RETRIES)
+                                message='libmr exceeded MSG_MAX_RETRIES (=%d) attempts: %d' %
+                                        (MSG_MAX_RETRIES, attempts))
 
             # After giving up, libmr must not reconnect to retry the same msg.
+            # Don't put the failure assertion inside the try block -- a
+            # successful GetConnection followed by assertTrue(False) would
+            # raise TestAssertionFailure when run with --exit-on-failure, and
+            # the bare `except Exception` would silently swallow it.
+            got_unexpected_reconnect = False
             try:
                 with TimeLimit(2):
                     shardMock.GetConnection()
-                    env.assertTrue(False, message='Unexpected reconnect after MSG_MAX_RETRIES')
+                    got_unexpected_reconnect = True
             except Exception:
-                pass
+                pass  # expected: no more reconnects after MSG_MAX_RETRIES
+            env.assertFalse(got_unexpected_reconnect,
+                            message='Unexpected reconnect after MSG_MAX_RETRIES')
 
 @MRTestDecorator(skipOnCluster=True)
 def testSendTopology(env, conn):
