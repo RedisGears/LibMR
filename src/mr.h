@@ -182,6 +182,14 @@ LIBMR_API bool MR_IsInternalCommandsExecution(const Execution* e);
 /* Free the given execution */
 LIBMR_API void MR_FreeExecution(Execution* e);
 
+/* MOD-15307: drain LibMR background threads (worker pool + event-loop thread) to a safe,
+ * lock-free point before fork(), so the forked child does not inherit a libc lock held by a
+ * LibMR thread (ghost-lock). Bounded (a few seconds), then proceeds anyway (fail-open). Call
+ * on the main thread from the FORK_CHILD_PRE module event; pair every call with exactly one
+ * MR_ResumeAfterFork() (on FORK_CHILD_BORN, or if the fork was cancelled). */
+LIBMR_API void MR_DrainForFork(void);
+LIBMR_API void MR_ResumeAfterFork(void);
+
 /* Initialize mr library */
 LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password);
 

@@ -22,6 +22,8 @@
 #include "utils/buffer.h"
 
 #include <pthread.h>
+#include <time.h>
+#include <errno.h>
 #include <hiredis.h>
 #ifndef EXECUTION_DEFAULT_MAX_IDLE_MS
 #define EXECUTION_DEFAULT_MAX_IDLE_MS 5000
@@ -1406,6 +1408,111 @@ void MR_ExecutionSetOnDoneHandler(Execution* e, ExecutionCallback onDone, void* 
 
 void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle) {
     e->timeoutMS = maxIdle;
+}
+
+/* ---- MOD-15307: drain LibMR background threads to a safe point before fork() ----
+ *
+ * A LibMR thread (a worker in the execution pool, or the event-loop thread) that holds
+ * a libc lock (e.g. the malloc arena lock) at the instant redis calls fork() leaves the
+ * child holding a locked mutex with no owner -> the child ghost-locks the first time it
+ * mallocs (RDB save, slot-migration snapshot, etc.). That is the root trigger behind the
+ * ASM-migration nightly hangs (MOD-15307) and, downstream, the multi-shard query max-idle
+ * timeout (MOD-14615).
+ *
+ * MR_DrainForFork() (called on the main thread from the FORK_CHILD_PRE module event) brings
+ * both kinds of LibMR thread to a safe, lock-free point:
+ *   - the event-loop thread is parked *between tasks* via a posted task (so it is not
+ *     mid-message-deserialize / mid-malloc, and is not holding the module GIL);
+ *   - with the event-loop thread parked no new executions are dispatched, so the worker
+ *     pool drains to idle.
+ * Both waits are bounded; on timeout we fork anyway (fail-open -> never worse than today).
+ * Note a worker still blocked acquiring the module GIL (held by us) is itself malloc-safe,
+ * so a timeout there is benign. MR_ResumeAfterFork() releases the parked event-loop thread
+ * and must be called after fork() (FORK_CHILD_BORN) or if the fork was cancelled. */
+#define MR_FORK_DRAIN_TIMEOUT_MS 2000
+
+static pthread_mutex_t mr_forkDrainLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  mr_forkDrainCond = PTHREAD_COND_INITIALIZER;
+static int mr_forkElParked = 0;  /* set by the park task once the el-thread is quiesced */
+static int mr_forkElRelease = 0; /* set by MR_ResumeAfterFork to release the el-thread */
+
+/* Runs on the event-loop thread, between tasks (a safe point). Parks the thread until
+ * MR_ResumeAfterFork() is called. */
+static void MR_ForkParkElThread(void* ctx) {
+    REDISMODULE_NOT_USED(ctx);
+    pthread_mutex_lock(&mr_forkDrainLock);
+    mr_forkElParked = 1;
+    pthread_cond_broadcast(&mr_forkDrainCond);
+    while (!mr_forkElRelease) {
+        pthread_cond_wait(&mr_forkDrainCond, &mr_forkDrainLock);
+    }
+    mr_forkElParked = 0;
+    pthread_mutex_unlock(&mr_forkDrainLock);
+}
+
+static int mr_forkDeadlinePassed(const struct timespec* deadline) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return (now.tv_sec > deadline->tv_sec) ||
+           (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec);
+}
+
+void MR_DrainForFork(void) {
+    /* Nothing to drain if the pool / event loop were never started. */
+    if (!mrCtx.executionsThreadPool) return;
+
+    RedisModule_Log(mr_staticCtx, "notice", "MOD-15307: draining LibMR threads before fork()");
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += MR_FORK_DRAIN_TIMEOUT_MS / 1000;
+    deadline.tv_nsec += (MR_FORK_DRAIN_TIMEOUT_MS % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
+
+    /* 1) Park the event-loop thread at a between-tasks safe point. */
+    pthread_mutex_lock(&mr_forkDrainLock);
+    mr_forkElParked = 0;
+    mr_forkElRelease = 0;
+    pthread_mutex_unlock(&mr_forkDrainLock);
+
+    MR_EventLoopAddTask(MR_ForkParkElThread, NULL);
+
+    pthread_mutex_lock(&mr_forkDrainLock);
+    while (!mr_forkElParked) {
+        if (pthread_cond_timedwait(&mr_forkDrainCond, &mr_forkDrainLock, &deadline) == ETIMEDOUT)
+            break;
+    }
+    int parked = mr_forkElParked;
+    pthread_mutex_unlock(&mr_forkDrainLock);
+
+    if (!parked) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "MR_DrainForFork: event-loop thread did not park within %dms; forking anyway",
+            MR_FORK_DRAIN_TIMEOUT_MS);
+    }
+
+    /* 2) Wait (bounded) for in-flight worker jobs to finish. With the event loop parked no
+     *    new work is dispatched, so the working count drains to 0 unless a worker is blocked
+     *    acquiring the GIL we hold -- a malloc-safe state, so a timeout there is benign. */
+    while (mr_thpool_num_threads_working(mrCtx.executionsThreadPool) > 0) {
+        if (mr_forkDeadlinePassed(&deadline)) {
+            RedisModule_Log(mr_staticCtx, "warning",
+                "MR_DrainForFork: %d worker(s) still busy at timeout; forking anyway",
+                mr_thpool_num_threads_working(mrCtx.executionsThreadPool));
+            break;
+        }
+        struct timespec nap = { .tv_sec = 0, .tv_nsec = 1000000L }; /* 1ms */
+        nanosleep(&nap, NULL);
+    }
+}
+
+void MR_ResumeAfterFork(void) {
+    if (!mrCtx.executionsThreadPool) return;
+    RedisModule_Log(mr_staticCtx, "notice", "MOD-15307: resuming LibMR threads after fork()");
+    pthread_mutex_lock(&mr_forkDrainLock);
+    mr_forkElRelease = 1;
+    pthread_cond_broadcast(&mr_forkDrainCond);
+    pthread_mutex_unlock(&mr_forkDrainLock);
 }
 
 void MR_Run(Execution* e) {
