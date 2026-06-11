@@ -1461,7 +1461,10 @@ void MR_DrainForFork(void) {
     /* Nothing to drain if the pool / event loop were never started. */
     if (!mrCtx.executionsThreadPool) return;
 
-    RedisModule_Log(mr_staticCtx, "notice", "MOD-15307: draining LibMR threads before fork()");
+    /* Precise drain-only timing: measures just the quiesce (park + worker wait),
+     * excluding the fork() that follows. */
+    struct timespec _drain_t0;
+    clock_gettime(CLOCK_MONOTONIC, &_drain_t0);
 
     struct timespec deadline;
     clock_gettime(CLOCK_REALTIME, &deadline);
@@ -1504,11 +1507,18 @@ void MR_DrainForFork(void) {
         struct timespec nap = { .tv_sec = 0, .tv_nsec = 1000000L }; /* 1ms */
         nanosleep(&nap, NULL);
     }
+
+    struct timespec _drain_t1;
+    clock_gettime(CLOCK_MONOTONIC, &_drain_t1);
+    long long _drain_us = (long long)(_drain_t1.tv_sec - _drain_t0.tv_sec) * 1000000LL +
+                          (_drain_t1.tv_nsec - _drain_t0.tv_nsec) / 1000LL;
+    RedisModule_Log(mr_staticCtx, "debug",
+        "MR_DrainForFork drained in %lld us (el_parked=%d, busy_workers=%d)",
+        _drain_us, parked, mr_thpool_num_threads_working(mrCtx.executionsThreadPool));
 }
 
 void MR_ResumeAfterFork(void) {
     if (!mrCtx.executionsThreadPool) return;
-    RedisModule_Log(mr_staticCtx, "notice", "MOD-15307: resuming LibMR threads after fork()");
     pthread_mutex_lock(&mr_forkDrainLock);
     mr_forkElRelease = 1;
     pthread_cond_broadcast(&mr_forkDrainCond);
