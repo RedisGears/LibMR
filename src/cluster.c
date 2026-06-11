@@ -415,7 +415,7 @@ static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Nod
         redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
         return;
     }
-    if (RedisModule_GetInternalSecret && !MR_IsEnterpriseBuild()) {
+    if (RedisModule_GetInternalSecret && clusterCtx.isOss) {
         /* OSS deployment that support internal secret, lets use it. */
         RedisModule_ThreadSafeContextLock(mr_staticCtx);
         size_t len;
@@ -449,7 +449,7 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             // accepted connections but did not set its internal secret to the cluster's yet.
             // In such cases we will have a regular (i.e., non-internal) connection and the
             // hidden commands (including `<module>.HELLO`) will not be visible to us.
-            if (!MR_IsEnterpriseBuild() && strstr(reply->str, "unknown command") != NULL)
+            if (clusterCtx.isOss && strstr(reply->str, "unknown command") != NULL)
                 SendAuthCommandIfNeeded(c, n);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
@@ -1651,7 +1651,24 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
 
     RedisModuleServerInfoData *info = RedisModule_GetServerInfo(rctx, "Server");
     const char *rlecVersion = RedisModule_ServerInfoGetFieldC(info, "rlec_version");
-    if (rlecVersion) {
+    /* Note: RedisModule_GetContextFlags() does NOT report
+     * REDISMODULE_CTX_FLAGS_CLUSTER yet at module-load time, so read the
+     * cluster-enabled config directly to learn the runtime mode. */
+    bool ossClusterRuntime = false;
+    RedisModuleCallReply *ceReply = RedisModule_Call(rctx, "config", "cc", "get", "cluster-enabled");
+    if (ceReply && RedisModule_CallReplyType(ceReply) == REDISMODULE_REPLY_ARRAY &&
+        RedisModule_CallReplyLength(ceReply) >= 2) {
+        RedisModuleCallReply *val = RedisModule_CallReplyArrayElement(ceReply, 1);
+        size_t vlen = 0;
+        const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
+        if (vstr && vlen == 3 && strncmp(vstr, "yes", 3) == 0) {
+            ossClusterRuntime = true;
+        }
+    }
+    if (ceReply) {
+        RedisModule_FreeCallReply(ceReply);
+    }
+    if (rlecVersion && !ossClusterRuntime) {
         clusterCtx.isOss = false;
     }
     RedisModule_FreeServerInfo(rctx, info);
@@ -1659,7 +1676,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     RedisModule_Log(rctx, "notice", "Detected redis %s", clusterCtx.isOss? "oss" : "enterprise");
 
     const char *command_flags = "readonly deny-script";
-    if (MR_IsEnterpriseBuild()) {
+    if (!clusterCtx.isOss) {
         command_flags = "readonly deny-script _proxy-filtered";
     } else {
         if (RedisModule_GetInternalSecret) {
@@ -1668,7 +1685,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
         }
     }
 
-    if (!MR_IsEnterpriseBuild()) {
+    if (clusterCtx.isOss) {
         /* Refresh cluster is only relevant for oss, also notice that refresh cluster
          * is not considered internal and should be performed by the user. */
         if (!RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
@@ -1680,7 +1697,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     /* The CLUSTERSET should be visible in COMMAND LIST, otherwise the RAMP packer
      * will miss it and a module will not be notified in an enterprise cluster */
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
-                            MR_IsEnterpriseBuild() ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
+                            !clusterCtx.isOss ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
                             0, 0, -1)) {
         return REDISMODULE_ERR;
     }
