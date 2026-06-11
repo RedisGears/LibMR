@@ -288,6 +288,16 @@ struct Execution {
     ExecutionCallbacks callbacks;
     MR_LoopTaskCtx* timeoutTask;
     size_t timeoutMS;
+
+    /* MOD-14615 diagnostics: so a max-idle timeout can name the shard(s) that
+     * did not reply. respondedAck/respondedDone hold the sender node-ids that
+     * sent an ACK / NOTIFY_DONE; pending = cluster peers minus that set. The
+     * timestamps give the elapsed wait. Touched only on the event-loop thread
+     * (ack/done/timeout handlers), so no extra locking is needed. */
+    mr_dict* respondedAck;
+    mr_dict* respondedDone;
+    long long dispatchMonoMs;
+    long long lastProgressMonoMs;
 };
 
 struct ExecutionCtx {
@@ -533,7 +543,22 @@ static Execution* MR_ExecutionAlloc() {
     e->timeoutTask = NULL;
     e->timeoutMS = EXECUTION_DEFAULT_MAX_IDLE_MS;
     e->flags = 0;
+    /* MOD-14615 diagnostics. Node-ids are NUL-terminated strings, so use the
+     * heap-strings dict type (matches the cluster node table), NOT the fixed
+     * ID_LEN dict type used for execution ids. */
+    e->respondedAck = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    e->respondedDone = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    e->dispatchMonoMs = 0;
+    e->lastProgressMonoMs = 0;
     return e;
+}
+
+/* MOD-14615: monotonic milliseconds for measuring how long an execution waited
+ * for peer replies. CLOCK_MONOTONIC so it is unaffected by wall-clock changes. */
+static long long mr_nowMonoMs(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long)t.tv_sec * 1000LL + t.tv_nsec / 1000000LL;
 }
 
 Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err) {
@@ -1018,6 +1043,8 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
         return;
     }
 
+    if (sender_id) mr_dictAdd(e->respondedDone, (void*)sender_id, NULL); /* MOD-14615 */
+    e->lastProgressMonoMs = mr_nowMonoMs();
     ++e->nCompleted;
     if (e->nCompleted == MR_ClusterGetSize() - 1) {
         /* Execution is finished on all the shards,
@@ -1079,6 +1106,8 @@ static void MR_AckExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t 
         return;
     }
 
+    if (sender_id) mr_dictAdd(e->respondedAck, (void*)sender_id, NULL); /* MOD-14615 */
+    e->lastProgressMonoMs = mr_nowMonoMs();
     ++e->nReceived;
     if (e->nReceived == MR_ClusterGetSize() - 1) {
         /* all shards have received the execution, we can invoke it. */
@@ -1295,6 +1324,12 @@ static void MR_ExecutionDistribute(Execution* e, void* pd) {
     MR_ClusterSendMsg(NULL, fid, buff.buff, buff.size);
 
     /* now we wait for shards to respond that they got the execution */
+    /* MOD-14615: stamp dispatch so a max-idle timeout can report the elapsed
+     * wait. Debug-level (per-execution, would be noisy at notice). */
+    e->dispatchMonoMs = e->lastProgressMonoMs = mr_nowMonoMs();
+    RedisModule_Log(mr_staticCtx, "debug",
+        "MR execution %s dispatched to %zu peers (timeoutMS=%zu)",
+        e->idStr, MR_ClusterGetSize() - 1, e->timeoutMS);
 }
 
 static void MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
@@ -1312,6 +1347,29 @@ static void MR_ExecutionTimedOut(void* ctx) {
     /* execution timed out */
     e->timeoutTask = NULL;
     ++mrCtx.stats.nMaxIdleReached;
+
+    /* MOD-14615: name the shard(s) that did not reply before we discard the
+     * execution. We are stalled in the ACK phase if not all shards acknowledged
+     * receipt, otherwise in the DONE phase; pick the matching responded set so
+     * `pending` lists exactly the non-responders. Warning level: this coincides
+     * with the user-visible multi-shard failure and is rate-bounded by
+     * nMaxIdleReached, and warning IS captured at the default loglevel. */
+    {
+        size_t expected = MR_ClusterGetSize() - 1;
+        long long now = mr_nowMonoMs();
+        int ackPhase = (e->nReceived < expected);
+        mr_dict* got = ackPhase ? e->respondedAck : e->respondedDone;
+        size_t nGot = ackPhase ? e->nReceived : e->nCompleted;
+        char pending[1024];
+        MR_ClusterFormatPendingPeers(got, pending, sizeof(pending));
+        RedisModule_Log(mr_staticCtx, "warning",
+            "MR execution %s max-idle reached: phase=%s replies=%zu/%zu waited=%lldms "
+            "sinceLastProgress=%lldms pending=[%s]",
+            e->idStr, ackPhase ? "ack" : "done", nGot, expected,
+            e->dispatchMonoMs ? now - e->dispatchMonoMs : -1,
+            e->lastProgressMonoMs ? now - e->lastProgressMonoMs : -1, pending);
+    }
+
     /* Delete the execution from the executions dictionary,
      * We will ignore further messages on this execution. */
     mr_dictDelete(mrCtx.executionsDict, e->id);
@@ -1640,6 +1698,8 @@ void MR_FreeExecution(Execution* e) {
         MR_RecordFree(e->errors[i]);
     }
     array_free(e->errors);
+    if (e->respondedAck) mr_dictRelease(e->respondedAck);   /* MOD-14615 */
+    if (e->respondedDone) mr_dictRelease(e->respondedDone);  /* MOD-14615 */
     MR_FREE(e);
 }
 

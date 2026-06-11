@@ -1731,6 +1731,31 @@ size_t MR_ClusterGetSize(){
     return clusterCtx.clusterSize;
 }
 
+/* MOD-14615: format the peer shards that are NOT me and NOT present in the
+ * `responded` set into "id(ip:port),..." in `out`, so a max-idle timeout can
+ * name the non-responding shard(s). Runs on the event-loop thread (same as the
+ * message handlers), so reading the cluster node table needs no extra locking.
+ * The node-id is the same NUL-terminated string used as the responded-set key. */
+void MR_ClusterFormatPendingPeers(mr_dict* responded, char* out, size_t outLen) {
+    if (outLen == 0) return;
+    out[0] = '\0';
+    if (!clusterCtx.CurrCluster || !clusterCtx.CurrCluster->nodes) return;
+    mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
+    mr_dictEntry *entry = NULL;
+    size_t off = 0;
+    while ((entry = mr_dictNext(iter))) {
+        Node* n = mr_dictGetVal(entry);
+        if (n->isMe) continue;
+        if (responded && mr_dictFind(responded, n->id)) continue;
+        int w = snprintf(out + off, outLen - off, "%s%s(%s:%u)",
+                         off ? "," : "", n->id, n->ip ? n->ip : "?", n->port);
+        if (w < 0) break;
+        if ((size_t)w >= outLen - off) { out[outLen - 1] = '\0'; break; } /* truncated */
+        off += (size_t)w;
+    }
+    mr_dictReleaseIterator(iter);
+}
+
 int MR_ClusterIsClusterMode(){
     return MR_ClusterGetSize() > 1;
 }
