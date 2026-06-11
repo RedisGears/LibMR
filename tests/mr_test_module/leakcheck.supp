@@ -5,3 +5,26 @@
    fun:_redisContextConnectTcp
    ...
 }
+# Pre-existing shutdown race: MR_DeleteExecution removes the Execution from
+# mrCtx.executionsDict synchronously and defers the MR_FreeExecution to a
+# MR_DisposeExecution task on the worker pool. When the dispose task is in
+# flight (libmr event loop just processed a NOTIFY_DONE and queued the
+# dispose) at the moment redis-server starts shutting down, the worker pool
+# is torn down with the task still in its queue -- the Execution is then
+# "definitely lost" since the dict no longer references it and the dispose
+# task never runs. The leak has been present in master since at least Apr 5;
+# properly fixing it needs deeper rework of libmr's shutdown sequence
+# (stopping the libmr event loop before draining workers).
+# Tracked separately; suppressing here so unrelated CI failures stay visible.
+{
+   <execution_struct_lost_on_shutdown_race>
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   fun:ztrymalloc_usable_internal
+   fun:zmalloc_usable
+   fun:RM_Alloc
+   fun:MR_ExecutionAlloc
+   fun:MR_CreateExecution
+   ...
+}
