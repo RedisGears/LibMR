@@ -35,7 +35,6 @@ int MR_RlecMajorVersion;
 int MR_RlecMinorVersion;
 int MR_RlecPatchVersion;
 int MR_RlecBuild;
-int MR_IsEnterprise;
 
 RedisModuleCtx* mr_staticCtx;
 
@@ -1545,10 +1544,8 @@ static void MR_GetRedisVersion() {
     MR_RlecMinorVersion = -1;
     MR_RlecPatchVersion = -1;
     MR_RlecBuild = -1;
-    MR_IsEnterprise = 0;
     const char *enterpriseStr = strstr(replyStr, "rlec_version:");
     if (enterpriseStr) {
-        MR_IsEnterprise = 1;
         n = sscanf(enterpriseStr,
                    "rlec_version:%d.%d.%d-%d",
                    &MR_RlecMajorVersion,

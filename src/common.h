@@ -30,10 +30,5 @@ extern int MR_RlecMajorVersion;
 extern int MR_RlecMinorVersion;
 extern int MR_RlecPatchVersion;
 extern int MR_RlecBuild;
-extern int MR_IsEnterprise;
-
-static inline int MR_IsEnterpriseBuild() {
-    return MR_IsEnterprise;
-}
 
 #endif /* SRC_COMMON_H_ */

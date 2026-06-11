@@ -1659,10 +1659,12 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     if (ceReply && RedisModule_CallReplyType(ceReply) == REDISMODULE_REPLY_ARRAY &&
         RedisModule_CallReplyLength(ceReply) >= 2) {
         RedisModuleCallReply *val = RedisModule_CallReplyArrayElement(ceReply, 1);
-        size_t vlen = 0;
-        const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
-        if (vstr && vlen == 3 && strncmp(vstr, "yes", 3) == 0) {
-            ossClusterRuntime = true;
+        if (RedisModule_CallReplyType(val) == REDISMODULE_REPLY_STRING) {
+            size_t vlen = 0;
+            const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
+            if (vstr && vlen == 3 && strncmp(vstr, "yes", 3) == 0) {
+                ossClusterRuntime = true;
+            }
         }
     }
     if (ceReply) {
@@ -1673,7 +1675,9 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     }
     RedisModule_FreeServerInfo(rctx, info);
 
-    RedisModule_Log(rctx, "notice", "Detected redis %s", clusterCtx.isOss? "oss" : "enterprise");
+    RedisModule_Log(rctx, "notice", "Detected redis %s (cluster-enabled=%s)",
+                    clusterCtx.isOss ? "oss" : "enterprise",
+                    ossClusterRuntime ? "yes" : "no");
 
     const char *command_flags = "readonly deny-script";
     if (!clusterCtx.isOss) {
