@@ -172,6 +172,7 @@ typedef struct ClusterSetCtx {
     RedisModuleString **argv;
     int argc;
     bool force;
+    const char* errReply;  // NULL => reply "OK"; otherwise reply this error to the client
 }ClusterSetCtx;
 
 typedef enum MessageReply {
@@ -1089,19 +1090,21 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
     return index;
 }
 
-static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
+static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
 
     // RedisModule_GetClusterNodeSlotRanges may be NULL when the host Redis
-    // build does not export it (e.g. OSS Redis without the backport). Skip
-    // the path with a warning instead of crashing; the cluster stays
-    // unconfigured until a long-form CLUSTERSET or REFRESHCLUSTER arrives.
+    // build does not export it (e.g. OSS Redis without the backport). Reject
+    // the command with an error instead of crashing or silently no-op'ing, so
+    // the caller (e.g. DMC) can fall back to the long-form CLUSTERSET. The
+    // cluster stays unconfigured until a long-form CLUSTERSET or REFRESHCLUSTER
+    // arrives.
     if (RedisModule_GetClusterNodeSlotRanges == NULL) {
         RedisModule_Log(mr_staticCtx, "warning",
             "Short-form CLUSTERSET received, but RedisModule_GetClusterNodeSlotRanges "
             "is not available in this Redis build. Use long-form CLUSTERSET or "
             "REFRESHCLUSTER to configure the cluster.");
-        return;
+        return REDISMODULE_ERR;
     }
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
@@ -1127,7 +1130,7 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
     char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
     if (!nodeList) {
         RedisModule_Log(mr_staticCtx, "warning", "Failed to get cluster nodes list");
-        return;
+        return REDISMODULE_ERR;
     }
 
     for (size_t i = 0; i < numNodes; i++) {
@@ -1181,6 +1184,7 @@ static void SetClusterDataShortForm(RedisModuleString** argv, int argc){
 
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+    return REDISMODULE_OK;
 }
 
 static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
@@ -1248,16 +1252,19 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
-static void MR_SetClusterData(RedisModuleString** argv, int argc){
+static int MR_SetClusterData(RedisModuleString** argv, int argc){
     if(clusterCtx.CurrCluster)
         MR_ClusterFree();
 
-    if (IsLongFormClusterSet(argc))
+    if (IsLongFormClusterSet(argc)) {
         SetClusterDataLongForm(argv, argc);
-    else if (IsShortFormClusterSet(argc))
-        SetClusterDataShortForm(argv, argc);
-    else
+        return REDISMODULE_OK;
+    } else if (IsShortFormClusterSet(argc)) {
+        return SetClusterDataShortForm(argv, argc);
+    } else {
         RedisModule_Log(mr_staticCtx, "warning", "Could not parse cluster set arguments");
+        return REDISMODULE_ERR;
+    }
 }
 
 /* runs in the event loop so its safe to update cluster
@@ -1276,19 +1283,26 @@ static void MR_ClusterRefreshFromCommand(void* ctx){
 static void MR_ClusterSetFromCommand(void* ctx){
     ClusterSetCtx* csCtx = ctx;
     if (!clusterCtx.CurrCluster || csCtx->force) {
-        MR_SetClusterData(csCtx->argv, csCtx->argc);
+        if (MR_SetClusterData(csCtx->argv, csCtx->argc) != REDISMODULE_OK) {
+            csCtx->errReply = CLUSTER_ERROR" Failed to set cluster topology";
+        }
     }
     RedisModule_UnblockClient(csCtx->bc, csCtx);
 }
 
 static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     ClusterSetCtx* csCtx = RedisModule_GetBlockedClientPrivateData(ctx);
+    const char* errReply = csCtx->errReply;
     for(size_t i = 0 ; i < csCtx->argc ; ++i){
         RedisModule_FreeString(NULL, csCtx->argv[i]);
     }
     MR_FREE(csCtx->argv);
     MR_FREE(csCtx);
-    RedisModule_ReplyWithSimpleString(ctx, "OK");
+    if (errReply) {
+        RedisModule_ReplyWithError(ctx, errReply);
+    } else {
+        RedisModule_ReplyWithSimpleString(ctx, "OK");
+    }
     return REDISMODULE_OK;
 }
 
@@ -1298,6 +1312,7 @@ static int MR_ClusterSetInternal(RedisModuleCtx *ctx, RedisModuleString **argv, 
     csCtx->argv = argv;
     csCtx->argc = argc;
     csCtx->force = force;
+    csCtx->errReply = NULL;
     MR_EventLoopAddTask(MR_ClusterSetFromCommand, csCtx);
     return REDISMODULE_OK;
 }
