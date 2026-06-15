@@ -1649,31 +1649,48 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.password = password ? MR_STRDUP(password) : NULL;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
-    RedisModuleServerInfoData *info = RedisModule_GetServerInfo(rctx, "Server");
-    const char *rlecVersion = RedisModule_ServerInfoGetFieldC(info, "rlec_version");
     /* Note: RedisModule_GetContextFlags() does NOT report
      * REDISMODULE_CTX_FLAGS_CLUSTER yet at module-load time, so read the
      * cluster-enabled config directly to learn the runtime mode. */
     bool ossClusterRuntime = false;
     RedisModuleCallReply *ceReply = RedisModule_Call(rctx, "config", "cc", "get", "cluster-enabled");
-    if (ceReply && RedisModule_CallReplyType(ceReply) == REDISMODULE_REPLY_ARRAY &&
-        RedisModule_CallReplyLength(ceReply) >= 2) {
-        RedisModuleCallReply *val = RedisModule_CallReplyArrayElement(ceReply, 1);
-        if (RedisModule_CallReplyType(val) == REDISMODULE_REPLY_STRING) {
+    if (ceReply) {
+        /* CONFIG GET replies as a flat array in RESP2 and as a map in RESP3.
+         * The module ctx defaults to RESP2, but handle both shapes so a future
+         * RESP3 default can't silently break detection and misclassify an
+         * OSS-cluster shard as enterprise. */
+        int ceType = RedisModule_CallReplyType(ceReply);
+        RedisModuleCallReply *val = NULL;
+        if (ceType == REDISMODULE_REPLY_ARRAY && RedisModule_CallReplyLength(ceReply) >= 2) {
+            val = RedisModule_CallReplyArrayElement(ceReply, 1);
+        } else if (ceType == REDISMODULE_REPLY_MAP && RedisModule_CallReplyMapElement &&
+                   RedisModule_CallReplyLength(ceReply) >= 1) {
+            RedisModule_CallReplyMapElement(ceReply, 0, NULL, &val);
+        }
+        if (val && RedisModule_CallReplyType(val) == REDISMODULE_REPLY_STRING) {
             size_t vlen = 0;
             const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
-            if (vstr && vlen == 3 && strncmp(vstr, "yes", 3) == 0) {
+            /* CONFIG GET returns the canonical lowercase "yes"/"no" (Redis
+             * spec), so a case-sensitive compare of exactly 3 bytes is safe. */
+            if (vstr && vlen == 3 && memcmp(vstr, "yes", 3) == 0) {
                 ossClusterRuntime = true;
             }
         }
-    }
-    if (ceReply) {
         RedisModule_FreeCallReply(ceReply);
     }
-    if (rlecVersion && !ossClusterRuntime) {
+    /* rlec_version is only present on enterprise binaries. It was already
+     * parsed into MR_RlecMajorVersion by MR_GetRedisVersion() (run before
+     * MR_ClusterInit), so reuse it here instead of fetching Server info a
+     * second time; MR_RlecMajorVersion >= 0 means the field was present.
+     *
+     * Treat the shard as enterprise only when rlec_version is present AND we
+     * are not in OSS cluster mode. This is the load-bearing decision of the
+     * PR: it unblocks an enterprise binary running as an OSS cluster (e.g. the
+     * env0 testing setup), which must take the OSS path (internal-secret AUTH,
+     * no _proxy-filtered command flags) rather than the enterprise path. */
+    if (MR_RlecMajorVersion >= 0 && !ossClusterRuntime) {
         clusterCtx.isOss = false;
     }
-    RedisModule_FreeServerInfo(rctx, info);
 
     RedisModule_Log(rctx, "notice", "Detected redis %s (cluster-enabled=%s)",
                     clusterCtx.isOss ? "oss" : "enterprise",
