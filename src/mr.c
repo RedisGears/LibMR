@@ -35,6 +35,7 @@ int MR_RlecMajorVersion;
 int MR_RlecMinorVersion;
 int MR_RlecPatchVersion;
 int MR_RlecBuild;
+int MR_RlecVersionPresent;
 
 RedisModuleCtx* mr_staticCtx;
 
@@ -1545,6 +1546,10 @@ static void MR_GetRedisVersion() {
     MR_RlecPatchVersion = -1;
     MR_RlecBuild = -1;
     const char *enterpriseStr = strstr(replyStr, "rlec_version:");
+    /* Presence of the rlec_version field is the enterprise signal, independent
+     * of whether the version numbers below parse. Record it separately so a
+     * present-but-unparseable value isn't mistaken for an OSS build. */
+    MR_RlecVersionPresent = (enterpriseStr != NULL);
     if (enterpriseStr) {
         n = sscanf(enterpriseStr,
                    "rlec_version:%d.%d.%d-%d",

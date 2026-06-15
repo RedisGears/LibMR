@@ -1653,6 +1653,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
      * REDISMODULE_CTX_FLAGS_CLUSTER yet at module-load time, so read the
      * cluster-enabled config directly to learn the runtime mode. */
     bool ossClusterRuntime = false;
+    bool ceResolved = false;
     RedisModuleCallReply *ceReply = RedisModule_Call(rctx, "config", "cc", "get", "cluster-enabled");
     if (ceReply) {
         /* CONFIG GET replies as a flat array in RESP2 and as a map in RESP3.
@@ -1670,25 +1671,40 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
         if (val && RedisModule_CallReplyType(val) == REDISMODULE_REPLY_STRING) {
             size_t vlen = 0;
             const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
-            /* CONFIG GET returns the canonical lowercase "yes"/"no" (Redis
-             * spec), so a case-sensitive compare of exactly 3 bytes is safe. */
-            if (vstr && vlen == 3 && memcmp(vstr, "yes", 3) == 0) {
-                ossClusterRuntime = true;
+            if (vstr) {
+                ceResolved = true;
+                /* CONFIG GET returns the canonical lowercase "yes"/"no" (Redis
+                 * spec), so a case-sensitive compare of exactly 3 bytes is safe. */
+                if (vlen == 3 && memcmp(vstr, "yes", 3) == 0) {
+                    ossClusterRuntime = true;
+                }
             }
         }
         RedisModule_FreeCallReply(ceReply);
     }
-    /* rlec_version is only present on enterprise binaries. It was already
-     * parsed into MR_RlecMajorVersion by MR_GetRedisVersion() (run before
-     * MR_ClusterInit), so reuse it here instead of fetching Server info a
-     * second time; MR_RlecMajorVersion >= 0 means the field was present.
+    if (!ceResolved) {
+        /* CONFIG GET cluster-enabled should always succeed; an error, an
+         * unexpected reply shape, or an empty value leaves the runtime cluster
+         * mode unknown. Keep the conservative default (ossClusterRuntime stays
+         * false, i.e. an rlec_version shard is treated as enterprise as before)
+         * but log it so a resulting misclassification is diagnosable rather than
+         * silent. */
+        RedisModule_Log(rctx, "warning",
+                        "Could not read cluster-enabled config; assuming not in OSS cluster mode");
+    }
+    /* rlec_version is only present on enterprise binaries. Its presence was
+     * already detected by MR_GetRedisVersion() (run before MR_ClusterInit) and
+     * recorded in MR_RlecVersionPresent, so reuse it here instead of fetching
+     * Server info a second time. Use the presence flag, not MR_RlecMajorVersion
+     * >= 0: the latter only becomes true once sscanf parses the version, so a
+     * present-but-unparseable rlec_version would otherwise read as OSS.
      *
      * Treat the shard as enterprise only when rlec_version is present AND we
      * are not in OSS cluster mode. This is the load-bearing decision of the
      * PR: it unblocks an enterprise binary running as an OSS cluster (e.g. the
      * env0 testing setup), which must take the OSS path (internal-secret AUTH,
      * no _proxy-filtered command flags) rather than the enterprise path. */
-    if (MR_RlecMajorVersion >= 0 && !ossClusterRuntime) {
+    if (MR_RlecVersionPresent && !ossClusterRuntime) {
         clusterCtx.isOss = false;
     }
 
