@@ -188,6 +188,14 @@ void mr_thpool_destroy(mr_threadpool);
  */
 int mr_thpool_num_threads_working(mr_threadpool);
 
+/**
+ * @brief Number of jobs queued but not yet picked up by a worker.
+ *
+ * @param threadpool     the threadpool of interest
+ * @return integer       number of queued jobs
+ */
+int mr_thpool_num_jobs_in_queue(mr_threadpool);
+
 
 #ifdef __cplusplus
 }

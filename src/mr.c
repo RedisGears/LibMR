@@ -1552,14 +1552,18 @@ void MR_DrainForFork(void) {
             MR_FORK_DRAIN_TIMEOUT_MS);
     }
 
-    /* 2) Wait (bounded) for in-flight worker jobs to finish. With the event loop parked no
-     *    new work is dispatched, so the working count drains to 0 unless a worker is blocked
-     *    acquiring the GIL we hold -- a malloc-safe state, so a timeout there is benign. */
-    while (mr_thpool_num_threads_working(mrCtx.executionsThreadPool) > 0) {
+    /* 2) Wait (bounded) for the worker pool to go fully idle -- both in-flight jobs AND jobs
+     *    still queued but not yet picked up (a queued job would otherwise start running, and
+     *    allocate, right after the fork). With the event loop parked no new work is dispatched,
+     *    so the pool drains to empty unless a worker is blocked acquiring the GIL we hold -- a
+     *    malloc-safe state, so a timeout there is benign. */
+    while (mr_thpool_num_threads_working(mrCtx.executionsThreadPool) > 0 ||
+           mr_thpool_num_jobs_in_queue(mrCtx.executionsThreadPool) > 0) {
         if (mr_forkDeadlinePassed(&deadline)) {
             RedisModule_Log(mr_staticCtx, "warning",
-                "MR_DrainForFork: %d worker(s) still busy at timeout; forking anyway",
-                mr_thpool_num_threads_working(mrCtx.executionsThreadPool));
+                "MR_DrainForFork: pool not idle at timeout (busy=%d, queued=%d); forking anyway",
+                mr_thpool_num_threads_working(mrCtx.executionsThreadPool),
+                mr_thpool_num_jobs_in_queue(mrCtx.executionsThreadPool));
             break;
         }
         struct timespec nap = { .tv_sec = 0, .tv_nsec = 1000000L }; /* 1ms */
@@ -1571,8 +1575,9 @@ void MR_DrainForFork(void) {
     long long _drain_us = (long long)(_drain_t1.tv_sec - _drain_t0.tv_sec) * 1000000LL +
                           (_drain_t1.tv_nsec - _drain_t0.tv_nsec) / 1000LL;
     RedisModule_Log(mr_staticCtx, "debug",
-        "MR_DrainForFork drained in %lld us (el_parked=%d, busy_workers=%d)",
-        _drain_us, parked, mr_thpool_num_threads_working(mrCtx.executionsThreadPool));
+        "MR_DrainForFork drained in %lld us (el_parked=%d, busy_workers=%d, queued=%d)",
+        _drain_us, parked, mr_thpool_num_threads_working(mrCtx.executionsThreadPool),
+        mr_thpool_num_jobs_in_queue(mrCtx.executionsThreadPool));
 }
 
 void MR_ResumeAfterFork(void) {

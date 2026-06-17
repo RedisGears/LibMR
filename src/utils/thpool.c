@@ -314,6 +314,10 @@ int mr_thpool_num_threads_working(mr_thpool_* thpool_p) {
   return thpool_p->num_threads_working;
 }
 
+int mr_thpool_num_jobs_in_queue(mr_thpool_* thpool_p) {
+  return thpool_p->jobqueue.len;
+}
+
 /* ============================ THREAD ============================== */
 
 /* Initialize a thread in the thread pool
