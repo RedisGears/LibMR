@@ -34,12 +34,23 @@ fn main() {
 
     let output_dir = env::var("OUT_DIR").expect("Can not find out directory");
 
-    let build = bindgen::Builder::default();
-
-    let bindings = build
+    let mut build = bindgen::Builder::default()
         .header("src/mr.h")
         .size_t_is_usize(true)
-        .layout_tests(false)
+        .layout_tests(false);
+
+    if std::env::consts::OS == "macos" {
+        if let Ok(output) = Command::new("xcrun").args(["--show-sdk-path"]).output() {
+            if let Ok(sysroot) = String::from_utf8(output.stdout) {
+                let sysroot = sysroot.trim();
+                if !sysroot.is_empty() {
+                    build = build.clang_arg(format!("-isysroot{sysroot}"));
+                }
+            }
+        }
+    }
+
+    let bindings = build
         .generate()
         .expect("error generating bindings");
 
