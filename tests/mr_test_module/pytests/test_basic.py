@@ -53,11 +53,23 @@ def testMaxIdle(env, conn):
 @MRTestDecorator()
 def testUnevenWork(env, conn):
     env.expect('lmrtest.unevenwork').equal(['record'])
+    # Open a Redis client per shard up front. Calling env.getConnection()
+    # inside the loop opens a fresh TCP socket every iteration, and on TLS
+    # that means ssl.create_default_context() -> load_default_certs() ->
+    # set_default_verify_paths() runs once per ping. On slow runner
+    # configurations (notably Redis 7.2 + oss-cluster shards-count 3 + TLS)
+    # that cert-loading path stays inside the ssl C extension long enough
+    # that the SIGALRM scheduled by TimeLimit(2) cannot be delivered until
+    # Python hits a bytecode boundary -- so the loop runs unbounded and
+    # the test only exits via the outer RLTest --test-timeout. Reusing
+    # the clients means redis-py keeps the underlying TLS connection in
+    # its pool and subsequent pings are pure socket I/O, which yields to
+    # Python often enough for SIGALRM to fire on schedule.
+    connections = [env.getConnection(i) for i in range(1, env.shardsCount + 1)]
     try:
         with TimeLimit(2):
             while True:
-                for i in range(1, env.shardsCount + 1):
-                    c = env.getConnection(i)
+                for c in connections:
                     env.assertTrue(c.ping())
                 time.sleep(0.1)
     except ShardsConnectionTimeoutException:
