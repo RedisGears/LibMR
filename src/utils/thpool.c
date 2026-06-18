@@ -315,7 +315,12 @@ int mr_thpool_num_threads_working(mr_thpool_* thpool_p) {
 }
 
 int mr_thpool_num_jobs_in_queue(mr_thpool_* thpool_p) {
-  return thpool_p->jobqueue.len;
+  /* len is written under rwmutex (jobqueue_push/pull); read it under the same
+   * lock to avoid a data race. */
+  pthread_mutex_lock(&thpool_p->jobqueue.rwmutex);
+  int len = thpool_p->jobqueue.len;
+  pthread_mutex_unlock(&thpool_p->jobqueue.rwmutex);
+  return len;
 }
 
 /* ============================ THREAD ============================== */
