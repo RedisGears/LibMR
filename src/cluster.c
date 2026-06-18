@@ -1323,6 +1323,65 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
     return REDISMODULE_OK;
 }
 
+/* Trailing debounce for the automatic topology refresh. A reshard issues
+ * CLUSTER SETSLOT per slot, so the topology-change event can fire thousands of
+ * times in quick succession; a naive refresh-per-event would tear down and
+ * rebuild every inter-shard connection thousands of times (MR_RefreshClusterData
+ * frees the whole cluster), which is both wasteful and disruptive to in-flight
+ * cross-shard queries. Instead every event just bumps a counter; an event-loop
+ * task reschedules itself until the counter stops advancing for one debounce
+ * window, then does a single refresh. Net effect: one refresh per burst. */
+#define MR_TOPOLOGY_DEBOUNCE_MS 100
+
+static unsigned long long clusterTopoEventSeq = 0; /* bumped by the event callback */
+static char clusterTopoDebounceArmed = 0;          /* at most one debounce chain */
+static unsigned long long clusterTopoSeenSeq = 0;  /* event-loop thread only */
+
+/* Runs on the event loop. Refreshes once the event counter has been stable for
+ * a full debounce window, otherwise waits another window. */
+static void MR_TopoDebounceCheck(void* ctx){
+    REDISMODULE_NOT_USED(ctx);
+    unsigned long long cur = __atomic_load_n(&clusterTopoEventSeq, __ATOMIC_SEQ_CST);
+    if (cur != clusterTopoSeenSeq) {
+        /* More events arrived during the window; keep waiting. */
+        clusterTopoSeenSeq = cur;
+        MR_EventLoopAddTaskWithDelay(MR_TopoDebounceCheck, NULL, MR_TOPOLOGY_DEBOUNCE_MS);
+        return;
+    }
+    /* Quiesced. Disarm, then re-check so an event that raced in just now is not
+     * lost (it would otherwise see the armed flag set and not start a chain). */
+    __atomic_clear(&clusterTopoDebounceArmed, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&clusterTopoEventSeq, __ATOMIC_SEQ_CST) != cur) {
+        if (!__atomic_test_and_set(&clusterTopoDebounceArmed, __ATOMIC_SEQ_CST)) {
+            clusterTopoSeenSeq = __atomic_load_n(&clusterTopoEventSeq, __ATOMIC_SEQ_CST);
+            MR_EventLoopAddTaskWithDelay(MR_TopoDebounceCheck, NULL, MR_TOPOLOGY_DEBOUNCE_MS);
+        }
+        return;
+    }
+    MR_RefreshClusterData();
+}
+
+/* Runs on the event loop: start a debounce chain (called via the thread-safe
+ * MR_EventLoopAddTask so the delayed timer is armed from the loop thread). */
+static void MR_TopoDebounceStart(void* ctx){
+    REDISMODULE_NOT_USED(ctx);
+    clusterTopoSeenSeq = __atomic_load_n(&clusterTopoEventSeq, __ATOMIC_SEQ_CST);
+    MR_EventLoopAddTaskWithDelay(MR_TopoDebounceCheck, NULL, MR_TOPOLOGY_DEBOUNCE_MS);
+}
+
+/* Request an OSS cluster topology refresh, debounced. No-op when not running as
+ * an OSS cluster (Enterprise/standalone), mirroring the OSS-only registration of
+ * the REFRESHCLUSTER command, so it is safe to call unconditionally from a Redis
+ * server-event callback. */
+void MR_ClusterRefreshTopology(void){
+    if (!clusterCtx.isOss) return;
+    __atomic_add_fetch(&clusterTopoEventSeq, 1, __ATOMIC_SEQ_CST);
+    if (__atomic_test_and_set(&clusterTopoDebounceArmed, __ATOMIC_SEQ_CST)) {
+        return; /* a debounce chain is already running; it will see the bump */
+    }
+    MR_EventLoopAddTask(MR_TopoDebounceStart, NULL);
+}
+
 static int MR_ClusterSet(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
     if (!(IsShortFormClusterSet(argc) || IsLongFormClusterSet(argc))) {
         RedisModule_ReplyWithError(ctx, "Could not parse cluster set arguments");

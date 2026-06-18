@@ -37,6 +37,10 @@ size_t MR_ClusterGetSize();
 
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
 
+/* Schedule an OSS cluster topology refresh on the event loop. No-op outside of
+ * OSS cluster mode. Safe to call from a Redis server-event callback. */
+void MR_ClusterRefreshTopology(void);
+
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
 
 int MR_ClusterIsMySlot(size_t slot);
