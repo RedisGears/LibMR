@@ -105,6 +105,12 @@ int mr_thpool_add_work(mr_threadpool, void (*function_p)(void*), void* arg_p);
  */
 void mr_thpool_wait(mr_threadpool);
 
+/**
+ * @brief Like mr_thpool_wait, bounded by timeout_ms.
+ * @return 1 if the pool went idle, 0 on timeout.
+ */
+int mr_thpool_wait_timeout(mr_threadpool, long timeout_ms);
+
 
 /**
  * @brief Pauses all threads immediately
