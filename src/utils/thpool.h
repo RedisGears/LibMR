@@ -105,6 +105,12 @@ int mr_thpool_add_work(mr_threadpool, void (*function_p)(void*), void* arg_p);
  */
 void mr_thpool_wait(mr_threadpool);
 
+/**
+ * @brief Like mr_thpool_wait, bounded by timeout_ms.
+ * @return 1 if the pool went idle, 0 on timeout.
+ */
+int mr_thpool_wait_timeout(mr_threadpool, long timeout_ms);
+
 
 /**
  * @brief Pauses all threads immediately
@@ -187,14 +193,6 @@ void mr_thpool_destroy(mr_threadpool);
  * @return integer       number of threads working
  */
 int mr_thpool_num_threads_working(mr_threadpool);
-
-/**
- * @brief Number of jobs queued but not yet picked up by a worker.
- *
- * @param threadpool     the threadpool of interest
- * @return integer       number of queued jobs
- */
-int mr_thpool_num_jobs_in_queue(mr_threadpool);
 
 
 #ifdef __cplusplus

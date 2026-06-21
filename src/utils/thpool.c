@@ -254,6 +254,26 @@ void mr_thpool_wait(mr_thpool_* thpool_p) {
   pthread_mutex_unlock(&thpool_p->thcount_lock);
 }
 
+/* Like mr_thpool_wait but bounded; returns 1 if the pool went idle, 0 on timeout. */
+int mr_thpool_wait_timeout(mr_thpool_* thpool_p, long timeout_ms) {
+  struct timespec deadline;
+  clock_gettime(CLOCK_REALTIME, &deadline);
+  deadline.tv_sec += timeout_ms / 1000;
+  deadline.tv_nsec += (timeout_ms % 1000) * 1000000L;
+  if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
+
+  int idle = 1;
+  pthread_mutex_lock(&thpool_p->thcount_lock);
+  while (thpool_p->jobqueue.len || thpool_p->num_threads_working) {
+    if (pthread_cond_timedwait(&thpool_p->threads_all_idle, &thpool_p->thcount_lock, &deadline) == ETIMEDOUT) {
+      idle = 0;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&thpool_p->thcount_lock);
+  return idle;
+}
+
 /* Destroy the threadpool */
 void mr_thpool_destroy(mr_thpool_* thpool_p) {
   /* No need to destory if it's NULL */
@@ -312,15 +332,6 @@ void mr_thpool_resume(mr_thpool_* thpool_p) {
 
 int mr_thpool_num_threads_working(mr_thpool_* thpool_p) {
   return thpool_p->num_threads_working;
-}
-
-int mr_thpool_num_jobs_in_queue(mr_thpool_* thpool_p) {
-  /* len is written under rwmutex (jobqueue_push/pull); read it under the same
-   * lock to avoid a data race. */
-  pthread_mutex_lock(&thpool_p->jobqueue.rwmutex);
-  int len = thpool_p->jobqueue.len;
-  pthread_mutex_unlock(&thpool_p->jobqueue.rwmutex);
-  return len;
 }
 
 /* ============================ THREAD ============================== */

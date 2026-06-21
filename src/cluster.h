@@ -35,13 +35,6 @@ int MR_IsClusterInitialize();
 
 size_t MR_ClusterGetSize();
 
-/* MOD-14615: format peer shards (id(ip:port)) that are NOT in `responded` into
- * `out`, used to name non-responding shards on a max-idle timeout. The tag is
- * forward-declared so cluster.h stays independent of utils/dict.h include order
- * (full definition lives in utils/dict.h). */
-struct mr_dict;
-void MR_ClusterFormatPendingPeers(struct mr_dict* responded, char* out, size_t outLen);
-
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
 
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
