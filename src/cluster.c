@@ -955,6 +955,91 @@ static void MR_RefreshClusterData(){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
+/* Update only the slot->node routing from a fresh CLUSTER SLOTS, reusing the
+ * existing Node structs (and their live connections) instead of tearing the whole
+ * cluster down and reconnecting. Used for an in-place reshard (only the
+ * REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_SLOT reason set): the set of primaries is unchanged,
+ * so only the slot map moved. A full MR_RefreshClusterData would abort in-flight
+ * cross-shard executions (MR_AbortRunningExecutions) and rebuild every connection
+ * for nothing, which is exactly what disrupts fan-out queries running during a
+ * reshard.
+ *
+ * In OSS mode CurrCluster->slots is the routing source of truth (the SendMsgType_BySlot
+ * path), while fan-out (SendMsgType_All) iterates the nodes dict -- both stay correct
+ * here since the node set is unchanged and only slots[] is repointed. Per-node
+ * slotRanges are only consumed by the Enterprise CLUSTERSET build and the debug
+ * RG.INFOCLUSTER reply, so they are intentionally left untouched.
+ *
+ * If a primary we have never seen appears, the change was not purely slot-level
+ * after all (a node entered the serving set); fall back to a full rebuild so the
+ * new shard is set up and connected through the normal path. */
+static void MR_UpdateClusterSlots(){
+    if (!clusterCtx.CurrCluster) {
+        /* Nothing to update incrementally yet; build from scratch. */
+        MR_RefreshClusterData();
+        return;
+    }
+
+    if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
+        return;
+    }
+
+    RedisModule_Log(mr_staticCtx, "notice", "Got cluster slot-map update (in-place reshard)");
+
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    RedisModuleCallReply *allSlotsReply = RedisModule_Call(mr_staticCtx, "cluster", "c", "slots");
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    RedisModule_Assert(RedisModule_CallReplyType(allSlotsReply) == REDISMODULE_REPLY_ARRAY);
+
+    /* Repoint the whole slot map from the fresh reply; reused nodes keep their
+     * connections. Runs on the event-loop thread, same as the dispatch path that
+     * reads slots[], so no reader can observe a half-updated map. */
+    memset(clusterCtx.CurrCluster->slots, 0, sizeof(clusterCtx.CurrCluster->slots));
+
+    for(size_t i = 0 ; i < RedisModule_CallReplyLength(allSlotsReply) ; ++i){
+        RedisModuleCallReply *slotRangeReply = RedisModule_CallReplyArrayElement(allSlotsReply, i);
+
+        RedisModuleCallReply *minSlotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 0);
+        RedisModule_Assert(RedisModule_CallReplyType(minSlotReply) == REDISMODULE_REPLY_INTEGER);
+        long long minSlot = RedisModule_CallReplyInteger(minSlotReply);
+
+        RedisModuleCallReply *maxSlotReply = RedisModule_CallReplyArrayElement(slotRangeReply, 1);
+        RedisModule_Assert(RedisModule_CallReplyType(maxSlotReply) == REDISMODULE_REPLY_INTEGER);
+        long long maxSlot = RedisModule_CallReplyInteger(maxSlotReply);
+
+        RedisModuleCallReply *nodeDetailsReply = RedisModule_CallReplyArrayElement(slotRangeReply, 2);
+        RedisModule_Assert(RedisModule_CallReplyType(nodeDetailsReply) == REDISMODULE_REPLY_ARRAY);
+        RedisModule_Assert(RedisModule_CallReplyLength(nodeDetailsReply) >= 3);
+        RedisModuleCallReply *nodeidReply = RedisModule_CallReplyArrayElement(nodeDetailsReply, 2);
+        size_t idLen;
+        const char* id = RedisModule_CallReplyStringPtr(nodeidReply,&idLen);
+
+        char nodeId[REDISMODULE_NODE_ID_LEN + 1];
+        memcpy(nodeId, id, REDISMODULE_NODE_ID_LEN);
+        nodeId[REDISMODULE_NODE_ID_LEN] = '\0';
+
+        Node* n = MR_GetNode(nodeId);
+        if(!n){
+            /* A primary we did not know about -> not a pure slot move after all. */
+            RedisModule_Log(mr_staticCtx, "notice",
+                "Slot-map update saw an unknown shard %s; doing a full topology refresh", nodeId);
+            RedisModule_FreeCallReply(allSlotsReply);
+            MR_RefreshClusterData();
+            return;
+        }
+
+        if (n->isMe) {
+            clusterCtx.minSlot = minSlot;
+            clusterCtx.maxSlot = maxSlot;
+        }
+
+        for(int k = minSlot ; k <= maxSlot ; ++k){
+            clusterCtx.CurrCluster->slots[k] = n;
+        }
+    }
+    RedisModule_FreeCallReply(allSlotsReply);
+}
+
 static void GenerateRunId(Cluster* cluster){
     RedisModule_GetRandomHexChars(cluster->runId, RUN_ID_SIZE);
     cluster->runId[RUN_ID_SIZE] = '\0';
@@ -1336,6 +1421,20 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 static unsigned long long clusterTopoEventSeq = 0; /* bumped by the event callback */
 static char clusterTopoDebounceArmed = 0;          /* at most one debounce chain */
 static unsigned long long clusterTopoSeenSeq = 0;  /* event-loop thread only */
+/* OR of REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_* reasons accumulated across the
+ * events coalesced into the current debounce window, so we can pick the cheapest
+ * refresh that still covers every change. */
+static unsigned int clusterTopoPendingChanges = 0;
+
+/* Reasons that may change the set of primaries we hold connections to -- a node
+ * joined/left (NODE), a primary/replica role flip (ROLE), or an OK/FAIL transition
+ * that can bring shards in or out of service (STATE) -- and therefore require a
+ * full rebuild (reconnect). A SLOT-only change is an in-place reshard between
+ * primaries we are already connected to, so a connection-preserving slot-map
+ * update suffices and avoids aborting in-flight cross-shard queries. */
+#define MR_TOPO_REBUILD_FLAGS (REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_NODE | \
+                               REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_ROLE | \
+                               REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_STATE)
 
 /* Runs on the event loop. Refreshes once the event counter has been stable for
  * a full debounce window, otherwise waits another window. */
@@ -1358,7 +1457,20 @@ static void MR_TopoDebounceCheck(void* ctx){
         }
         return;
     }
-    MR_RefreshClusterData();
+    /* Quiesced for real. Consume the accumulated reason flags and pick the cheapest
+     * refresh that covers them: a full rebuild if the set of primaries may have
+     * changed (NODE/ROLE/STATE), otherwise a connection-preserving slot-map update
+     * for an in-place reshard (SLOT only). If a rebuild-worthy event raced in after
+     * the re-check above, it re-armed its own chain and re-OR'd its bit; whichever
+     * exchange observes the bit does the full rebuild, and the other chain's refresh
+     * is a harmless idempotent slot-map update -- so a membership/role/state change
+     * is never masked by this fast path. */
+    unsigned int pending = __atomic_exchange_n(&clusterTopoPendingChanges, 0u, __ATOMIC_SEQ_CST);
+    if (pending & MR_TOPO_REBUILD_FLAGS) {
+        MR_RefreshClusterData();
+    } else {
+        MR_UpdateClusterSlots();
+    }
 }
 
 /* Runs on the event loop: start a debounce chain (called via the thread-safe
@@ -1373,8 +1485,12 @@ static void MR_TopoDebounceStart(void* ctx){
  * an OSS cluster (Enterprise/standalone), mirroring the OSS-only registration of
  * the REFRESHCLUSTER command, so it is safe to call unconditionally from a Redis
  * server-event callback. */
-void MR_ClusterRefreshTopology(void){
+void MR_ClusterRefreshTopology(int change_flags){
     if (!clusterCtx.isOss) return;
+    /* Accumulate the reason flags before bumping the sequence, so the debounce task
+     * that eventually fires always sees at least the bits for every event it is
+     * coalescing. */
+    __atomic_or_fetch(&clusterTopoPendingChanges, (unsigned int)change_flags, __ATOMIC_SEQ_CST);
     __atomic_add_fetch(&clusterTopoEventSeq, 1, __ATOMIC_SEQ_CST);
     if (__atomic_test_and_set(&clusterTopoDebounceArmed, __ATOMIC_SEQ_CST)) {
         return; /* a debounce chain is already running; it will see the bump */
