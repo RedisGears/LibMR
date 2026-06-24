@@ -1138,18 +1138,31 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         memcpy(nodeId, nodeList[i], REDISMODULE_NODE_ID_LEN);
         nodeId[REDISMODULE_NODE_ID_LEN] = '\0';
 
-        char ip[INET6_ADDRSTRLEN];  // INET6_ADDRSTRLEN includes the closing '\0'
-        int port, flags;
+        char ip[INET6_ADDRSTRLEN] = {0};  // INET6_ADDRSTRLEN includes the closing '\0'
+        int port = 0, flags = 0;
 
-        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, ip, NULL, &port, &flags) != REDISMODULE_OK) {
-            RedisModule_Log(mr_staticCtx, "warning", "Failed to get info for node %s", nodeId);
+        // The cluster API may list a node for which it has no usable endpoint: GetClusterNodeInfo
+        // can fail, or return a zero/empty ip:port. This happens on Redis builds where the module
+        // cluster topology is not fully populated -- e.g. Redis Enterprise without the node-port
+        // backport, where getNodeDefaultClientPort() returns 0 (RED-202230). Skip such nodes; if
+        // none remain we reject the command below so the caller can fall back to the long form.
+        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, ip, NULL, &port, &flags) != REDISMODULE_OK
+            || port <= 0 || ip[0] == '\0') {
+            RedisModule_Log(mr_staticCtx, "warning",
+                "Short-form CLUSTERSET: no valid endpoint for node %s (ip/port not set by the cluster API)", nodeId);
             continue;
         }
 
         if (!(flags & REDISMODULE_NODE_MASTER)) continue;  // Skip replica nodes
 
         RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
-        RedisModule_Assert(slots != NULL);
+        if (slots == NULL) {
+            // Defensive: don't crash the shard if the API returns no slot info for a node it just
+            // listed (incomplete topology); skip it instead of asserting.
+            RedisModule_Log(mr_staticCtx, "warning",
+                "Short-form CLUSTERSET: no slot ranges for node %s; skipping", nodeId);
+            continue;
+        }
         long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
         if (slots->num_ranges > 0) {
             minSlot = slots->ranges[0].start;
@@ -1181,6 +1194,18 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
     }
     RedisModule_FreeClusterNodesList(nodeList);
+
+    // If the cluster API gave us no usable master shards (e.g. every node had a zero/empty
+    // endpoint), reject the short form instead of installing an empty/broken topology and
+    // replying OK. Returning an error lets the caller (e.g. DMC) fall back to the long-form
+    // CLUSTERSET, which carries the endpoints explicitly. See RED-202230.
+    if (mr_dictSize(clusterCtx.CurrCluster->nodes) == 0) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET produced no valid shards from the cluster API; rejecting so the "
+            "caller can fall back to long-form CLUSTERSET");
+        MR_ClusterFree();  // frees the half-built cluster and sets clusterCtx.CurrCluster = NULL
+        return REDISMODULE_ERR;
+    }
 
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
