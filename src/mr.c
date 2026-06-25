@@ -1410,72 +1410,13 @@ void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle) {
     e->timeoutMS = maxIdle;
 }
 
-/* Drain LibMR background threads to a safe point before fork(): a thread holding a
- * libc lock (e.g. the allocator lock) at fork() would leave the child holding a locked
- * mutex with no owner and deadlock it. MR_DrainForFork() parks the event-loop thread
- * (between tasks, so it stops dispatching and isn't holding the GIL) and waits for the
- * worker pool to go idle; MR_ResumeAfterFork() releases it after FORK_CHILD_BORN/CANCELLED. */
-#define MR_FORK_DRAIN_TIMEOUT_MS 2000
-
-static pthread_mutex_t mr_forkDrainLock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  mr_forkDrainCond = PTHREAD_COND_INITIALIZER;
-static int mr_forkElParked = 0;
-static int mr_forkElRelease = 0;
-
-/* Runs on the event-loop thread between tasks (a safe point); parks it until resumed. */
-static void MR_ForkParkElThread(void* ctx) {
-    REDISMODULE_NOT_USED(ctx);
-    pthread_mutex_lock(&mr_forkDrainLock);
-    mr_forkElParked = 1;
-    pthread_cond_broadcast(&mr_forkDrainCond);
-    while (!mr_forkElRelease) {
-        pthread_cond_wait(&mr_forkDrainCond, &mr_forkDrainLock);
-    }
-    mr_forkElParked = 0;
-    pthread_mutex_unlock(&mr_forkDrainLock);
-}
-
+/* PROBE: no drain at all. MR_DrainForFork/MR_ResumeAfterFork are no-ops so we can measure
+ * whether the fork ghost-lock reproduces without any quiescing -- i.e. is the drain a real
+ * production necessity, or mainly protecting the ASan/non-jemalloc build (Ozan's question)? */
 void MR_DrainForFork(void) {
-    if (!mrCtx.executionsThreadPool) return;
-
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += MR_FORK_DRAIN_TIMEOUT_MS / 1000;
-    deadline.tv_nsec += (MR_FORK_DRAIN_TIMEOUT_MS % 1000) * 1000000L;
-    if (deadline.tv_nsec >= 1000000000L) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000L; }
-
-    /* Park the event-loop thread between tasks so it stops dispatching work. */
-    pthread_mutex_lock(&mr_forkDrainLock);
-    mr_forkElParked = 0;
-    mr_forkElRelease = 0;
-    pthread_mutex_unlock(&mr_forkDrainLock);
-
-    MR_EventLoopAddTask(MR_ForkParkElThread, NULL);
-
-    pthread_mutex_lock(&mr_forkDrainLock);
-    while (!mr_forkElParked) {
-        if (pthread_cond_timedwait(&mr_forkDrainCond, &mr_forkDrainLock, &deadline) == ETIMEDOUT)
-            break;
-    }
-    int parked = mr_forkElParked;
-    pthread_mutex_unlock(&mr_forkDrainLock);
-
-    /* With the event loop parked no new work is dispatched; wait for the worker pool
-     * to go idle via its own idle signal. */
-    int idle = mr_thpool_wait_timeout(mrCtx.executionsThreadPool, MR_FORK_DRAIN_TIMEOUT_MS);
-
-    if (!parked || !idle)
-        RedisModule_Log(mr_staticCtx, "warning",
-            "MR_DrainForFork: not fully quiesced before fork (el_parked=%d, pool_idle=%d)",
-            parked, idle);
 }
 
 void MR_ResumeAfterFork(void) {
-    if (!mrCtx.executionsThreadPool) return;
-    pthread_mutex_lock(&mr_forkDrainLock);
-    mr_forkElRelease = 1;
-    pthread_cond_broadcast(&mr_forkDrainCond);
-    pthread_mutex_unlock(&mr_forkDrainLock);
 }
 
 void MR_Run(Execution* e) {
