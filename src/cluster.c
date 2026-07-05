@@ -1107,6 +1107,15 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         return REDISMODULE_ERR;
     }
 
+    // GetMyClusterID() is NULL without a cluster identity -> NULL memcpy in SetMyId. Check the
+    // value too, not just the flag: RE's plugin can report cluster mode on before exposing an id.
+    if (!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)
+        || RedisModule_GetMyClusterID() == NULL) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET rejected: shard has no cluster identity");
+        return REDISMODULE_ERR;
+    }
+
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
@@ -1138,18 +1147,24 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         memcpy(nodeId, nodeList[i], REDISMODULE_NODE_ID_LEN);
         nodeId[REDISMODULE_NODE_ID_LEN] = '\0';
 
-        char ip[INET6_ADDRSTRLEN];  // INET6_ADDRSTRLEN includes the closing '\0'
-        int port, flags;
+        char ip[INET6_ADDRSTRLEN] = {0};  // INET6_ADDRSTRLEN includes the closing '\0'
+        int port = 0, flags = 0;
 
-        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, ip, NULL, &port, &flags) != REDISMODULE_OK) {
-            RedisModule_Log(mr_staticCtx, "warning", "Failed to get info for node %s", nodeId);
+        // Skip nodes with no usable endpoint (rc != OK, or port/ip unset -- e.g. RE without the
+        // node-port backport, where getNodeDefaultClientPort() returns 0, RED-202230).
+        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, ip, NULL, &port, &flags) != REDISMODULE_OK
+            || port <= 0 || ip[0] == '\0') {
+            RedisModule_Log(mr_staticCtx, "warning", "Short-form CLUSTERSET: no valid endpoint for node %s", nodeId);
             continue;
         }
 
         if (!(flags & REDISMODULE_NODE_MASTER)) continue;  // Skip replica nodes
 
         RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
-        RedisModule_Assert(slots != NULL);
+        if (slots == NULL) {  // incomplete topology; skip instead of asserting
+            RedisModule_Log(mr_staticCtx, "warning", "Short-form CLUSTERSET: no slot ranges for node %s; skipping", nodeId);
+            continue;
+        }
         long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
         if (slots->num_ranges > 0) {
             minSlot = slots->ranges[0].start;
@@ -1181,6 +1196,14 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
     }
     RedisModule_FreeClusterNodesList(nodeList);
+
+    // No usable shards from the cluster API -> reject so the caller falls back to long form,
+    // instead of installing an empty topology and replying OK. RED-202230.
+    if (mr_dictSize(clusterCtx.CurrCluster->nodes) == 0) {
+        RedisModule_Log(mr_staticCtx, "warning", "Short-form CLUSTERSET: no valid shards; rejecting");
+        MR_ClusterFree();
+        return REDISMODULE_ERR;
+    }
 
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
