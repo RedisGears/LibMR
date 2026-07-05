@@ -955,27 +955,33 @@ static void MR_RefreshClusterData(){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
-/* Update only the slot->node routing from a fresh CLUSTER SLOTS, reusing the
- * existing Node structs (and their live connections) instead of tearing the whole
- * cluster down and reconnecting. Used for an in-place reshard (only the
- * REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_SLOT reason set): the set of primaries is unchanged,
- * so only the slot map moved. A full MR_RefreshClusterData would abort in-flight
- * cross-shard executions (MR_AbortRunningExecutions) and rebuild every connection
- * for nothing, which is exactly what disrupts fan-out queries running during a
- * reshard.
+/* Reconcile the LibMR cluster view with a fresh CLUSTER SLOTS, reusing the existing
+ * Node structs (and their live connections) wherever possible. This is the single
+ * entry point the debounced topology-change handler calls, regardless of which
+ * reason flags the event carried, and it decides what to do from the actual
+ * primary-set delta:
+ *
+ *  - If the set of slot-serving primaries is unchanged (only slot ownership moved
+ *    between primaries we are already connected to -- an in-place reshard), we just
+ *    repoint CurrCluster->slots in place. Connections and in-flight cross-shard
+ *    executions are left untouched, so a reshard never drops multi-key commands.
+ *  - If the set of primaries changed (a primary entered or left the serving set --
+ *    scale-out, scale-in, failover), we escalate to MR_RefreshClusterData, which
+ *    reconnects to the new set and aborts in-flight executions (the client retries).
+ *
+ * Deciding by the primary-set delta rather than by the event's reason flags means an
+ * over-broad or spurious notification (a replica re-pointing, an OK<->FAIL flip, a
+ * slotless node joining) that does not change the primary set costs only a cheap
+ * in-place repoint -- never a connection rebuild or a dropped in-flight multi-key
+ * command.
  *
  * In OSS mode CurrCluster->slots is the routing source of truth (the SendMsgType_BySlot
- * path), while fan-out (SendMsgType_All) iterates the nodes dict -- both stay correct
- * here since the node set is unchanged and only slots[] is repointed. Per-node
- * slotRanges are only consumed by the Enterprise CLUSTERSET build and the debug
- * RG.INFOCLUSTER reply, so they are intentionally left untouched.
- *
- * If a primary we have never seen appears, the change was not purely slot-level
- * after all (a node entered the serving set); fall back to a full rebuild so the
- * new shard is set up and connected through the normal path. */
+ * path) and fan-out (SendMsgType_All) iterates the nodes dict; both stay correct here.
+ * Per-node slotRanges are only consumed by the Enterprise CLUSTERSET build and the
+ * debug RG.INFOCLUSTER reply, so they are intentionally left untouched. */
 static void MR_UpdateClusterSlots(){
     if (!clusterCtx.CurrCluster) {
-        /* Nothing to update incrementally yet; build from scratch. */
+        /* Nothing to reconcile against yet; build from scratch. */
         MR_RefreshClusterData();
         return;
     }
@@ -983,8 +989,6 @@ static void MR_UpdateClusterSlots(){
     if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
         return;
     }
-
-    RedisModule_Log(mr_staticCtx, "notice", "Got cluster slot-map update (in-place reshard)");
 
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
     RedisModuleCallReply *allSlotsReply = RedisModule_Call(mr_staticCtx, "cluster", "c", "slots");
@@ -995,6 +999,11 @@ static void MR_UpdateClusterSlots(){
      * connections. Runs on the event-loop thread, same as the dispatch path that
      * reads slots[], so no reader can observe a half-updated map. */
     memset(clusterCtx.CurrCluster->slots, 0, sizeof(clusterCtx.CurrCluster->slots));
+
+    /* Distinct primaries seen in the fresh reply, so we can detect a primary that
+     * *left* the serving set after the loop (a primary that *entered* is caught
+     * inline below as an unknown shard id). */
+    mr_dict* seenPrimaries = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 
     for(size_t i = 0 ; i < RedisModule_CallReplyLength(allSlotsReply) ; ++i){
         RedisModuleCallReply *slotRangeReply = RedisModule_CallReplyArrayElement(allSlotsReply, i);
@@ -1020,13 +1029,15 @@ static void MR_UpdateClusterSlots(){
 
         Node* n = MR_GetNode(nodeId);
         if(!n){
-            /* A primary we did not know about -> not a pure slot move after all. */
+            /* A primary entered the serving set -> rebuild so it gets connected. */
             RedisModule_Log(mr_staticCtx, "notice",
-                "Slot-map update saw an unknown shard %s; doing a full topology refresh", nodeId);
+                "Topology reconcile saw a new shard %s; doing a full topology refresh", nodeId);
+            mr_dictRelease(seenPrimaries);
             RedisModule_FreeCallReply(allSlotsReply);
             MR_RefreshClusterData();
             return;
         }
+        mr_dictAdd(seenPrimaries, nodeId, NULL); /* duplicate ranges for a node are ignored */
 
         if (n->isMe) {
             clusterCtx.minSlot = minSlot;
@@ -1038,6 +1049,19 @@ static void MR_UpdateClusterSlots(){
         }
     }
     RedisModule_FreeCallReply(allSlotsReply);
+
+    /* If a primary we knew about is no longer serving any slots (scale-in / failover),
+     * the set of primaries shrank -- rebuild so we drop it and abort in-flight
+     * executions that assumed it. Additions were handled above, so a distinct count
+     * smaller than the primaries we hold means exactly a removal. */
+    size_t primariesNow = mr_dictSize(seenPrimaries);
+    mr_dictRelease(seenPrimaries);
+    if (primariesNow != mr_dictSize(clusterCtx.CurrCluster->nodes)) {
+        RedisModule_Log(mr_staticCtx, "notice",
+            "Topology reconcile: the set of primaries changed; doing a full topology refresh");
+        MR_RefreshClusterData();
+        return;
+    }
 }
 
 static void GenerateRunId(Cluster* cluster){
@@ -1421,20 +1445,6 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 static unsigned long long clusterTopoEventSeq = 0; /* bumped by the event callback */
 static char clusterTopoDebounceArmed = 0;          /* at most one debounce chain */
 static unsigned long long clusterTopoSeenSeq = 0;  /* event-loop thread only */
-/* OR of REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_* reasons accumulated across the
- * events coalesced into the current debounce window, so we can pick the cheapest
- * refresh that still covers every change. */
-static unsigned int clusterTopoPendingChanges = 0;
-
-/* Reasons that may change the set of primaries we hold connections to -- a node
- * joined/left (NODE), a primary/replica role flip (ROLE), or an OK/FAIL transition
- * that can bring shards in or out of service (STATE) -- and therefore require a
- * full rebuild (reconnect). A SLOT-only change is an in-place reshard between
- * primaries we are already connected to, so a connection-preserving slot-map
- * update suffices and avoids aborting in-flight cross-shard queries. */
-#define MR_TOPO_REBUILD_FLAGS (REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_NODE | \
-                               REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_ROLE | \
-                               REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_STATE)
 
 /* Runs on the event loop. Refreshes once the event counter has been stable for
  * a full debounce window, otherwise waits another window. */
@@ -1457,20 +1467,14 @@ static void MR_TopoDebounceCheck(void* ctx){
         }
         return;
     }
-    /* Quiesced for real. Consume the accumulated reason flags and pick the cheapest
-     * refresh that covers them: a full rebuild if the set of primaries may have
-     * changed (NODE/ROLE/STATE), otherwise a connection-preserving slot-map update
-     * for an in-place reshard (SLOT only). If a rebuild-worthy event raced in after
-     * the re-check above, it re-armed its own chain and re-OR'd its bit; whichever
-     * exchange observes the bit does the full rebuild, and the other chain's refresh
-     * is a harmless idempotent slot-map update -- so a membership/role/state change
-     * is never masked by this fast path. */
-    unsigned int pending = __atomic_exchange_n(&clusterTopoPendingChanges, 0u, __ATOMIC_SEQ_CST);
-    if (pending & MR_TOPO_REBUILD_FLAGS) {
-        MR_RefreshClusterData();
-    } else {
-        MR_UpdateClusterSlots();
-    }
+    /* Quiesced for real. Reconcile against CLUSTER SLOTS: MR_UpdateClusterSlots
+     * decides from the actual primary-set delta whether a full rebuild (which aborts
+     * in-flight executions) is needed or a connection-preserving in-place slot-map
+     * update suffices. The event's reason flags therefore don't need to be exact,
+     * and a spurious/over-broad event never drops in-flight multi-key commands. If an
+     * event raced in after the re-check above it re-armed its own chain; a redundant
+     * reconcile is a harmless no-op. */
+    MR_UpdateClusterSlots();
 }
 
 /* Runs on the event loop: start a debounce chain (called via the thread-safe
@@ -1487,10 +1491,11 @@ static void MR_TopoDebounceStart(void* ctx){
  * server-event callback. */
 void MR_ClusterRefreshTopology(int change_flags){
     if (!clusterCtx.isOss) return;
-    /* Accumulate the reason flags before bumping the sequence, so the debounce task
-     * that eventually fires always sees at least the bits for every event it is
-     * coalescing. */
-    __atomic_or_fetch(&clusterTopoPendingChanges, (unsigned int)change_flags, __ATOMIC_SEQ_CST);
+    /* change_flags is advisory: the debounced refresh reconciles against CLUSTER
+     * SLOTS and decides rebuild-vs-in-place from the actual primary-set delta, so we
+     * don't act on the reason bits here. Kept in the signature for callers / future
+     * use. */
+    REDISMODULE_NOT_USED(change_flags);
     __atomic_add_fetch(&clusterTopoEventSeq, 1, __ATOMIC_SEQ_CST);
     if (__atomic_test_and_set(&clusterTopoDebounceArmed, __ATOMIC_SEQ_CST)) {
         return; /* a debounce chain is already running; it will see the bump */
