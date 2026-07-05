@@ -1107,6 +1107,20 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         return REDISMODULE_ERR;
     }
 
+    // The short form derives this shard's own identity and its peers entirely
+    // from the cluster API (GetMyClusterID / GetClusterNodesList /
+    // GetClusterNodeInfo). On a non-cluster (standalone) shard
+    // RedisModule_GetMyClusterID() returns NULL, which would crash while
+    // building the topology (NULL memcpy in SetMyId). Reject the command
+    // instead so the shard stays unconfigured until cluster mode is enabled
+    // (or a long-form CLUSTERSET / REFRESHCLUSTER arrives). See RED-207632.
+    if (!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET received on a non-cluster (standalone) shard; "
+            "rejecting. The cluster API is unavailable without cluster mode.");
+        return REDISMODULE_ERR;
+    }
+
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
