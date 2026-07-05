@@ -1107,6 +1107,15 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         return REDISMODULE_ERR;
     }
 
+    // GetMyClusterID() is NULL without a cluster identity -> NULL memcpy in SetMyId. Check the
+    // value too, not just the flag: RE's plugin can report cluster mode on before exposing an id.
+    if (!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)
+        || RedisModule_GetMyClusterID() == NULL) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET rejected: shard has no cluster identity");
+        return REDISMODULE_ERR;
+    }
+
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
