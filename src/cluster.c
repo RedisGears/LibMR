@@ -1382,7 +1382,35 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
+/* Returns true when the incoming long-form cluster-set command carries the exact
+ * topology the current cluster was built from. The MYID slot is excluded: it names
+ * the receiving shard, not the topology, and is stored as NULL (see CopyClusterSetArgs). */
+static bool ClusterSetCommandIsUnchanged(RedisModuleString** argv, int argc){
+    Cluster* cur = clusterCtx.CurrCluster;
+    if (!cur || !cur->clusterSetCommand || cur->clusterSetCommandSize != argc)
+        return false;
+    if (!IsLongFormClusterSet(argc))
+        return false;
+    for (int i = 1 ; i < argc ; ++i) {
+        if (i == CLUSTERSET_MYID_LONG_FORM_INDEX)
+            continue;
+        const char* arg = RedisModule_StringPtrLen(argv[i], NULL);
+        if (strcmp(arg, cur->clusterSetCommand[i]) != 0)
+            return false;
+    }
+    return true;
+}
+
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
+    /* The topology is re-broadcast on many events that do not change it (node events,
+     * shard reconnects, delivery retries). Rebuilding for an identical topology would
+     * drop all inter-shard connections and abort in-flight executions for nothing. */
+    if (ClusterSetCommandIsUnchanged(argv, argc)) {
+        RedisModule_Log(mr_staticCtx, "notice",
+                        "Got cluster set command with an unchanged topology, skipping the rebuild");
+        return REDISMODULE_OK;
+    }
+
     if(clusterCtx.CurrCluster)
         MR_ClusterFree();
 
