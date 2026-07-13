@@ -69,6 +69,7 @@ static bool IsShortFormClusterSet(int argc) {
 #define CLUSTER_REFRESH_COMMAND             xstr(MODULE_NAME)".REFRESHCLUSTER"
 #define CLUSTER_SET_COMMAND                 xstr(MODULE_NAME)".CLUSTERSET"
 #define CLUSTER_SET_FROM_SHARD_COMMAND      xstr(MODULE_NAME)".CLUSTERSETFROMSHARD"
+#define INTERNAL_PASSWORD_MAX_SIZE 100
 #define CLUSTER_INFO_COMMAND                xstr(MODULE_NAME)".INFOCLUSTER"
 #define NETWORK_TEST_COMMAND                xstr(MODULE_NAME)".NETWORKTEST"
 #define FORCE_SHARDS_CONNECTION             xstr(MODULE_NAME)".FORCESHARDSCONNECTION"
@@ -149,7 +150,6 @@ typedef struct Cluster {
     Node* slots[NUMBER_OF_SLOTS];
     size_t clusterSetCommandSize;
     char** clusterSetCommand;
-    char* shortFormTopology; /* canonical master-set snapshot; set only by the short form */
     char runId[RUN_ID_SIZE + 1];
 }Cluster;
 
@@ -812,10 +812,6 @@ static void MR_ClusterFree(){
         MR_FREE(clusterCtx.CurrCluster->clusterSetCommand);
     }
 
-    if(clusterCtx.CurrCluster->shortFormTopology){
-        MR_FREE(clusterCtx.CurrCluster->shortFormTopology);
-    }
-
     MR_FREE(clusterCtx.CurrCluster);
     clusterCtx.CurrCluster = NULL;
     clusterCtx.minSlot = 0;
@@ -967,6 +963,8 @@ typedef struct TopologyViewEntry {
     char id[REDISMODULE_NODE_ID_LEN + 1];
     char ip[INET6_ADDRSTRLEN];
     unsigned short port;
+    char password[INTERNAL_PASSWORD_MAX_SIZE + 1];
+    bool comparePassword; /* the view's source carries per-shard passwords */
     long long minSlot;
     long long maxSlot;
 } TopologyViewEntry;
@@ -1041,6 +1039,13 @@ static bool MR_TryApplyTopologyInPlace(const TopologyViewEntry* view, size_t n){
             (view[i].port != 0 && node->port != view[i].port)) {
             RedisModule_Log(mr_staticCtx, "notice",
                 "Topology reconcile: shard %s changed its address; doing a full topology refresh", view[i].id);
+            mr_dictRelease(seen);
+            return false;
+        }
+        if (view[i].comparePassword &&
+            strcmp(node->password ? node->password : "", view[i].password) != 0) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                "Topology reconcile: shard %s changed its password; doing a full topology refresh", view[i].id);
             mr_dictRelease(seen);
             return false;
         }
@@ -1133,7 +1138,6 @@ static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc
     cluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
 }
 
-#define INTERNAL_PASSWORD_MAX_SIZE 100
 
 // Parse a SHARD entry into the output arguments and return the index of the last parsed token
 static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
@@ -1387,75 +1391,14 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
-static int compare_snapshot_entries(const void* a, const void* b){
-    return strcmp(*(const char**)a, *(const char**)b);
-}
-
-/* Build a canonical snapshot of the master set currently visible through the
- * cluster API: one "<id> <ip>:<port> <slot ranges>" line per master, sorted by
- * node id so the nodes-list iteration order does not matter. The password is
- * deliberately absent: it comes from the command arguments, which are compared
- * separately. Returns NULL when the cluster API is unavailable; the caller owns
- * the result. */
-static char* ShortFormTopologySnapshot(void){
-    if (RedisModule_GetClusterNodeSlotRanges == NULL)
-        return NULL;
-
-    size_t numNodes;
-    char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
-    if (!nodeList)
-        return NULL;
-
-    ARR(char*) entries = array_new(char*, numNodes);
-    for (size_t i = 0; i < numNodes; i++) {
-        char nodeId[REDISMODULE_NODE_ID_LEN + 1];  // nodeList[i] is not null-terminated
-        memcpy(nodeId, nodeList[i], REDISMODULE_NODE_ID_LEN);
-        nodeId[REDISMODULE_NODE_ID_LEN] = '\0';
-
-        char ip[INET6_ADDRSTRLEN];  // INET6_ADDRSTRLEN includes the closing '\0'
-        int port, flags;
-        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, ip, NULL, &port, &flags) != REDISMODULE_OK)
-            continue;
-        if (!(flags & REDISMODULE_NODE_MASTER)) continue;  // Skip replica nodes
-
-        RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, nodeId);
-        RedisModule_Assert(slots != NULL);
-        size_t cap = REDISMODULE_NODE_ID_LEN + INET6_ADDRSTRLEN + slots->num_ranges * 12 + 32;
-        char* entry = MR_ALLOC(cap);
-        size_t len = snprintf(entry, cap, "%s %s:%d", nodeId, ip, port);
-        for (size_t j = 0; j < slots->num_ranges; j++)
-            len += snprintf(entry + len, cap - len, " %d-%d", (int)slots->ranges[j].start, (int)slots->ranges[j].end);
-        RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
-        entries = array_append(entries, entry);
-    }
-    RedisModule_FreeClusterNodesList(nodeList);
-
-    qsort(entries, array_len(entries), sizeof(*entries), compare_snapshot_entries);
-
-    size_t total = 1;
-    for (size_t i = 0; i < array_len(entries); i++)
-        total += strlen(entries[i]) + 1;
-    char* snapshot = MR_ALLOC(total);
-    size_t pos = 0;
-    for (size_t i = 0; i < array_len(entries); i++) {
-        pos += snprintf(snapshot + pos, total - pos, "%s\n", entries[i]);
-        MR_FREE(entries[i]);
-    }
-    snapshot[pos] = '\0';
-    array_free(entries);
-    return snapshot;
-}
-
-/* Returns true when the incoming cluster-set command carries a topology different
- * from the one the current cluster was built from. The long form is compared by
- * its arguments; the MYID slot is excluded, as it names the receiving shard rather
- * than the topology, and is stored as NULL (see CopyClusterSetArgs). The short form
- * derives the topology from the server's cluster state, so on top of its arguments
- * (just the AUTH password) it compares `snapshot`, the freshly derived master set. */
-static bool ClusterSetIsNewTopology(RedisModuleString** argv, int argc, const char* snapshot){
+/* Returns true when the incoming cluster-set command is argument-identical to
+ * the one the current cluster was built from. The MYID slot is excluded: it
+ * names the receiving shard rather than the topology, and is stored as NULL
+ * (see CopyClusterSetArgs). */
+static bool ClusterSetArgsUnchanged(RedisModuleString** argv, int argc){
     Cluster* cur = clusterCtx.CurrCluster;
     if (!cur || !cur->clusterSetCommand || cur->clusterSetCommandSize != argc)
-        return true;
+        return false;
     for (int i = 1 ; i < argc ; ++i) {
         if (IsLongFormClusterSet(argc) && i == CLUSTERSET_MYID_LONG_FORM_INDEX)
             continue;
@@ -1463,11 +1406,74 @@ static bool ClusterSetIsNewTopology(RedisModuleString** argv, int argc, const ch
         const char* arg = RedisModule_StringPtrLen(argv[i], &argLen);
         if (argLen != strlen(cur->clusterSetCommand[i]) ||
             memcmp(arg, cur->clusterSetCommand[i], argLen) != 0)
-            return true;
+            return false;
     }
-    if (IsShortFormClusterSet(argc))
-        return !snapshot || !cur->shortFormTopology || strcmp(snapshot, cur->shortFormTopology) != 0;
-    return false;
+    return true;
+}
+
+/* Returns true when the long-form MYID argument still names the shard the
+ * current cluster was built for (padded the way SetMyId pads it). */
+static bool LongFormMyIdUnchanged(RedisModuleString** argv, int argc){
+    RedisModule_Assert(CLUSTERSET_MYID_LONG_FORM_INDEX < argc);
+    size_t myIdLen;
+    const char* myId = RedisModule_StringPtrLen(argv[CLUSTERSET_MYID_LONG_FORM_INDEX], &myIdLen);
+    char padded[REDISMODULE_NODE_ID_LEN + 1];
+    size_t zerosPadding = REDISMODULE_NODE_ID_LEN - myIdLen;
+    memset(padded, '0', zerosPadding);
+    memcpy(padded + zerosPadding, myId, myIdLen);
+    padded[REDISMODULE_NODE_ID_LEN] = '\0';
+    return clusterCtx.CurrCluster && clusterCtx.CurrCluster->myId &&
+           strcmp(clusterCtx.CurrCluster->myId, padded) == 0;
+}
+
+/* Reduce the long-form CLUSTERSET arguments to a topology view (the same walk
+ * as SetClusterDataLongForm, without touching any state). The entries carry
+ * the per-shard passwords. The caller owns the returned array. */
+static ARR(TopologyViewEntry) BuildLongFormView(RedisModuleString** argv, int argc){
+    size_t index = CLUSTERSET_MYID_LONG_FORM_INDEX + 1;
+    const char *token = RedisModule_StringPtrLen(argv[index], NULL);
+    if (strcasecmp(token, "HASREPLICATION") == 0) {  // skip this token; we ignore it
+        index++;
+        RedisModule_Assert(index < argc);
+        token = RedisModule_StringPtrLen(argv[index], NULL);
+    }
+    RedisModule_Assert(strcasecmp(token, "RANGES") == 0);
+    index++;
+    RedisModule_Assert(index < argc);
+    long long numOfRanges;
+    RedisModule_Assert(RedisModule_StringToLongLong(argv[index], &numOfRanges) == REDISMODULE_OK);
+    index++;
+
+    ARR(TopologyViewEntry) view = array_new(TopologyViewEntry, numOfRanges ? numOfRanges : 1);
+    for (size_t j = 0 ; j < (size_t)numOfRanges ; ++j) {
+        TopologyViewEntry e = { .comparePassword = true };
+        bool shouldSkip;
+        index = ParseShardEntry(argv, argc, index, e.id, e.ip, &e.port, e.password,
+                                &e.minSlot, &e.maxSlot, &shouldSkip);
+        if (index >= argc)
+            break;
+        if (shouldSkip)
+            continue;
+        view = array_append(view, e);
+        index++;
+    }
+    return view;
+}
+
+/* Replace the stored cluster-set command, so the next identical-args compare
+ * checks against what was last applied, without touching any other state. */
+static void ReplaceClusterSetArgs(Cluster* cluster, RedisModuleString** argv, int argc){
+    if (cluster->clusterSetCommand) {
+        for (size_t i = 0 ; i < cluster->clusterSetCommandSize ; ++i) {
+            if (cluster->clusterSetCommand[i])
+                MR_FREE(cluster->clusterSetCommand[i]);
+        }
+        MR_FREE(cluster->clusterSetCommand);
+    }
+    cluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
+    cluster->clusterSetCommandSize = argc;
+    cluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
+    CopyClusterSetArgs(cluster, argv, argc);
 }
 
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
@@ -1476,34 +1482,57 @@ static int MR_SetClusterData(RedisModuleString** argv, int argc){
         return REDISMODULE_ERR;
     }
 
-    char* snapshot = IsShortFormClusterSet(argc) ? ShortFormTopologySnapshot() : NULL;
-
-    /* The topology is re-broadcast on many events that do not change it (node events,
-     * shard reconnects, delivery retries). Rebuilding for an identical topology would
-     * drop all inter-shard connections and abort in-flight executions for nothing. */
-    if (!ClusterSetIsNewTopology(argv, argc, snapshot)) {
-        RedisModule_Log(mr_staticCtx, "notice",
-                        "Got cluster set command with an unchanged topology, skipping the rebuild");
-        if (snapshot)
-            MR_FREE(snapshot);
-        return REDISMODULE_OK;
-    }
-
-    if(clusterCtx.CurrCluster)
-        MR_ClusterFree();
-
+    /* The topology is re-broadcast on many events that do not change it (node
+     * events, shard reconnects, delivery retries), and resharding moves slot
+     * ranges between the same shards. Neither needs to drop the inter-shard
+     * connections or abort in-flight executions: an argument-identical long
+     * form is skipped outright, and any other change goes through the same
+     * reconcile mechanism the topology-change event uses -- only a change of
+     * the shard set itself (or of a shard's address or credentials) tears
+     * down and rebuilds. */
     if (IsLongFormClusterSet(argc)) {
+        if (ClusterSetArgsUnchanged(argv, argc)) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                            "Got cluster set command with an unchanged topology, skipping the rebuild");
+            return REDISMODULE_OK;
+        }
+        if (clusterCtx.CurrCluster && LongFormMyIdUnchanged(argv, argc)) {
+            ARR(TopologyViewEntry) view = BuildLongFormView(argv, argc);
+            bool applied = MR_TryApplyTopologyInPlace(view, array_len(view));
+            array_free(view);
+            if (applied) {
+                ReplaceClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
+                RedisModule_Log(mr_staticCtx, "notice",
+                                "Got cluster set command with the same shard set, applied the slot map in place");
+                return REDISMODULE_OK;
+            }
+        }
+        if (clusterCtx.CurrCluster)
+            MR_ClusterFree();
         SetClusterDataLongForm(argv, argc);
         return REDISMODULE_OK;
     }
 
-    int res = SetClusterDataShortForm(argv, argc);
-    if (res == REDISMODULE_OK && clusterCtx.CurrCluster) {
-        clusterCtx.CurrCluster->shortFormTopology = snapshot;  // now owned by the cluster
-    } else if (snapshot) {
-        MR_FREE(snapshot);
+    /* Short form: the arguments only carry credentials, the topology comes
+     * from the server's cluster state -- so an unchanged command line still
+     * requires a reconcile against that state (including slotless masters,
+     * which a CLUSTERSET-built cluster tracks), and changed credentials
+     * require a full rebuild (every connection re-authenticates). */
+    if (ClusterSetArgsUnchanged(argv, argc)) {
+        ARR(TopologyViewEntry) view = BuildClusterApiView(true);
+        if (view) {
+            bool applied = MR_TryApplyTopologyInPlace(view, array_len(view));
+            array_free(view);
+            if (applied) {
+                RedisModule_Log(mr_staticCtx, "notice",
+                                "Got cluster set command with the same shard set, applied the slot map in place");
+                return REDISMODULE_OK;
+            }
+        }
     }
-    return res;
+    if (clusterCtx.CurrCluster)
+        MR_ClusterFree();
+    return SetClusterDataShortForm(argv, argc);
 }
 
 /* runs in the event loop so its safe to update cluster
