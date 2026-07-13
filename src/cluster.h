@@ -39,12 +39,10 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
 
 /* Schedule an OSS cluster topology refresh on the event loop. 'change_flags'
  * is a bitmask of REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_* reasons and is
- * advisory only: the refresh reconciles against CLUSTER SLOTS and rebuilds the
- * connections only when the set of slot-serving primaries actually changed,
- * otherwise it updates just the slot->node routing and preserves the existing
- * connections (so in-flight cross-shard queries are not disrupted by an in-place
- * reshard). No-op outside of OSS cluster mode. Safe to call from a Redis
- * server-event callback. */
+ * advisory only: the refresh rebuilds the connections when the set of master
+ * nodes changed and otherwise just updates the slot->node routing in place.
+ * No-op outside of OSS cluster mode. Safe to call from a Redis server-event
+ * callback. */
 void MR_ClusterRefreshTopology(int change_flags);
 
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
