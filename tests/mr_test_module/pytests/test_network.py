@@ -259,8 +259,10 @@ class ShardMock():
     def __exit__(self, type, value, traceback):
         self.stream_server.stop()
 
-    def GetConnection(self, runid='1', sendHelloResponse=True, password='password'):
-        conn = self.new_conns.get(block=True, timeout=None)
+    def GetConnection(self, runid='1', sendHelloResponse=True, password='password', timeout=60):
+        # A finite timeout so a test expecting a reconnect that never comes
+        # fails visibly instead of wedging the whole CI job.
+        conn = self.new_conns.get(block=True, timeout=timeout)
         self.env.assertEqual(conn.read_request(), ['AUTH', password])
         conn.send_status('OK')  # auth response
         if(sendHelloResponse):
@@ -686,8 +688,9 @@ def testMassiveClusterSet(env, conn):
                 # Alternate the mock shard's id so every command carries a changed
                 # shard set and forces a rebuild — an unchanged set (identical or
                 # merely reshuffled slot ranges) is reconciled in place instead.
+                # Start at '3': the '2' topology was just applied by __enter__.
                 promote_internal_client_if_supported(env=env)
-                env.cmd('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(mock_shard_id=str(2 + (i % 2))))
+                env.cmd('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(mock_shard_id=str(3 - (i % 2))))
                 env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
 @MRTestDecorator(skipOnCluster=True)
