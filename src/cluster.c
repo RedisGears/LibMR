@@ -1037,6 +1037,29 @@ static void MR_UpdateClusterSlots(){
             MR_RefreshClusterData();
             return;
         }
+
+        /* Same id but a new address (the node restarted elsewhere, e.g. a pod
+         * reschedule that kept nodes.conf): the cached connection would redial
+         * the old address forever, so rebuild to reconnect. The port is taken
+         * from RedisModule_GetClusterNodeInfo for the same reason as in
+         * MR_RefreshClusterData (CLUSTER SLOTS reports the non-TLS port, see
+         * redis/redis#12233). */
+        RedisModuleCallReply *nodeipReply = RedisModule_CallReplyArrayElement(nodeDetailsReply, 0);
+        size_t ipLen;
+        const char* ip = RedisModule_CallReplyStringPtr(nodeipReply, &ipLen);
+        int port = 0;
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        RedisModule_GetClusterNodeInfo(mr_staticCtx, nodeId, NULL, NULL, &port, NULL);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        if (strlen(n->ip) != ipLen || memcmp(n->ip, ip, ipLen) != 0 ||
+            (port != 0 && n->port != (unsigned short)port)) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                "Topology reconcile: shard %s changed its address; doing a full topology refresh", nodeId);
+            mr_dictRelease(seenPrimaries);
+            RedisModule_FreeCallReply(allSlotsReply);
+            MR_RefreshClusterData();
+            return;
+        }
         mr_dictAdd(seenPrimaries, nodeId, NULL); /* duplicate ranges for a node are ignored */
 
         if (n->isMe) {
