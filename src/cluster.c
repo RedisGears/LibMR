@@ -197,7 +197,7 @@ static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* a, voi
 static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* a, void* b);  // A response to an internal-commands command
 static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
-static Node* MR_GetNode(const char* id);
+static Node* MR_GetNode(Cluster* cluster, const char* id);
 
 static SlotRange* NewSlotRange(uint16_t minSlot, uint16_t maxSlot) {
     SlotRange* result = MR_ALLOC(sizeof(*result));
@@ -264,7 +264,7 @@ static void MR_ClusterSendMsgTask(void* ctx) {
         return;
     }
     if (sendMsg->sendMsgType == SendMsgType_ById) {
-        Node* n = MR_GetNode(sendMsg->idToSend);
+        Node* n = MR_GetNode(clusterCtx.CurrCluster, sendMsg->idToSend);
         if(!n){
             RedisModule_Log(mr_staticCtx, "warning", "Could not find node to send message to");
         } else {
@@ -820,8 +820,8 @@ static void MR_ClusterFree(){
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 }
 
-static Node* MR_GetNode(const char* id){
-    mr_dictEntry *entry = mr_dictFind(clusterCtx.CurrCluster->nodes, id);
+static Node* MR_GetNode(Cluster* cluster, const char* id){
+    mr_dictEntry *entry = mr_dictFind(cluster->nodes, id);
     Node* n = NULL;
     if(entry){
         n = mr_dictGetVal(entry);
@@ -829,8 +829,8 @@ static Node* MR_GetNode(const char* id){
     return n;
 }
 
-static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, const char* password, const char* unixSocket, long long minSlot, long long maxSlot){
-    RedisModule_Assert(!MR_GetNode(id));
+static Node* MR_CreateNode(Cluster* cluster, const char* id, const char* ip, unsigned short port, const char* password, const char* unixSocket, long long minSlot, long long maxSlot){
+    RedisModule_Assert(!MR_GetNode(cluster, id));
 
     mr_list* slotRanges = mr_listCreate();
     mr_listSetFreeMethod(slotRanges, FreeSlotRange);
@@ -860,9 +860,9 @@ static Node* MR_CreateNode(const char* id, const char* ip, unsigned short port, 
             .reconnectEvent = NULL,
             .resendHelloEvent = NULL,
     };
-    n->index = mr_dictSize(clusterCtx.CurrCluster->nodes);
-    n->isMe = strcmp(id, clusterCtx.CurrCluster->myId) == 0;
-    mr_dictAdd(clusterCtx.CurrCluster->nodes, n->id, n);
+    n->index = mr_dictSize(cluster->nodes);
+    n->isMe = strcmp(id, cluster->myId) == 0;
+    mr_dictAdd(cluster->nodes, n->id, n);
 
     return n;
 }
@@ -936,10 +936,10 @@ static void MR_RefreshClusterData(){
         RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 
 
-        Node* n = MR_GetNode(nodeId);
+        Node* n = MR_GetNode(clusterCtx.CurrCluster, nodeId);
         if(!n){
             /* If we have internal secret we will ignore the clusterCtx.password, we do not need it. */
-            n = MR_CreateNode(nodeId, nodeIp, (unsigned short)port, RedisModule_GetInternalSecret ? NULL : clusterCtx.password, NULL, minSlot, maxSlot);
+            n = MR_CreateNode(clusterCtx.CurrCluster, nodeId, nodeIp, (unsigned short)port, RedisModule_GetInternalSecret ? NULL : clusterCtx.password, NULL, minSlot, maxSlot);
         }
 
         if (n->isMe) {
@@ -1028,7 +1028,7 @@ static bool MR_TryApplyTopologyInPlace(const TopologyViewEntry* view, size_t n){
      * nodes dict, so an equal distinct count means equal sets). */
     mr_dict* seen = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
     for (size_t i = 0 ; i < n ; ++i) {
-        Node* node = MR_GetNode(view[i].id);
+        Node* node = MR_GetNode(clusterCtx.CurrCluster, view[i].id);
         if (!node) {
             RedisModule_Log(mr_staticCtx, "notice",
                 "Topology reconcile saw a new shard %s; doing a full topology refresh", view[i].id);
@@ -1064,7 +1064,7 @@ static bool MR_TryApplyTopologyInPlace(const TopologyViewEntry* view, size_t n){
     memset(clusterCtx.CurrCluster->slots, 0, sizeof(clusterCtx.CurrCluster->slots));
     bool mySlotsSet = false;
     for (size_t i = 0 ; i < n ; ++i) {
-        Node* node = MR_GetNode(view[i].id);
+        Node* node = MR_GetNode(clusterCtx.CurrCluster, view[i].id);
         if (node->isMe && !mySlotsSet) {
             /* fill the fallback single-range from my first range, like the
              * full builders do */
@@ -1295,7 +1295,7 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
             maxSlot = slots->ranges[0].end;
         }
 
-        Node* aMasterNode = MR_CreateNode(nodeId, ip, port, password, NULL, minSlot, maxSlot);
+        Node* aMasterNode = MR_CreateNode(clusterCtx.CurrCluster, nodeId, ip, port, password, NULL, minSlot, maxSlot);
         // Note that MR_CreateNode has already set the isMe bool, but since here we have the flags
         // which are the "formal" way to know if this node is me, we override it here.
         // Basically they should have the same outcome, but given the various ways we name a node
@@ -1367,9 +1367,9 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
             continue;
 
         // Create a new node or update an existing one
-        Node* aMasterNode = MR_GetNode(realId);
+        Node* aMasterNode = MR_GetNode(clusterCtx.CurrCluster, realId);
         if(!aMasterNode){
-            aMasterNode = MR_CreateNode(realId, ip, port, password, NULL, minSlot, maxSlot);
+            aMasterNode = MR_CreateNode(clusterCtx.CurrCluster, realId, ip, port, password, NULL, minSlot, maxSlot);
         } else {
             RedisModule_Assert(minSlot <= maxSlot);  // slotless nodes are only created (above)
             mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
