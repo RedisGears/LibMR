@@ -210,15 +210,13 @@ class ShardMock():
         conn = Connection(sock)
         self.new_conns.put(conn)
 
-    def _send_cluster_set(self):
-        # try to promote to internal connection
-        promote_internal_client_if_supported(env=self.env)
+    def _cluster_set_args(self, mock_shard_slot_start=8193, mock_shard_id='2', password='password'):
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
         # Build arguments according to MR_SetClusterData parser:
         # argv[6] => myId, argv[7] => "RANGES", argv[8] => numOfRanges, then repeating:
         # "SHARD" <id> "SLOTRANGE" <min> <max> "ADDR" <password@host:port> ["MASTER"]
-        args = [
+        return [
             'NO-USED',  # [1]
             'NO-USED',  # [2]
             'NO-USED',  # [3]
@@ -229,16 +227,20 @@ class ShardMock():
             '2',        # [8] two ranges
             # Shard 1 (current Redis) - HARDCODED PORT 6379
             'SHARD', '1',
-            'SLOTRANGE', '0', '8192',
-            'ADDR', 'password@%s:6379' % endpoint_host,
+            'SLOTRANGE', '0', str(mock_shard_slot_start - 1),
+            'ADDR', '%s@%s:6379' % (password, endpoint_host),
             'MASTER',
             # Shard 2 (mock shard)
-            'SHARD', '2',
-            'SLOTRANGE', '8193', '16383',
-            'ADDR', 'password@%s:%d' % (endpoint_host, self.port),
+            'SHARD', mock_shard_id,
+            'SLOTRANGE', str(mock_shard_slot_start), '16383',
+            'ADDR', '%s@%s:%d' % (password, endpoint_host, self.port),
             'MASTER'
         ]
-        self.env.cmd('MRTESTS.CLUSTERSET', *args)
+
+    def _send_cluster_set(self):
+        # try to promote to internal connection
+        promote_internal_client_if_supported(env=self.env)
+        self.env.cmd('MRTESTS.CLUSTERSET', *self._cluster_set_args())
         self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
     def __enter__(self):
@@ -257,9 +259,11 @@ class ShardMock():
     def __exit__(self, type, value, traceback):
         self.stream_server.stop()
 
-    def GetConnection(self, runid='1', sendHelloResponse=True):
-        conn = self.new_conns.get(block=True, timeout=None)
-        self.env.assertEqual(conn.read_request(), ['AUTH', 'password'])
+    def GetConnection(self, runid='1', sendHelloResponse=True, password='password', timeout=60):
+        # A finite timeout so a test expecting a reconnect that never comes
+        # fails visibly instead of wedging the whole CI job.
+        conn = self.new_conns.get(block=True, timeout=timeout)
+        self.env.assertEqual(conn.read_request(), ['AUTH', password])
         conn.send_status('OK')  # auth response
         if(sendHelloResponse):
             self.env.assertEqual(conn.read_request(), ['MRTESTS.HELLO'])
@@ -681,7 +685,13 @@ def testMassiveClusterSet(env, conn):
         with ShardMock(env, host) as shardMock:
             for i in range(1000):
                 conn = shardMock.GetConnection(sendHelloResponse=False)
-                shardMock._send_cluster_set()
+                # Alternate the mock shard's id so every command carries a changed
+                # shard set and forces a rebuild — an unchanged set (identical or
+                # merely reshuffled slot ranges) is reconciled in place instead.
+                # Start at '3': the '2' topology was just applied by __enter__.
+                promote_internal_client_if_supported(env=env)
+                env.cmd('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(mock_shard_id=str(3 - (i % 2))))
+                env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
 @MRTestDecorator(skipOnCluster=True)
 def testMassiveClusterSetFromShard(env, conn):
@@ -744,3 +754,57 @@ def testSendMultiRangePerNodeTopology(env, conn):
             res = env.cmd(*cmd)
             assert res == 'OK'
 
+
+
+@MRTestDecorator(skipOnCluster=True)
+def testIdenticalClusterSetIsNoOp(env, conn):
+    for host in _get_hosts():
+        with ShardMock(env, host) as shardMock:
+            conn = shardMock.GetConnection()
+
+            run_id = env.cmd('MRTESTS.INFOCLUSTER')[3]
+
+            # Re-sending the exact same topology must not rebuild the cluster:
+            # the run id is kept, and so is the live connection to the mock shard.
+            env.expect('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args()).equal('OK')
+            env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            env.cmd('MRTESTS.FORCESHARDSCONNECTION')
+            time.sleep(0.5)
+            env.assertTrue(shardMock.new_conns.empty())
+
+            # Moving the slot boundary between the same two shards is reconciled
+            # in place: the run id and the live connection survive the reshard.
+            env.expect('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(mock_shard_slot_start=4096)).equal('OK')
+            env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            env.cmd('MRTESTS.FORCESHARDSCONNECTION')
+            time.sleep(0.5)
+            env.assertTrue(shardMock.new_conns.empty())
+
+            # Re-sending the moved boundary is argument-identical again -> no-op
+            # (the stored command follows what was last applied).
+            env.expect('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(mock_shard_slot_start=4096)).equal('OK')
+            env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            time.sleep(0.5)
+            env.assertTrue(shardMock.new_conns.empty())
+
+            # A changed shard set (a new shard id) must still tear down and rebuild.
+            env.expect('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(mock_shard_id='3')).equal('OK')
+            env.assertNotEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            env.cmd('MRTESTS.FORCESHARDSCONNECTION')
+            conn = shardMock.GetConnection()
+
+
+@MRTestDecorator(skipOnCluster=True)
+def testClusterSetPasswordChangeRebuilds(env, conn):
+    for host in _get_hosts():
+        with ShardMock(env, host) as shardMock:
+            conn = shardMock.GetConnection()
+
+            run_id = env.cmd('MRTESTS.INFOCLUSTER')[3]
+
+            # The same shard set at the same addresses but with new credentials:
+            # every connection must re-authenticate, so a full rebuild is required.
+            env.expect('MRTESTS.CLUSTERSET', *shardMock._cluster_set_args(password='password2')).equal('OK')
+            env.assertNotEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            env.cmd('MRTESTS.FORCESHARDSCONNECTION')
+            conn = shardMock.GetConnection(password='password2')
