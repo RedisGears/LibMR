@@ -785,33 +785,37 @@ static void MR_NodeFree(Node* n){
     MR_NodeFreeInternals(n);
 }
 
-static void MR_ClusterFree(){
-    MR_AbortRunningExecutions();
-
-    if(clusterCtx.CurrCluster->myId){
-        MR_FREE(clusterCtx.CurrCluster->myId);
+static void FreeCluster(Cluster* cluster){
+    if(cluster->myId){
+        MR_FREE(cluster->myId);
     }
-    if(clusterCtx.CurrCluster->nodes){
-        mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
+    if(cluster->nodes){
+        mr_dictIterator *iter = mr_dictGetIterator(cluster->nodes);
         mr_dictEntry *entry = NULL;
         while((entry = mr_dictNext(iter))){
             Node* n = mr_dictGetVal(entry);
             MR_NodeFree(n);
         }
         mr_dictReleaseIterator(iter);
-        mr_dictRelease(clusterCtx.CurrCluster->nodes);
+        mr_dictRelease(cluster->nodes);
     }
 
-    if(clusterCtx.CurrCluster->clusterSetCommand){
-        for(int i = 0 ; i < clusterCtx.CurrCluster->clusterSetCommandSize ; ++i){
-            if(clusterCtx.CurrCluster->clusterSetCommand[i]){
-                MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[i]);
+    if(cluster->clusterSetCommand){
+        for(int i = 0 ; i < cluster->clusterSetCommandSize ; ++i){
+            if(cluster->clusterSetCommand[i]){
+                MR_FREE(cluster->clusterSetCommand[i]);
             }
         }
-        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand);
+        MR_FREE(cluster->clusterSetCommand);
     }
 
-    MR_FREE(clusterCtx.CurrCluster);
+    MR_FREE(cluster);
+}
+
+static void MR_ClusterFree(){
+    MR_AbortRunningExecutions();
+
+    FreeCluster(clusterCtx.CurrCluster);
     clusterCtx.CurrCluster = NULL;
     clusterCtx.minSlot = 0;
     clusterCtx.maxSlot = 0;
