@@ -145,7 +145,7 @@ typedef struct Node{
 
 typedef struct Cluster {
     char* myId;
-    mr_dict* nodes;  // Note: we only keep master nodes here
+    mr_dict* nodes;  // Note: we only keep master nodes here (including slotless master nodes, if any)
     Node* slots[NUMBER_OF_SLOTS];
     size_t clusterSetCommandSize;
     char** clusterSetCommand;
@@ -1141,11 +1141,24 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
             maxSlot = slots->ranges[j].end;
             if (j > 0)  // The 0 case is handled by the MR_CreateNode() above
                 mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
-            for (int k = minSlot ; k <= maxSlot ; k++)
+            for (int k = minSlot ; k <= maxSlot ; k++) {
+                if (cluster->slots[k] != NULL) {
+                    RedisModule_Log(mr_staticCtx, "warning",
+                        "Slot %d is claimed by two master nodes: %s and %s; rejecting topology",
+                        k, cluster->slots[k]->id, aMasterNode->id);
+                    FreeCluster(cluster);
+                    cluster = NULL;
+                    break;
+                }
                 cluster->slots[k] = aMasterNode;
+            }
+            if (cluster == NULL)
+                break;
         }
 
         RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
+        if (cluster == NULL)
+            break;
     }
     RedisModule_FreeClusterNodesList(nodeList);
 
@@ -1157,6 +1170,7 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
 // there, or scheduled as a task from MR_UpdateClusterTopology on the main thread).
 void MR_UpdateClusterTopologyInternal(void* ctx){
     Cluster* cluster = ctx;
+    RedisModule_Assert(cluster != NULL);
 
     clusterCtx.CurrCluster = cluster;
     memcpy(clusterCtx.myId, cluster->myId, REDISMODULE_NODE_ID_LEN + 1);
