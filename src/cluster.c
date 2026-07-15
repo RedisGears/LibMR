@@ -145,7 +145,7 @@ typedef struct Node{
 
 typedef struct Cluster {
     char* myId;
-    mr_dict* nodes;
+    mr_dict* nodes;  // Note: we only keep master nodes here
     Node* slots[NUMBER_OF_SLOTS];
     size_t clusterSetCommandSize;
     char** clusterSetCommand;
@@ -1094,7 +1094,7 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
     return index;
 }
 
-static Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password){
+Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) {
     size_t numNodes;
     char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
     if (!nodeList) {
