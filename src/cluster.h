@@ -29,7 +29,7 @@ functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver);
 
 typedef struct Cluster Cluster;
 Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password);
-void MR_UpdateClusterTopologyInternal(void* ctx);
+void MR_UpdateClusterTopologyIfNeeded(void* ctx);
 
 int MR_ClusterIsClusterMode();
 

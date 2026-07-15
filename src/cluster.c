@@ -1177,13 +1177,56 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
     return cluster;
 }
 
-// Installs an already-built cluster into the cluster context. Runs on the event
-// loop thread (either directly from the short-form CLUSTERSET, which already runs
-// there, or scheduled as a task from MR_UpdateClusterTopology on the main thread).
-void MR_UpdateClusterTopologyInternal(void* ctx){
+static bool SameNode(Node* a, Node* b) {
+    return strcmp(a->id, b->id) == 0 && strcmp(a->ip, b->ip) == 0 && a->port == b->port;
+}
+
+static bool SameSlotRanges(Node* a, Node* b) {
+    if (mr_listLength(a->slotRanges) != mr_listLength(b->slotRanges))
+        return false;
+    mr_listNode* ia = mr_listFirst(a->slotRanges);
+    mr_listNode* ib = mr_listFirst(b->slotRanges);
+    while (ia != NULL) {
+        SlotRange* ra = mr_listNodeValue(ia);
+        SlotRange* rb = mr_listNodeValue(ib);
+        if (ra->minSlot != rb->minSlot || ra->maxSlot != rb->maxSlot)
+            return false;
+        ia = mr_listNextNode(ia);
+        ib = mr_listNextNode(ib);
+    }
+    return true;
+}
+
+static bool SameCluster(Cluster* a, Cluster* b) {
+    if (a == b)
+        return true;
+    if (a == NULL || b == NULL)
+        return false;
+    if (mr_dictSize(a->nodes) != mr_dictSize(b->nodes))
+        return false;
+    mr_dictIterator* iter = mr_dictGetIterator(a->nodes);
+    mr_dictEntry* entry = NULL;
+    while ((entry = mr_dictNext(iter)) != NULL) {
+        Node* na = mr_dictGetVal(entry);
+        Node* nb = MR_GetNode(b, na->id);
+        if (nb == NULL || !SameNode(na, nb) || !SameSlotRanges(na, nb))
+            break;
+    }
+    mr_dictReleaseIterator(iter);
+    return entry == NULL;
+}
+
+void MR_UpdateClusterTopologyIfNeeded(void* ctx){
     Cluster* cluster = ctx;
     RedisModule_Assert(cluster != NULL);
 
+    if (SameCluster(cluster, clusterCtx.CurrCluster)) {
+        FreeCluster(cluster);
+        return;
+    }
+
+    if (clusterCtx.CurrCluster)
+        MR_ClusterFree();
     clusterCtx.CurrCluster = cluster;
     memcpy(clusterCtx.myId, cluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
@@ -1246,7 +1289,7 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
     if (!cluster)
         return REDISMODULE_ERR;
 
-    MR_UpdateClusterTopologyInternal(cluster);
+    MR_UpdateClusterTopologyIfNeeded(cluster);
     return REDISMODULE_OK;
 }
 
