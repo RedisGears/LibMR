@@ -786,33 +786,37 @@ static void MR_NodeFree(Node* n){
     MR_NodeFreeInternals(n);
 }
 
-static void MR_ClusterFree(){
-    MR_AbortRunningExecutions();
-
-    if(clusterCtx.CurrCluster->myId){
-        MR_FREE(clusterCtx.CurrCluster->myId);
+/* Free a standalone Cluster (does not touch the clusterCtx globals). */
+static void FreeCluster(Cluster* cluster){
+    if(!cluster)
+        return;
+    if(cluster->myId){
+        MR_FREE(cluster->myId);
     }
-    if(clusterCtx.CurrCluster->nodes){
-        mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
+    if(cluster->nodes){
+        mr_dictIterator *iter = mr_dictGetIterator(cluster->nodes);
         mr_dictEntry *entry = NULL;
         while((entry = mr_dictNext(iter))){
             Node* n = mr_dictGetVal(entry);
             MR_NodeFree(n);
         }
         mr_dictReleaseIterator(iter);
-        mr_dictRelease(clusterCtx.CurrCluster->nodes);
+        mr_dictRelease(cluster->nodes);
     }
-
-    if(clusterCtx.CurrCluster->clusterSetCommand){
-        for(int i = 0 ; i < clusterCtx.CurrCluster->clusterSetCommandSize ; ++i){
-            if(clusterCtx.CurrCluster->clusterSetCommand[i]){
-                MR_FREE(clusterCtx.CurrCluster->clusterSetCommand[i]);
+    if(cluster->clusterSetCommand){
+        for(int i = 0 ; i < cluster->clusterSetCommandSize ; ++i){
+            if(cluster->clusterSetCommand[i]){
+                MR_FREE(cluster->clusterSetCommand[i]);
             }
         }
-        MR_FREE(clusterCtx.CurrCluster->clusterSetCommand);
+        MR_FREE(cluster->clusterSetCommand);
     }
+    MR_FREE(cluster);
+}
 
-    MR_FREE(clusterCtx.CurrCluster);
+static void MR_ClusterFree(){
+    MR_AbortRunningExecutions();
+    FreeCluster(clusterCtx.CurrCluster);
     clusterCtx.CurrCluster = NULL;
     clusterCtx.minSlot = 0;
     clusterCtx.maxSlot = 0;
@@ -827,6 +831,11 @@ static Node* MR_GetNode(Cluster* cluster, const char* id){
         n = mr_dictGetVal(entry);
     }
     return n;
+}
+
+static const char *MR_ClusterGetPassword(){
+    /* With an internal secret the per-node password is unused. */
+    return RedisModule_GetInternalSecret ? NULL : clusterCtx.password;
 }
 
 static Node* MR_CreateNode(Cluster* cluster, const char* id, const char* ip, unsigned short port, const char* password, const char* unixSocket, long long minSlot, long long maxSlot){
@@ -938,8 +947,7 @@ static void MR_RefreshClusterData(){
 
         Node* n = MR_GetNode(clusterCtx.CurrCluster, nodeId);
         if(!n){
-            /* If we have internal secret we will ignore the clusterCtx.password, we do not need it. */
-            n = MR_CreateNode(clusterCtx.CurrCluster, nodeId, nodeIp, (unsigned short)port, RedisModule_GetInternalSecret ? NULL : clusterCtx.password, NULL, minSlot, maxSlot);
+            n = MR_CreateNode(clusterCtx.CurrCluster, nodeId, nodeIp, (unsigned short)port, MR_ClusterGetPassword(), NULL, minSlot, maxSlot);
         }
 
         if (n->isMe) {
@@ -1018,6 +1026,39 @@ static ARR(TopologyViewEntry) BuildClusterApiView(bool includeSlotless){
  * master entered/left the set or changed its address; the caller must then do
  * a full rebuild. Runs on the event-loop thread, same as the dispatch path
  * that reads slots[], so no reader can observe a half-updated map. */
+/* Reject a malformed topology view before applying it: a slot claimed by more
+ * than one shard, or coverage that is not the full slot space. A torn/incomplete
+ * CLUSTER SLOTS reply or a bad CLUSTERSET must not be applied -- the caller keeps
+ * the current topology and waits for the next event. Slotless shards
+ * (minSlot > maxSlot) contribute no coverage, which is expected. */
+static bool MR_TopologyViewIsValid(const TopologyViewEntry* view, size_t n){
+    char* claimed = MR_CALLOC(NUMBER_OF_SLOTS, sizeof(char));
+    size_t covered = 0;
+    bool ok = true;
+    for (size_t i = 0 ; i < n && ok ; ++i) {
+        for (long long k = view[i].minSlot ; k <= view[i].maxSlot ; ++k) {
+            if (k < 0 || k >= NUMBER_OF_SLOTS) continue;
+            if (claimed[k]) {
+                RedisModule_Log(mr_staticCtx, "warning",
+                    "Topology reconcile: slot %lld is claimed by more than one shard; keeping the current topology",
+                    k);
+                ok = false;
+                break;
+            }
+            claimed[k] = 1;
+            covered++;
+        }
+    }
+    MR_FREE(claimed);
+    if (ok && covered != NUMBER_OF_SLOTS) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Topology reconcile: only %zu of %d slots are covered; keeping the current topology",
+            covered, NUMBER_OF_SLOTS);
+        ok = false;
+    }
+    return ok;
+}
+
 static bool MR_TryApplyTopologyInPlace(const TopologyViewEntry* view, size_t n){
     if (!clusterCtx.CurrCluster) {
         return false;
@@ -1088,9 +1129,17 @@ static void MR_UpdateClusterSlots(){
     }
 
     ARR(TopologyViewEntry) view = BuildClusterApiView(false);
-    bool applied = view != NULL && MR_TryApplyTopologyInPlace(view, array_len(view));
-    if (view)
+    if (view == NULL) {
+        MR_RefreshClusterData();
+        return;
+    }
+    if (!MR_TopologyViewIsValid(view, array_len(view))) {
+        /* Malformed/incomplete topology -- skip this event, keep the current map. */
         array_free(view);
+        return;
+    }
+    bool applied = MR_TryApplyTopologyInPlace(view, array_len(view));
+    array_free(view);
     if (!applied)
         MR_RefreshClusterData();
 }
@@ -1496,17 +1545,23 @@ static int MR_SetClusterData(RedisModuleString** argv, int argc){
                             "Got cluster set command with an unchanged topology, skipping the rebuild");
             return REDISMODULE_OK;
         }
+        ARR(TopologyViewEntry) longView = BuildLongFormView(argv, argc);
+        if (!MR_TopologyViewIsValid(longView, array_len(longView))) {
+            /* Reject a malformed long-form CLUSTERSET; keep the current topology. */
+            array_free(longView);
+            return REDISMODULE_ERR;
+        }
         if (clusterCtx.CurrCluster && LongFormMyIdUnchanged(argv, argc)) {
-            ARR(TopologyViewEntry) view = BuildLongFormView(argv, argc);
-            bool applied = MR_TryApplyTopologyInPlace(view, array_len(view));
-            array_free(view);
+            bool applied = MR_TryApplyTopologyInPlace(longView, array_len(longView));
             if (applied) {
+                array_free(longView);
                 ReplaceClusterSetArgs(clusterCtx.CurrCluster, argv, argc);
                 RedisModule_Log(mr_staticCtx, "notice",
                                 "Got cluster set command with the same shard set, applied the slot map in place");
                 return REDISMODULE_OK;
             }
         }
+        array_free(longView);
         if (clusterCtx.CurrCluster)
             MR_ClusterFree();
         SetClusterDataLongForm(argv, argc);
