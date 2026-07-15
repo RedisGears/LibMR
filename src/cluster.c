@@ -1152,6 +1152,38 @@ static Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* pas
     return cluster;
 }
 
+// Installs an already-built cluster into the cluster context. Runs on the event
+// loop thread (either directly from the short-form CLUSTERSET, which already runs
+// there, or scheduled as a task from MR_UpdateClusterTopology on the main thread).
+void MR_UpdateClusterTopologyInternal(void* ctx){
+    Cluster* cluster = ctx;
+
+    clusterCtx.CurrCluster = cluster;
+    memcpy(clusterCtx.myId, cluster->myId, REDISMODULE_NODE_ID_LEN + 1);
+
+    // Calculate the min/max slots for clusterCtx (legacy, fallback single-range; see the comment at the struct declaration)
+    long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
+    mr_dictIterator *iter = mr_dictGetIterator(cluster->nodes);
+    mr_dictEntry *entry = NULL;
+    while ((entry = mr_dictNext(iter)) != NULL) {
+        Node* n = mr_dictGetVal(entry);
+        if (!n->isMe)
+            continue;
+        if (mr_listLength(n->slotRanges) > 0) {
+            SlotRange* r = mr_listNodeValue(mr_listFirst(n->slotRanges));
+            minSlot = r->minSlot;
+            maxSlot = r->maxSlot;
+        }
+        break;
+    }
+    mr_dictReleaseIterator(iter);
+    clusterCtx.minSlot = minSlot;
+    clusterCtx.maxSlot = maxSlot;
+
+    clusterCtx.clusterSize = mr_dictSize(cluster->nodes);
+    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+}
+
 static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
     RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
 
@@ -1184,33 +1216,11 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_Assert(0);
     }
 
-    clusterCtx.CurrCluster = BuildCluster(argv, argc, password);
-    if (!clusterCtx.CurrCluster) {
+    Cluster* cluster = BuildCluster(argv, argc, password);
+    if (!cluster)
         return REDISMODULE_ERR;
-    }
-    memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
-    // Calculate the min/max slots for clusterCtx (legacy, fallback single-range; see the comment at the struct declaration)
-    long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
-    mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
-    mr_dictEntry *entry = NULL;
-    while ((entry = mr_dictNext(iter)) != NULL) {
-        Node* n = mr_dictGetVal(entry);
-        if (!n->isMe)
-            continue;
-        if (mr_listLength(n->slotRanges) > 0) {
-            SlotRange* r = mr_listNodeValue(mr_listFirst(n->slotRanges));
-            minSlot = r->minSlot;
-            maxSlot = r->maxSlot;
-        }
-        break;
-    }
-    mr_dictReleaseIterator(iter);
-    clusterCtx.minSlot = minSlot;
-    clusterCtx.maxSlot = maxSlot;
-
-    clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
-    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+    MR_UpdateClusterTopologyInternal(cluster);
     return REDISMODULE_OK;
 }
 
