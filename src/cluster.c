@@ -786,9 +786,11 @@ static void MR_NodeFree(Node* n){
 }
 
 static void FreeCluster(Cluster* cluster){
-    if(cluster->myId){
+    if(!cluster)
+        return;
+
+    if(cluster->myId)
         MR_FREE(cluster->myId);
-    }
     if(cluster->nodes){
         mr_dictIterator *iter = mr_dictGetIterator(cluster->nodes);
         mr_dictEntry *entry = NULL;
@@ -1104,6 +1106,7 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
 
     Cluster* cluster = MR_CALLOC(1, sizeof(*cluster));
     InitClusterData(cluster, argv, argc);
+    size_t coveredSlots = 0;
 
     for (size_t i = 0; i < numNodes; i++) {
         char nodeId[REDISMODULE_NODE_ID_LEN + 1];  // nodeList[i] is not null-terminated
@@ -1139,6 +1142,7 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
         for (size_t j = 0; j < slots->num_ranges; j++) {
             minSlot = slots->ranges[j].start;
             maxSlot = slots->ranges[j].end;
+            coveredSlots += (maxSlot - minSlot + 1);
             if (j > 0)  // The 0 case is handled by the MR_CreateNode() above
                 mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
             for (int k = minSlot ; k <= maxSlot ; k++) {
@@ -1161,6 +1165,14 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
             break;
     }
     RedisModule_FreeClusterNodesList(nodeList);
+
+    if (cluster != NULL && coveredSlots != NUMBER_OF_SLOTS) {
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Cluster topology covers %zu of %d slots; rejecting topology",
+            coveredSlots, NUMBER_OF_SLOTS);
+        FreeCluster(cluster);
+        cluster = NULL;
+    }
 
     return cluster;
 }
