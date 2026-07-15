@@ -1526,6 +1526,28 @@ void MR_FreeExecution(Execution* e) {
     MR_FREE(e);
 }
 
+void MR_UpdateClusterTopology() {
+    RedisModuleString** argv = NULL;
+    int argc = 0;
+    const char *password = MR_ClusterGetPassword();
+
+    // Updating the cluster topology is split across two threads:
+    // 1. Redis' main thread (here): build the candidate topology and verify its
+    //    integrity (BuildCluster() returns non-NULL only if the topology is valid).
+    // 2. The event-loop thread (in MR_UpdateClusterTopologyInternal): compare the
+    //    candidate against the installed clusterCtx.CurrCluster and swap it in
+    //    (alongside other fields, e.g., .clusterSize) only if it changed.
+    //    Since this step reads and writes the cluster context it must run on the event-loop thread.
+    //
+    // Because the comparison runs later on the event-loop thread, this function
+    // cannot return a boolean indicating whether the topology actually changed or not
+    // so it returns nothing.
+    Cluster *cluster = BuildCluster(argv, argc, password);
+    if (cluster == NULL)
+        return;
+    MR_EventLoopAddTask(MR_UpdateClusterTopologyInternal, cluster);
+}
+
 static void MR_GetRedisVersion() {
     RedisModuleCallReply *reply = RedisModule_Call(mr_staticCtx, "info", "c", "server");
     assert(RedisModule_CallReplyType(reply) == REDISMODULE_REPLY_STRING);
