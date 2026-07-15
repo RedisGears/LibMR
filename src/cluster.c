@@ -938,7 +938,7 @@ static void MR_RefreshClusterData(){
         Node* n = MR_GetNode(clusterCtx.CurrCluster, nodeId);
         if(!n){
             /* If we have internal secret we will ignore the clusterCtx.password, we do not need it. */
-            n = MR_CreateNode(clusterCtx.CurrCluster, nodeId, nodeIp, (unsigned short)port, RedisModule_GetInternalSecret ? NULL : clusterCtx.password, NULL, minSlot, maxSlot);
+            n = MR_CreateNode(clusterCtx.CurrCluster, nodeId, nodeIp, (unsigned short)port, MR_ClusterGetPassword(), NULL, minSlot, maxSlot);
         }
 
         if (n->isMe) {
@@ -1168,7 +1168,7 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
     const char *password = NULL;
     switch (argc) {
     case 1:
-        password = NULL;
+        password = MR_ClusterGetPassword();
         break;
     case 3: {
         const char *token = RedisModule_StringPtrLen(argv[1], NULL);
@@ -1835,3 +1835,6 @@ const char* MR_ClusterGetMyId(){
     return clusterCtx.myId;
 }
 
+const char *MR_ClusterGetPassword(){
+    return RedisModule_GetInternalSecret ? NULL : clusterCtx.password;
+}

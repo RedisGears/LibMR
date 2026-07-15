@@ -31,6 +31,8 @@ int MR_ClusterIsClusterMode();
 
 const char* MR_ClusterGetMyId();
 
+const char *MR_ClusterGetPassword();
+
 int MR_IsClusterInitialize();
 
 size_t MR_ClusterGetSize();
