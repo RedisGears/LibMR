@@ -993,14 +993,9 @@ static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
 }
 
 static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc){
+    cluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
     cluster->clusterSetCommandSize = argc;
-    if (argc > 0) {
-        cluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
-        cluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
-    } else {
-        // OSS topology-refresh path builds with no CLUSTERSET args (argc == 0).
-        cluster->clusterSetCommand = NULL;
-    }
+    cluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
 
     GenerateRunId(cluster);
     CopyClusterSetArgs(cluster, argv, argc);
