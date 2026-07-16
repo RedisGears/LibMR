@@ -182,6 +182,12 @@ LIBMR_API bool MR_IsInternalCommandsExecution(const Execution* e);
 /* Free the given execution */
 LIBMR_API void MR_FreeExecution(Execution* e);
 
+/*
+ * Update cluster topology if needed (called upon topology change notifications on the main redis loop).
+ * This will eventually replace the explicit REFRESHCLUSTER (in oss) and CLUSTERSET (RE) commands.
+ */
+LIBMR_API void MR_UpdateClusterTopology();
+
 /* Initialize mr library */
 LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password);
 
