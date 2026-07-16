@@ -1528,7 +1528,7 @@ void MR_FreeExecution(Execution* e) {
 
 void MR_UpdateClusterTopology() {
     RedisModuleString** argv = NULL;
-    int argc = 0;
+    int argc = 1;  // The first one is always the command name, so no need any argv for that
     const char *password = MR_ClusterGetPassword();
 
     // Updating the cluster topology is split across two threads:
