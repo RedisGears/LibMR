@@ -1177,8 +1177,20 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
     return cluster;
 }
 
+static bool SameStr(const char* a, const char* b) {
+    if (a == b)  // both NULL, or the same pointer
+        return true;
+    if (a == NULL || b == NULL)
+        return false;
+    return strcmp(a, b) == 0;
+}
+
 static bool SameNode(Node* a, Node* b) {
-    return strcmp(a->id, b->id) == 0 && strcmp(a->ip, b->ip) == 0 && a->port == b->port;
+    // Credentials/unixSocket are part of identity: a change means the live
+    // connection is stale, so it must take the full-rebuild (reconnect) path,
+    // not an in-place slot repoint or a no-op skip.
+    return strcmp(a->id, b->id) == 0 && strcmp(a->ip, b->ip) == 0 && a->port == b->port
+        && SameStr(a->password, b->password) && SameStr(a->unixSocket, b->unixSocket);
 }
 
 static bool SameSlotRanges(Node* a, Node* b) {
@@ -1216,23 +1228,30 @@ static bool SameCluster(Cluster* a, Cluster* b) {
     return entry == NULL;
 }
 
-void MR_UpdateClusterTopologyIfNeeded(void* ctx){
-    Cluster* cluster = ctx;
-    RedisModule_Assert(cluster != NULL);
-
-    if (SameCluster(cluster, clusterCtx.CurrCluster)) {
-        FreeCluster(cluster);
-        return;
+// Same shard set (same nodes by id/ip/port/credentials), ignoring slot ranges --
+// i.e., a slot-only reshard where only which shard owns which slots changed.
+static bool SameShardSet(Cluster* a, Cluster* b) {
+    if (a == NULL || b == NULL)
+        return false;
+    if (mr_dictSize(a->nodes) != mr_dictSize(b->nodes))
+        return false;
+    mr_dictIterator* iter = mr_dictGetIterator(a->nodes);
+    mr_dictEntry* entry = NULL;
+    while ((entry = mr_dictNext(iter)) != NULL) {
+        Node* na = mr_dictGetVal(entry);
+        Node* nb = MR_GetNode(b, na->id);
+        if (nb == NULL || !SameNode(na, nb))
+            break;
     }
+    mr_dictReleaseIterator(iter);
+    return entry == NULL;
+}
 
-    if (clusterCtx.CurrCluster)
-        MR_ClusterFree();
-    clusterCtx.CurrCluster = cluster;
-    memcpy(clusterCtx.myId, cluster->myId, REDISMODULE_NODE_ID_LEN + 1);
-
-    // Calculate the min/max slots for clusterCtx (legacy, fallback single-range; see the comment at the struct declaration)
-    long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range (i.e., used for slotless shards)
-    mr_dictIterator *iter = mr_dictGetIterator(cluster->nodes);
+// Recompute the legacy fallback single-range (see the comment at the struct
+// declaration) from the current cluster's self node.
+static void MR_UpdateSelfSlotRangeFallback(void){
+    long long minSlot = 0, maxSlot = -1;  // min > max indicates a no-hslots range
+    mr_dictIterator *iter = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
     mr_dictEntry *entry = NULL;
     while ((entry = mr_dictNext(iter)) != NULL) {
         Node* n = mr_dictGetVal(entry);
@@ -1248,7 +1267,59 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
     mr_dictReleaseIterator(iter);
     clusterCtx.minSlot = minSlot;
     clusterCtx.maxSlot = maxSlot;
+}
 
+void MR_UpdateClusterTopologyIfNeeded(void* ctx){
+    Cluster* cluster = ctx;
+    RedisModule_Assert(cluster != NULL);
+
+    if (SameCluster(cluster, clusterCtx.CurrCluster)) {
+        FreeCluster(cluster);
+        return;
+    }
+
+    // Slot-only reshard (same shard set + addresses, only slot ranges moved):
+    // repoint the slot map on the live cluster instead of rebuilding it, so
+    // inter-shard connections and in-flight executions survive (no abort, run
+    // id kept).
+    if (SameShardSet(cluster, clusterCtx.CurrCluster)) {
+        mr_dictIterator *it = mr_dictGetIterator(clusterCtx.CurrCluster->nodes);
+        mr_dictEntry *e = NULL;
+        while ((e = mr_dictNext(it)) != NULL) {
+            Node* cur = mr_dictGetVal(e);
+            Node* incoming = MR_GetNode(cluster, cur->id);
+            // Take the incoming node's new ranges; the old ranges travel with
+            // the candidate and are freed by FreeCluster() below.
+            mr_list* tmp = cur->slotRanges;
+            cur->slotRanges = incoming->slotRanges;
+            incoming->slotRanges = tmp;
+        }
+        mr_dictReleaseIterator(it);
+        for (int k = 0 ; k < NUMBER_OF_SLOTS ; ++k) {
+            clusterCtx.CurrCluster->slots[k] = cluster->slots[k] ?
+                MR_GetNode(clusterCtx.CurrCluster, cluster->slots[k]->id) : NULL;
+        }
+        // Carry the new CLUSTERSET args too, so the topology re-sent to peers on
+        // rg.hello reflects the reshard (not the pre-reshard slot map). The old
+        // args travel with the candidate and are freed by FreeCluster() below.
+        {
+            char** tmpCmd = clusterCtx.CurrCluster->clusterSetCommand;
+            size_t tmpSize = clusterCtx.CurrCluster->clusterSetCommandSize;
+            clusterCtx.CurrCluster->clusterSetCommand = cluster->clusterSetCommand;
+            clusterCtx.CurrCluster->clusterSetCommandSize = cluster->clusterSetCommandSize;
+            cluster->clusterSetCommand = tmpCmd;
+            cluster->clusterSetCommandSize = tmpSize;
+        }
+        MR_UpdateSelfSlotRangeFallback();
+        FreeCluster(cluster);
+        return;
+    }
+
+    if (clusterCtx.CurrCluster)
+        MR_ClusterFree();
+    clusterCtx.CurrCluster = cluster;
+    memcpy(clusterCtx.myId, cluster->myId, REDISMODULE_NODE_ID_LEN + 1);
+    MR_UpdateSelfSlotRangeFallback();
     clusterCtx.clusterSize = mr_dictSize(cluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
