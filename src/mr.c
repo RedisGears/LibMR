@@ -984,7 +984,11 @@ static void MR_DisposeExecution(Execution* e, void* pd) {
  * executions dictionary and send a dispose task */
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
-    mr_dictDelete(mrCtx.executionsDict, e->id);
+    /* If it's already gone, an abort-on-cluster-change claimed it and will dispose it; don't
+     * schedule a second terminal task (that would double-free). */
+    if (mr_dictDelete(mrCtx.executionsDict, e->id) != DICT_OK) {
+        return;
+    }
     /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
 }
@@ -1318,10 +1322,14 @@ static void MR_ExecutionTimedOut(void* ctx) {
 
 // Thread pool task: fires the done callback with a cluster topology change error
 static void MR_ExecutionAbortedOnClusterChange(Execution* e, void* pd) {
-    e->errors = array_append(e->errors, MR_ErrorRecordCreate("cluster topology changed"));
-    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
-        return;
-    e->callbacks.done.callback = NULL; /* make sure the done callback will not be called again */
+    /* The execution may have already completed (done already fired) and be awaiting its queued
+     * MR_DeleteExecution. Fire done only if still pending, but always free: we claimed it out of
+     * the dictionary so this is its sole terminal task. */
+    if (e->callbacks.done.callback) {
+        e->errors = array_append(e->errors, MR_ErrorRecordCreate("cluster topology changed"));
+        MR_ExecutionInvokeCallback(e, &e->callbacks.done);
+        e->callbacks.done.callback = NULL;
+    }
     MR_FreeExecution(e);
 }
 
