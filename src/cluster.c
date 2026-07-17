@@ -1251,6 +1251,20 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
 
     clusterCtx.clusterSize = mr_dictSize(cluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+
+    // Eagerly establish the inter-shard connections for the freshly installed
+    // topology. Historically the topology was set via CLUSTERSET/REFRESHCLUSTER
+    // which the caller (e.g. DMC, or the test harness) followed with an explicit
+    // FORCESHARDSCONNECTION. The topology-change notification path has no such
+    // follow-up, so without this the connections would only be created lazily on
+    // the first fan-out command. On a "cold" coordinator that first map request
+    // is then dropped ("message was not sent because status is not connected")
+    // while the connection is still being established, the reduce step never
+    // receives the shard responses, and the execution aborts with
+    // "execution max idle reached" (MOD-16951). Connecting here keeps the
+    // connections warm before any command arrives; MR_ClusterConnectToShards()
+    // only acts on Uninitialized nodes, so it is safe to call on every swap.
+    MR_ClusterConnectToShards();
 }
 
 static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
