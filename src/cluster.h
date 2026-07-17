@@ -28,7 +28,7 @@ void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg,
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver);
 
 typedef struct Cluster Cluster;
-Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password);
+Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* password);
 void MR_UpdateClusterTopologyIfNeeded(void* ctx);
 
 int MR_ClusterIsClusterMode();
