@@ -1094,7 +1094,7 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
     return index;
 }
 
-Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) {
+Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* password) {
     size_t numNodes;
     char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
     if (!nodeList) {
@@ -1164,12 +1164,15 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
     }
     RedisModule_FreeClusterNodesList(nodeList);
 
-    if (cluster != NULL && coveredSlots != NUMBER_OF_SLOTS) {
+    if (cluster == NULL)
+        return NULL;
+
+    if (coveredSlots != NUMBER_OF_SLOTS) {
         RedisModule_Log(mr_staticCtx, "warning",
             "Cluster topology covers %zu of %d slots; rejecting topology",
             coveredSlots, NUMBER_OF_SLOTS);
         FreeCluster(cluster);
-        cluster = NULL;
+        return NULL;
     }
 
     return cluster;
@@ -1219,9 +1222,13 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
     RedisModule_Assert(cluster != NULL);
 
     if (SameCluster(cluster, clusterCtx.CurrCluster)) {
+        RedisModule_Log(mr_staticCtx, "notice", "Skipping cluster topology update, same cluster topology");
         FreeCluster(cluster);
         return;
     }
+
+    RedisModule_Log(mr_staticCtx, "notice", "Updating cluster topology, number of masters: %ld",
+                    (long)mr_dictSize(cluster->nodes));
 
     if (clusterCtx.CurrCluster)
         MR_ClusterFree();
@@ -1283,7 +1290,7 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_Assert(0);
     }
 
-    Cluster* cluster = BuildCluster(argv, argc, password);
+    Cluster* cluster = MR_BuildCluster(argv, argc, password);
     if (!cluster)
         return REDISMODULE_ERR;
 
