@@ -57,11 +57,14 @@ typedef struct RemoteFunctionDef {
 
 typedef struct Step Step;
 
-typedef void (*ExecutionTaskCallback)(Execution* e, void* pd);
+// Returns true if the callback disposed (freed) the execution, in which case the
+// caller (MR_ExecutionMain) must not touch it afterwards. Returns false otherwise,
+// so the caller keeps draining the execution's task queue.
+typedef bool (*ExecutionTaskCallback)(Execution* e, void* pd);
 
 /* functions declarations */
 static void MR_ExecutionAddTask(Execution* e, ExecutionTaskCallback callback, void* pd);
-static void MR_RunExecution(Execution* e, void* pd);
+static bool MR_RunExecution(Execution* e, void* pd);
 static Record* MR_RunStep(Execution* e, Step* s);
 void MR_FreeExecution(Execution* e);
 
@@ -609,7 +612,7 @@ static size_t MR_PerformStepDoneOp(Execution* e, size_t stepIndex) {
 }
 
 /* Execution task */
-static void MR_StepDone(Execution* e, void* pd) {
+static bool MR_StepDone(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
 
     /* deserialize record, set it on the right step. */
@@ -636,10 +639,11 @@ static void MR_StepDone(Execution* e, void* pd) {
         /* All shards are done running the step, we can continue the execution. */
         MR_RunExecution(e, NULL);
     }
+    return false;  // never disposes the execution here
 }
 
 /* Execution task */
-static void MR_SetRecord(Execution* e, void* pd) {
+static bool MR_SetRecord(Execution* e, void* pd) {
     RedisModuleString* payload = pd;
 
     /* deserialize record, set it on the right step. */
@@ -668,6 +672,7 @@ static void MR_SetRecord(Execution* e, void* pd) {
         /* There is enough records to process, lets continue running. */
         MR_RunExecution(e, NULL);
     }
+    return false;  // never disposes the execution here
 }
 
 /* Remote function call, runs on the event loop */
@@ -976,8 +981,9 @@ static bool MR_ExecutionInvokeCallback(Execution* e, ExecutionCallbackData* call
     return true;
 }
 
-static void MR_DisposeExecution(Execution* e, void* pd) {
+static bool MR_DisposeExecution(Execution* e, void* pd) {
     MR_FreeExecution(e);
+    return true;  // always disposes the execution
 }
 
 /* runs on the event loop, remove the execution from the
@@ -1027,7 +1033,7 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
     }
 }
 
-static void MR_RunExecution(Execution* e, void* pd) {
+static bool MR_RunExecution(Execution* e, void* pd) {
     MR_ExecutionInvokeCallback(e, &e->callbacks.resume);
     if (MR_RunExecutionInternal(e)) {
         /* we are done, invoke on done callback and perform termination process. */
@@ -1038,7 +1044,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
             executionDone = executionDone || MR_IsInternalCommandsExecution(e); // or we don't need a NOTIFY_DONE message
             if (executionDone) {
                 MR_EventLoopAddTask(MR_DeleteExecution, e);
-                return;
+                return false;  // disposal happens later via MR_DeleteExecution -> MR_DisposeExecution
             }
         }
         if (!(e->flags & ExecutionFlag_Initiator)) {
@@ -1047,6 +1053,7 @@ static void MR_RunExecution(Execution* e, void* pd) {
     } else {
         MR_ExecutionInvokeCallback(e, &e->callbacks.hold);
     }
+    return false;  // never disposes the execution here
 }
 
 /* Remote function call, runs on the event loop */
@@ -1279,7 +1286,7 @@ static void MR_ExecutionSerialize(mr_BufferWriter* buffWriter, Execution* e) {
 }
 
 /* Execution task distribute callback */
-static void MR_ExecutionDistribute(Execution* e, void* pd) {
+static bool MR_ExecutionDistribute(Execution* e, void* pd) {
     mr_Buffer buff;
     mr_BufferInitialize(&buff);
     mr_BufferWriter buffWriter;
@@ -1293,15 +1300,22 @@ static void MR_ExecutionDistribute(Execution* e, void* pd) {
     MR_ClusterSendMsg(NULL, fid, buff.buff, buff.size);
 
     /* now we wait for shards to respond that they got the execution */
+    return false;  // never disposes the execution here
 }
 
-static void MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
+static bool MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution max idle reached"));
-    /* we are done, invoke on done callback. */
+    /* We are done: invoke the on-done callback and free the execution. If the done
+     * callback was already fired (a normal completion won the race and nulled it),
+     * a MR_DisposeExecution is already queued to free the execution - so we must NOT
+     * free it here (that would double-free). Return false so MR_ExecutionMain keeps
+     * draining the task queue and that pending MR_DisposeExecution still runs;
+     * otherwise the execution (and its results) would leak. */
     if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
-        return;
+        return false;
     e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
     MR_FreeExecution(e);
+    return true;
 }
 
 /* runs on the event loop */
@@ -1317,12 +1331,19 @@ static void MR_ExecutionTimedOut(void* ctx) {
 }
 
 // Thread pool task: fires the done callback with a cluster topology change error
-static void MR_ExecutionAbortedOnClusterChange(Execution* e, void* pd) {
+static bool MR_ExecutionAbortedOnClusterChange(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("cluster topology changed"));
+    /* We are done: invoke the on-done callback and free the execution. If the done
+     * callback was already fired (a normal completion won the race and nulled it),
+     * a MR_DisposeExecution is already queued to free the execution - so we must NOT
+     * free it here (that would double-free). Return false so MR_ExecutionMain keeps
+     * draining the task queue and that pending MR_DisposeExecution still runs;
+     * otherwise the execution (and its results) would leak. */
     if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
-        return;
+        return false;
     e->callbacks.done.callback = NULL; /* make sure the done callback will not be called again */
     MR_FreeExecution(e);
+    return true;
 }
 
 static void MR_ExecutionMain(void* pd) {
@@ -1333,11 +1354,13 @@ static void MR_ExecutionMain(void* pd) {
     pthread_mutex_unlock(&e->eLock);
 
     ExecutionTaskCallback callback = task->callback;
-    callback(e, task->pd);
-    if (callback == MR_DisposeExecution ||
-        callback == MR_ExecutionTimedOutInternal ||
-        callback == MR_ExecutionAbortedOnClusterChange) {
-        // These callbacks dispose the execution; we must not touch it afterwards
+    if (callback(e, task->pd)) {
+        // The callback disposed (freed) the execution; we must not touch it afterwards.
+        // Note: MR_ExecutionTimedOutInternal / MR_ExecutionAbortedOnClusterChange return
+        // false (do NOT dispose) when their done callback was already fired by a racing
+        // normal completion, which leaves a MR_DisposeExecution queued behind this task.
+        // Falling through in that case lets us drain the queue so that pending
+        // MR_DisposeExecution runs and frees the execution (otherwise it would leak).
         return;
     }
 
