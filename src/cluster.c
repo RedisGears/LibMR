@@ -1457,12 +1457,27 @@ static int MR_ClusterSetFromShard(RedisModuleCtx *ctx, RedisModuleString **argv,
     return REDISMODULE_OK;
 }
 
-int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+/* runs in the event loop so it is safe to read the cluster topology here.
+ * clusterCtx.CurrCluster is owned by the event-loop thread, which frees and swaps
+ * it on topology changes (MR_UpdateClusterTopologyIfNeeded). Reading it directly
+ * from the command handler on the main thread races that free -> use-after-free,
+ * so we defer the read to the event loop, like MR_ClusterInfo/MR_ClusterRefresh. */
+static void MR_ClusterHelloReply(void* pd){
+    RedisModuleBlockedClient* bc = pd;
+    RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(bc);
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got hello msg while cluster is NULL");
-        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state on hello msg");
+        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state on hello msg");
+    } else {
+        RedisModule_ReplyWithStringBuffer(ctx, clusterCtx.CurrCluster->runId, strlen(clusterCtx.CurrCluster->runId));
     }
-    RedisModule_ReplyWithStringBuffer(ctx, clusterCtx.CurrCluster->runId, strlen(clusterCtx.CurrCluster->runId));
+    RedisModule_FreeThreadSafeContext(ctx);
+    RedisModule_UnblockClient(bc, NULL);
+}
+
+int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    MR_EventLoopAddTask(MR_ClusterHelloReply, bc);
     return REDISMODULE_OK;
 }
 
