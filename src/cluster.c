@@ -1613,19 +1613,24 @@ static void MR_ClusterInfo(void* pd) {
     mr_dictEntry *entry = NULL;
     while((entry = mr_dictNext(iter))){
         Node* n = mr_dictGetVal(entry);
-        RedisModule_ReplyWithArray(ctx, 18);
+        RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_LEN);
+        long nodeLen = 0;
         RedisModule_ReplyWithStringBuffer(ctx, "id", strlen("id"));
         RedisModule_ReplyWithStringBuffer(ctx, n->id, strlen(n->id));
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "ip", strlen("ip"));
         RedisModule_ReplyWithStringBuffer(ctx, n->ip, strlen(n->ip));
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "port", strlen("port"));
         RedisModule_ReplyWithLongLong(ctx, n->port);
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "unixSocket", strlen("unixSocket"));
         if(n->unixSocket){
             RedisModule_ReplyWithStringBuffer(ctx, n->unixSocket, strlen(n->unixSocket));
         }else{
             RedisModule_ReplyWithStringBuffer(ctx, "None", strlen("None"));
         }
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "runid", strlen("runid"));
         if(n->runId){
             RedisModule_ReplyWithStringBuffer(ctx, n->runId, strlen(n->runId));
@@ -1637,15 +1642,19 @@ static void MR_ClusterInfo(void* pd) {
                 RedisModule_ReplyWithNull(ctx);
             }
         }
+        nodeLen += 2;
 
-        RedisModule_Assert(n->slotRanges->len == 1);
-        SlotRange* slotRange = mr_listFirst(n->slotRanges)->value;
-        RedisModule_ReplyWithStringBuffer(ctx, "minHslot", strlen("minHslot"));
-        RedisModule_ReplyWithLongLong(ctx, slotRange->minSlot);
-        RedisModule_ReplyWithStringBuffer(ctx, "maxHslot", strlen("maxHslot"));
-        RedisModule_ReplyWithLongLong(ctx, slotRange->maxSlot);
+        for (mr_listNode* sr = mr_listFirst(n->slotRanges); sr != NULL; sr = mr_listNextNode(sr)) {
+            SlotRange* slotRange = mr_listNodeValue(sr);
+            RedisModule_ReplyWithStringBuffer(ctx, "minHslot", strlen("minHslot"));
+            RedisModule_ReplyWithLongLong(ctx, slotRange->minSlot);
+            RedisModule_ReplyWithStringBuffer(ctx, "maxHslot", strlen("maxHslot"));
+            RedisModule_ReplyWithLongLong(ctx, slotRange->maxSlot);
+            nodeLen += 4;
+        }
         RedisModule_ReplyWithStringBuffer(ctx, "pendingMessages", strlen("pendingMessages"));
         RedisModule_ReplyWithLongLong(ctx, mr_listLength(n->pendingMessages));
+        nodeLen += 2;
 
         RedisModule_ReplyWithStringBuffer(ctx, "status", strlen("status"));
         if (n->isMe) {
@@ -1661,6 +1670,8 @@ static void MR_ClusterInfo(void* pd) {
         } else if (n->status == NodeStatus_Uninitialized) {
             RedisModule_ReplyWithStringBuffer(ctx, "uninitialized", strlen("uninitialized"));
         }
+        nodeLen += 2;
+        RedisModule_ReplySetArrayLength(ctx, nodeLen);
     }
     mr_dictReleaseIterator(iter);
     RedisModule_FreeThreadSafeContext(ctx);
