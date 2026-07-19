@@ -1365,6 +1365,15 @@ static void MR_ExecutionMain(void* pd) {
         return;
     }
 
+    // A terminal handler (idle-timeout / cluster-abort) that returned false did not
+    // dispose e, but it has already removed e from executionsDict. We still drain any
+    // task queued behind it (e.g. a MR_DisposeExecution from a racing normal completion),
+    // but we must NOT re-arm the idle timer for such an execution: nothing can cancel it
+    // anymore, so it would re-fire forever (appending to e->errors every tick). A pending
+    // MR_DisposeExecution, if one was queued, still runs and frees e.
+    bool terminal = (callback == MR_ExecutionTimedOutInternal ||
+                     callback == MR_ExecutionAbortedOnClusterChange);
+
     pthread_mutex_lock(&e->eLock);
     /* pop current task out */
     mr_listDelNode(e->tasks, head);
@@ -1374,7 +1383,7 @@ static void MR_ExecutionMain(void* pd) {
         /* more work to do, for fairness we will not run now.
          * We will add ourselves to the thread pool */
         mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ExecutionMain, e);
-    } else {
+    } else if (!terminal) {
         e->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_ExecutionTimedOut, e, e->timeoutMS);
     }
 
