@@ -41,7 +41,10 @@ int MR_IsClusterInitialize();
 
 size_t MR_ClusterGetSize();
 
-int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
+int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents);
+
+// Set to true once a cluster topology-change event is seen
+extern bool MR_TopologyEventSeen;
 
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
 
