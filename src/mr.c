@@ -1527,6 +1527,7 @@ void MR_FreeExecution(Execution* e) {
 }
 
 void MR_UpdateClusterTopology() {
+    MR_TopologyEventSeen = true;
     RedisModuleString** argv = NULL;
     int argc = 1;  // The first one is always the command name, so no need any argv for that
     const char *password = MR_ClusterGetPassword();
@@ -1587,11 +1588,11 @@ static void MR_GetRedisVersion() {
     RedisModule_FreeCallReply(reply);
 }
 
-int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
+int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
 
-    if (MR_ClusterInit(ctx, password) != REDISMODULE_OK) {
+    if (MR_ClusterInit(ctx, password, topologyEvents) != REDISMODULE_OK) {
         return REDISMODULE_ERR;
     }
 
