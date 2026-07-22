@@ -1394,16 +1394,24 @@ static void MR_ClusterSetFromCommand(void* ctx){
     RedisModule_UnblockClient(csCtx->bc, csCtx);
 }
 
-static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    ClusterSetCtx* csCtx = RedisModule_GetBlockedClientPrivateData(ctx);
-    const char* errReply = csCtx->errReply;
+/* Frees the ClusterSetCtx. Registered as the block-client free_privdata callback so the
+ * context is released whenever the blocked client is destroyed - including when the client
+ * is torn down (e.g. on shutdown) without the reply callback ever running, which otherwise
+ * leaks the ClusterSetCtx and its held argv. Mirrors MR_ClusterInnerCommunicationMsgFreePD. */
+static void MR_ClusterSetFreePD(RedisModuleCtx* ctx, void* pd) {
+    ClusterSetCtx* csCtx = pd;
     for(size_t i = 0 ; i < csCtx->argc ; ++i){
         RedisModule_FreeString(NULL, csCtx->argv[i]);
     }
     MR_FREE(csCtx->argv);
     MR_FREE(csCtx);
-    if (errReply) {
-        RedisModule_ReplyWithError(ctx, errReply);
+}
+
+static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+    // csCtx is freed by MR_ClusterSetFreePD (the block-client free_privdata callback), not here.
+    ClusterSetCtx* csCtx = RedisModule_GetBlockedClientPrivateData(ctx);
+    if (csCtx->errReply) {
+        RedisModule_ReplyWithError(ctx, csCtx->errReply);
     } else {
         RedisModule_ReplyWithSimpleString(ctx, "OK");
     }
@@ -1412,7 +1420,7 @@ static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, i
 
 static int MR_ClusterSetInternal(RedisModuleCtx *ctx, RedisModuleString **argv, int argc, bool force){
     ClusterSetCtx* csCtx = MR_ALLOC(sizeof(*csCtx));
-    csCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterSetUnblock, NULL, NULL, 0);
+    csCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterSetUnblock, NULL, MR_ClusterSetFreePD, 0);
     csCtx->argv = argv;
     csCtx->argc = argc;
     csCtx->force = force;
@@ -1455,12 +1463,27 @@ static int MR_ClusterSetFromShard(RedisModuleCtx *ctx, RedisModuleString **argv,
     return REDISMODULE_OK;
 }
 
-int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+/* runs in the event loop so it is safe to read the cluster topology here.
+ * clusterCtx.CurrCluster is owned by the event-loop thread, which frees and swaps
+ * it on topology changes (MR_UpdateClusterTopologyIfNeeded). Reading it directly
+ * from the command handler on the main thread races that free -> use-after-free,
+ * so we defer the read to the event loop, like MR_ClusterInfo/MR_ClusterRefresh. */
+static void MR_ClusterHelloReply(void* pd){
+    RedisModuleBlockedClient* bc = pd;
+    RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(bc);
     if(!clusterCtx.CurrCluster){
         RedisModule_Log(mr_staticCtx, "warning", "Got hello msg while cluster is NULL");
-        return RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state on hello msg");
+        RedisModule_ReplyWithError(ctx, CLUSTER_ERROR" NULL cluster state on hello msg");
+    } else {
+        RedisModule_ReplyWithStringBuffer(ctx, clusterCtx.CurrCluster->runId, strlen(clusterCtx.CurrCluster->runId));
     }
-    RedisModule_ReplyWithStringBuffer(ctx, clusterCtx.CurrCluster->runId, strlen(clusterCtx.CurrCluster->runId));
+    RedisModule_FreeThreadSafeContext(ctx);
+    RedisModule_UnblockClient(bc, NULL);
+}
+
+int MR_ClusterHello(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
+    RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
+    MR_EventLoopAddTask(MR_ClusterHelloReply, bc);
     return REDISMODULE_OK;
 }
 
@@ -1593,6 +1616,7 @@ static void MR_ClusterInfo(void* pd) {
     RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(bc);
     if(!clusterCtx.CurrCluster){
         RedisModule_ReplyWithStringBuffer(ctx, NO_CLUSTER_MODE_REPLY, strlen(NO_CLUSTER_MODE_REPLY));
+        RedisModule_FreeThreadSafeContext(ctx);
         RedisModule_UnblockClient(bc, NULL);
         return;
     }
