@@ -548,32 +548,10 @@ static int checkTLS(char** client_key, char** client_cert, char** ca_cert, char*
     char* tlsPort = NULL;
 
     clusterTls = getConfigValue(mr_staticCtx, "tls-cluster");
-    if (!clusterTls || strcmp(clusterTls, "yes")) {
-        /* MOD-16951: when the topology is built from the native cluster view
-         * (RedisModule_GetClusterNodeInfo -- used by the topology-change event,
-         * REFRESHCLUSTER and short-form CLUSTERSET; see MR_RefreshClusterData /
-         * BuildCluster), the peer port we dial is the PLAINTEXT node port whenever
-         * tls-cluster is off. So for those paths the inter-shard TLS decision must be
-         * gated strictly on tls-cluster: a bare tls-port (external TLS clients over an
-         * otherwise-plaintext bus) must NOT force TLS here, or we'd open a TLS handshake
-         * against a plaintext port -> the peer's RESP parser blocks on a reply that never
-         * comes and multi-shard commands (TS.MRANGE / TS.QUERYINDEX) hang until
-         * "execution max idle reached".
-         *
-         * Long-form CLUSTERSET is the exception: there the caller (e.g. the enterprise
-         * DMC) supplies explicit shard endpoints, which may be TLS ports, so it keeps the
-         * historical tls-port fallback. */
-        bool explicitEndpoints = clusterCtx.CurrCluster &&
-            IsLongFormClusterSet(clusterCtx.CurrCluster->clusterSetCommandSize);
-        if (!explicitEndpoints) {
-            ret = 0;
-            goto done;
-        }
-        tlsPort = getConfigValue(mr_staticCtx, "tls-port");
-        if (!tlsPort || !strcmp(tlsPort, "0")) {
-            ret = 0;
-            goto done;
-        }
+    bool clusterTlsEnabled = clusterTls && !strcmp(clusterTls, "yes");
+    if (!clusterTlsEnabled) {
+        ret = 0;
+        goto done;
     }
 
     *client_key = getConfigValue(mr_staticCtx, "tls-key-file");
