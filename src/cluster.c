@@ -959,6 +959,136 @@ static void MR_RefreshClusterData(){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
+/* One entry of a topology view: a master node and one of its slot ranges
+ * (minSlot > maxSlot when it serves none). A master with several ranges
+ * appears once per range. */
+typedef struct TopologyViewEntry {
+    char id[REDISMODULE_NODE_ID_LEN + 1];
+    char ip[INET6_ADDRSTRLEN];
+    unsigned short port;
+    long long minSlot;
+    long long maxSlot;
+} TopologyViewEntry;
+
+/* Build a topology view of the masters currently visible through the cluster
+ * module API (the same source the short-form CLUSTERSET builds from). Masters
+ * serving no slots are left out unless includeSlotless is set. Returns NULL
+ * when the cluster API is unavailable; the caller owns the returned array. */
+static ARR(TopologyViewEntry) BuildClusterApiView(bool includeSlotless){
+    if (RedisModule_GetClusterNodeSlotRanges == NULL)
+        return NULL;
+
+    size_t numNodes;
+    char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
+    if (!nodeList)
+        return NULL;
+
+    ARR(TopologyViewEntry) view = array_new(TopologyViewEntry, numNodes);
+    for (size_t i = 0; i < numNodes; i++) {
+        TopologyViewEntry e = { .minSlot = 0, .maxSlot = -1 };
+        memcpy(e.id, nodeList[i], REDISMODULE_NODE_ID_LEN);  // nodeList[i] is not null-terminated
+        e.id[REDISMODULE_NODE_ID_LEN] = '\0';
+
+        int port, flags;
+        if (RedisModule_GetClusterNodeInfo(mr_staticCtx, e.id, e.ip, NULL, &port, &flags) != REDISMODULE_OK)
+            continue;
+        if (!(flags & REDISMODULE_NODE_MASTER)) continue;  // Skip replica nodes
+        e.port = (unsigned short)port;
+
+        RedisModuleSlotRangeArray *slots = RedisModule_GetClusterNodeSlotRanges(mr_staticCtx, e.id);
+        RedisModule_Assert(slots != NULL);
+        if (slots->num_ranges == 0) {
+            if (includeSlotless)
+                view = array_append(view, e);
+        } else {
+            for (size_t j = 0; j < slots->num_ranges; j++) {
+                e.minSlot = slots->ranges[j].start;
+                e.maxSlot = slots->ranges[j].end;
+                view = array_append(view, e);
+            }
+        }
+        RedisModule_ClusterFreeSlotRanges(mr_staticCtx, slots);
+    }
+    RedisModule_FreeClusterNodesList(nodeList);
+    return view;
+}
+
+/* Compare the view against the current cluster and, when the master set is
+ * unchanged -- same ids at the same addresses -- repoint the slot map in
+ * place, keeping the nodes and their live connections. Returns false when a
+ * master entered/left the set or changed its address; the caller must then do
+ * a full rebuild. Runs on the event-loop thread, same as the dispatch path
+ * that reads slots[], so no reader can observe a half-updated map. */
+static bool MR_TryApplyTopologyInPlace(const TopologyViewEntry* view, size_t n){
+    if (!clusterCtx.CurrCluster) {
+        return false;
+    }
+
+    /* Pass 1: validate. Every master in the view must already be known, at the
+     * same address; and none we hold may have left (every view id is in the
+     * nodes dict, so an equal distinct count means equal sets). */
+    mr_dict* seen = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    for (size_t i = 0 ; i < n ; ++i) {
+        Node* node = MR_GetNode(view[i].id);
+        if (!node) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                "Topology reconcile saw a new shard %s; doing a full topology refresh", view[i].id);
+            mr_dictRelease(seen);
+            return false;
+        }
+        if (strcmp(node->ip, view[i].ip) != 0 ||
+            (view[i].port != 0 && node->port != view[i].port)) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                "Topology reconcile: shard %s changed its address; doing a full topology refresh", view[i].id);
+            mr_dictRelease(seen);
+            return false;
+        }
+        mr_dictAdd(seen, (void*)view[i].id, NULL); /* duplicate ranges for a shard are ignored */
+    }
+    size_t shardsNow = mr_dictSize(seen);
+    mr_dictRelease(seen);
+    if (shardsNow != mr_dictSize(clusterCtx.CurrCluster->nodes)) {
+        RedisModule_Log(mr_staticCtx, "notice",
+            "Topology reconcile: the set of shards changed; doing a full topology refresh");
+        return false;
+    }
+
+    /* Pass 2: apply -- repoint the whole slot map; the reused nodes keep their
+     * connections. */
+    memset(clusterCtx.CurrCluster->slots, 0, sizeof(clusterCtx.CurrCluster->slots));
+    bool mySlotsSet = false;
+    for (size_t i = 0 ; i < n ; ++i) {
+        Node* node = MR_GetNode(view[i].id);
+        if (node->isMe && !mySlotsSet) {
+            /* fill the fallback single-range from my first range, like the
+             * full builders do */
+            clusterCtx.minSlot = view[i].minSlot;
+            clusterCtx.maxSlot = view[i].maxSlot;
+            mySlotsSet = true;
+        }
+        for (long long k = view[i].minSlot ; k <= view[i].maxSlot ; ++k) {
+            clusterCtx.CurrCluster->slots[k] = node;
+        }
+    }
+    return true;
+}
+
+/* Reconcile against the current cluster state: rebuild the connections only
+ * when the set of masters (or one of their addresses) changed; otherwise just
+ * repoint the slot map in place and keep the existing connections. */
+static void MR_UpdateClusterSlots(){
+    if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
+        return;
+    }
+
+    ARR(TopologyViewEntry) view = BuildClusterApiView(false);
+    bool applied = view != NULL && MR_TryApplyTopologyInPlace(view, array_len(view));
+    if (view)
+        array_free(view);
+    if (!applied)
+        MR_RefreshClusterData();
+}
+
 static void GenerateRunId(Cluster* cluster){
     RedisModule_GetRandomHexChars(cluster->runId, RUN_ID_SIZE);
     cluster->runId[RUN_ID_SIZE] = '\0';
@@ -1425,6 +1555,23 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
     RedisModuleBlockedClient* bc = RedisModule_BlockClient(ctx, NULL, NULL, NULL, 0);
     MR_EventLoopAddTask(MR_ClusterRefreshFromCommand, bc);
     return REDISMODULE_OK;
+}
+
+/* Runs on the event loop. */
+static void MR_TopoRefreshTask(void* ctx){
+    REDISMODULE_NOT_USED(ctx);
+    MR_UpdateClusterSlots();
+}
+
+/* Request an OSS cluster topology refresh; every event schedules one reconcile
+ * on the event loop. No-op when not in OSS cluster mode, so it is safe to call
+ * unconditionally from a Redis server-event callback. */
+void MR_ClusterRefreshTopology(int change_flags){
+    if (!clusterCtx.isOss) return;
+    /* change_flags is advisory: the refresh compares the actual master set, so
+     * the reason bits are not acted on. */
+    REDISMODULE_NOT_USED(change_flags);
+    MR_EventLoopAddTask(MR_TopoRefreshTask, NULL);
 }
 
 static int MR_ClusterSet(RedisModuleCtx *ctx, RedisModuleString **argv, int argc){
