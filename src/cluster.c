@@ -165,7 +165,10 @@ struct ClusterCtx {
     int isOss;
     functionId networkTestMsgReceiver;
     char *password;
+    bool topologyEvents;
 }clusterCtx;
+
+bool MR_TopologyEventSeen = false;
 
 typedef struct ClusterSetCtx {
     RedisModuleBlockedClient* bc;
@@ -871,11 +874,22 @@ static Node* MR_CreateNode(Cluster* cluster, const char* id, const char* ip, uns
 }
 
 static void MR_RefreshClusterData(){
+    if (clusterCtx.topologyEvents) {
+        if (MR_TopologyEventSeen) {
+            RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster refresh command when topology events are enabled - skipping");
+            return;
+        }
+        RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster refresh command when topology events are enabled");
+        // Topology events are enabled, but we haven't seen one yet. maybe the redis-server doesn't support them.
+        // So to be on the safe side, we'll process the command .
+    } else {
+        RedisModule_Assert(!MR_TopologyEventSeen);  // Since no handler was registered for topology events
+        RedisModule_Log(mr_staticCtx, "notice", "Got cluster refresh command");
+    }
+
     if(clusterCtx.CurrCluster){
         MR_ClusterFree();
     }
-
-    RedisModule_Log(mr_staticCtx, "notice", "Got cluster refresh command");
 
     if(!(RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)){
         return;
@@ -1094,7 +1108,7 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
     return index;
 }
 
-Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) {
+Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* password) {
     size_t numNodes;
     char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
     if (!nodeList) {
@@ -1164,12 +1178,15 @@ Cluster* BuildCluster(RedisModuleString** argv, int argc, const char* password) 
     }
     RedisModule_FreeClusterNodesList(nodeList);
 
-    if (cluster != NULL && coveredSlots != NUMBER_OF_SLOTS) {
+    if (cluster == NULL)
+        return NULL;
+
+    if (coveredSlots != NUMBER_OF_SLOTS) {
         RedisModule_Log(mr_staticCtx, "warning",
             "Cluster topology covers %zu of %d slots; rejecting topology",
             coveredSlots, NUMBER_OF_SLOTS);
         FreeCluster(cluster);
-        cluster = NULL;
+        return NULL;
     }
 
     return cluster;
@@ -1219,9 +1236,13 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
     RedisModule_Assert(cluster != NULL);
 
     if (SameCluster(cluster, clusterCtx.CurrCluster)) {
+        RedisModule_Log(mr_staticCtx, "notice", "Skipping cluster topology update, same cluster topology");
         FreeCluster(cluster);
         return;
     }
+
+    RedisModule_Log(mr_staticCtx, "notice", "Updating cluster topology, number of masters: %ld",
+                    (long)mr_dictSize(cluster->nodes));
 
     if (clusterCtx.CurrCluster)
         MR_ClusterFree();
@@ -1252,7 +1273,18 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
 }
 
 static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
-    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
+    if (clusterCtx.topologyEvents) {
+        if (MR_TopologyEventSeen) {
+            RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster set command (short form) when topology events are enabled - skipping");
+            return REDISMODULE_OK;
+        }
+        RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster set command (short form) when topology events are enabled");
+        // Topology events are enabled, but we haven't seen one yet. maybe the redis-server doesn't support them.
+        // So to be on the safe side, we'll process the command .
+    } else {
+        RedisModule_Assert(!MR_TopologyEventSeen);  // Since no handler was registered for topology events
+        RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
+    }
 
     // RedisModule_GetClusterNodeSlotRanges may be NULL when the host Redis
     // build does not export it (e.g. OSS Redis without the backport). Reject
@@ -1283,7 +1315,7 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_Assert(0);
     }
 
-    Cluster* cluster = BuildCluster(argv, argc, password);
+    Cluster* cluster = MR_BuildCluster(argv, argc, password);
     if (!cluster)
         return REDISMODULE_ERR;
 
@@ -1292,7 +1324,18 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
 }
 
 static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
-    RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
+    if (clusterCtx.topologyEvents) {
+        if (MR_TopologyEventSeen) {
+            RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster set command (long form) when topology events are enabled - skipping");
+            return;
+        }
+        RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster set command (long form) when topology events are enabled");
+        // Topology events are enabled, but we haven't seen one yet. maybe the redis-server doesn't support them.
+        // So to be on the safe side, we'll process the command .
+    } else {
+        RedisModule_Assert(!MR_TopologyEventSeen);  // Since no handler was registered for topology events
+        RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
+    }
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
@@ -1606,19 +1649,24 @@ static void MR_ClusterInfo(void* pd) {
     mr_dictEntry *entry = NULL;
     while((entry = mr_dictNext(iter))){
         Node* n = mr_dictGetVal(entry);
-        RedisModule_ReplyWithArray(ctx, 18);
+        RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_LEN);
+        long nodeLen = 0;
         RedisModule_ReplyWithStringBuffer(ctx, "id", strlen("id"));
         RedisModule_ReplyWithStringBuffer(ctx, n->id, strlen(n->id));
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "ip", strlen("ip"));
         RedisModule_ReplyWithStringBuffer(ctx, n->ip, strlen(n->ip));
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "port", strlen("port"));
         RedisModule_ReplyWithLongLong(ctx, n->port);
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "unixSocket", strlen("unixSocket"));
         if(n->unixSocket){
             RedisModule_ReplyWithStringBuffer(ctx, n->unixSocket, strlen(n->unixSocket));
         }else{
             RedisModule_ReplyWithStringBuffer(ctx, "None", strlen("None"));
         }
+        nodeLen += 2;
         RedisModule_ReplyWithStringBuffer(ctx, "runid", strlen("runid"));
         if(n->runId){
             RedisModule_ReplyWithStringBuffer(ctx, n->runId, strlen(n->runId));
@@ -1630,15 +1678,19 @@ static void MR_ClusterInfo(void* pd) {
                 RedisModule_ReplyWithNull(ctx);
             }
         }
+        nodeLen += 2;
 
-        RedisModule_Assert(n->slotRanges->len == 1);
-        SlotRange* slotRange = mr_listFirst(n->slotRanges)->value;
-        RedisModule_ReplyWithStringBuffer(ctx, "minHslot", strlen("minHslot"));
-        RedisModule_ReplyWithLongLong(ctx, slotRange->minSlot);
-        RedisModule_ReplyWithStringBuffer(ctx, "maxHslot", strlen("maxHslot"));
-        RedisModule_ReplyWithLongLong(ctx, slotRange->maxSlot);
+        for (mr_listNode* sr = mr_listFirst(n->slotRanges); sr != NULL; sr = mr_listNextNode(sr)) {
+            SlotRange* slotRange = mr_listNodeValue(sr);
+            RedisModule_ReplyWithStringBuffer(ctx, "minHslot", strlen("minHslot"));
+            RedisModule_ReplyWithLongLong(ctx, slotRange->minSlot);
+            RedisModule_ReplyWithStringBuffer(ctx, "maxHslot", strlen("maxHslot"));
+            RedisModule_ReplyWithLongLong(ctx, slotRange->maxSlot);
+            nodeLen += 4;
+        }
         RedisModule_ReplyWithStringBuffer(ctx, "pendingMessages", strlen("pendingMessages"));
         RedisModule_ReplyWithLongLong(ctx, mr_listLength(n->pendingMessages));
+        nodeLen += 2;
 
         RedisModule_ReplyWithStringBuffer(ctx, "status", strlen("status"));
         if (n->isMe) {
@@ -1654,6 +1706,8 @@ static void MR_ClusterInfo(void* pd) {
         } else if (n->status == NodeStatus_Uninitialized) {
             RedisModule_ReplyWithStringBuffer(ctx, "uninitialized", strlen("uninitialized"));
         }
+        nodeLen += 2;
+        RedisModule_ReplySetArrayLength(ctx, nodeLen);
     }
     mr_dictReleaseIterator(iter);
     RedisModule_FreeThreadSafeContext(ctx);
@@ -1757,7 +1811,7 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
     RedisModule_Log(ctx, "notice", "got a nextwork test msg");
 }
 
-int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
+int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
     clusterCtx.nodesMsgIds = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
@@ -1766,6 +1820,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.clusterSize = 1;
     clusterCtx.isOss = true;
     clusterCtx.password = password ? MR_STRDUP(password) : NULL;
+    clusterCtx.topologyEvents = topologyEvents;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
     /* Note: RedisModule_GetContextFlags() does NOT report
