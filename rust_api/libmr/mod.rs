@@ -40,7 +40,7 @@ impl Default for crate::libmr_c_raw::bindings::Record {
 
 pub type RustMRError = String;
 
-pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>) {
+pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>, topology_events: bool) {
     let password = password.map(|v| CString::new(v).unwrap());
     unsafe {
         MR_Init(
@@ -50,6 +50,7 @@ pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>) {
                 .as_ref()
                 .map(|v| v.as_ptr())
                 .unwrap_or(ptr::null_mut()) as *mut c_char,
+            topology_events,
         )
     };
     record::init();

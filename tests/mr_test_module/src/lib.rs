@@ -861,7 +861,7 @@ fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
     let pass = args_iter
         .next()
         .map(|v| Some(v.to_string())).flatten();
-    mr_init(ctx, 5, pass.as_deref());
+    mr_init(ctx, 5, pass.as_deref(), true);
 
     KeysReader::register();
     Status::Ok
