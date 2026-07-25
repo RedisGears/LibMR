@@ -167,6 +167,10 @@ def MRTestDecorator(redisConfigFileContent=None, moduleArgs=None, skipTest=False
             envArgs['moduleArgs'] = moduleArgs or defaultModuleArgs
             envArgs['redisConfigFile'] = create_config_file(redisConfigFileContent) if redisConfigFileContent else None
             env = Env(**envArgs)
+            if getattr(env, 'useTLS', False):
+                # checkTLS() in src/cluster.c gates inter-shard TLS strictly on
+                # tls-cluster; --tls alone (client-facing TLS) is not enough.
+                env.broadcast('CONFIG', 'SET', 'tls-cluster', 'yes')
             conn = getConnectionByEnv(env)
             if skipOnSingleShard:
                 if env.shardsCount == 1:
