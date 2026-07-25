@@ -1267,6 +1267,12 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
+void MR_UpdateClusterTopologyIfNeededUnderLock(void* ctx){
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    MR_UpdateClusterTopologyIfNeeded(ctx);
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+}
+
 static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
     if (clusterCtx.topologyEvents) {
         if (MR_TopologyEventSeen) {

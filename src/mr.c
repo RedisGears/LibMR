@@ -1568,7 +1568,7 @@ void MR_UpdateClusterTopology() {
     // Updating the cluster topology is split across two threads:
     // 1. Redis' main thread (here): build the candidate topology and verify its
     //    integrity (MR_BuildCluster() returns non-NULL only if the topology is valid).
-    // 2. The event-loop thread (in MR_UpdateClusterTopologyIfNeeded): compare the
+    // 2. The event-loop thread (in the lock-protected MR_UpdateClusterTopologyIfNeeded): compare the
     //    candidate against the installed clusterCtx.CurrCluster and swap it in
     //    (alongside other fields, e.g., .clusterSize) only if it changed.
     //    Since this step reads and writes the cluster context it must run on the event-loop thread.
@@ -1579,7 +1579,7 @@ void MR_UpdateClusterTopology() {
     Cluster *cluster = MR_BuildCluster(argv, argc, password);
     if (cluster == NULL)
         return;
-    MR_EventLoopAddTask(MR_UpdateClusterTopologyIfNeeded, cluster);
+    MR_EventLoopAddTask(MR_UpdateClusterTopologyIfNeededUnderLock, cluster);
 }
 
 static void MR_GetRedisVersion() {
