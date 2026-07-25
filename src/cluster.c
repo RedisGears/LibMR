@@ -548,12 +548,10 @@ static int checkTLS(char** client_key, char** client_cert, char** ca_cert, char*
     char* tlsPort = NULL;
 
     clusterTls = getConfigValue(mr_staticCtx, "tls-cluster");
-    if (!clusterTls || strcmp(clusterTls, "yes")) {
-        tlsPort = getConfigValue(mr_staticCtx, "tls-port");
-        if (!tlsPort || !strcmp(tlsPort, "0")) {
-            ret = 0;
-            goto done;
-        }
+    bool clusterTlsEnabled = clusterTls && !strcmp(clusterTls, "yes");
+    if (!clusterTlsEnabled) {
+        ret = 0;
+        goto done;
     }
 
     *client_key = getConfigValue(mr_staticCtx, "tls-key-file");
