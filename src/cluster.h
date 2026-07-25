@@ -41,6 +41,7 @@ int MR_IsClusterInitialize();
 
 size_t MR_ClusterGetSize();
 
+
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
 
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
