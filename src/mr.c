@@ -1560,14 +1560,15 @@ void MR_FreeExecution(Execution* e) {
 }
 
 void MR_UpdateClusterTopology() {
+    MR_TopologyEventSeen = true;
     RedisModuleString** argv = NULL;
     int argc = 1;  // The first one is always the command name, so no need any argv for that
     const char *password = MR_ClusterGetPassword();
 
     // Updating the cluster topology is split across two threads:
     // 1. Redis' main thread (here): build the candidate topology and verify its
-    //    integrity (BuildCluster() returns non-NULL only if the topology is valid).
-    // 2. The event-loop thread (in MR_UpdateClusterTopologyIfNeeded): compare the
+    //    integrity (MR_BuildCluster() returns non-NULL only if the topology is valid).
+    // 2. The event-loop thread (in the lock-protected MR_UpdateClusterTopologyIfNeeded): compare the
     //    candidate against the installed clusterCtx.CurrCluster and swap it in
     //    (alongside other fields, e.g., .clusterSize) only if it changed.
     //    Since this step reads and writes the cluster context it must run on the event-loop thread.
@@ -1575,10 +1576,10 @@ void MR_UpdateClusterTopology() {
     // Because the comparison runs later on the event-loop thread, this function
     // cannot return a boolean indicating whether the topology actually changed or not
     // so it returns nothing.
-    Cluster *cluster = BuildCluster(argv, argc, password);
+    Cluster *cluster = MR_BuildCluster(argv, argc, password);
     if (cluster == NULL)
         return;
-    MR_EventLoopAddTask(MR_UpdateClusterTopologyIfNeeded, cluster);
+    MR_EventLoopAddTask(MR_UpdateClusterTopologyIfNeededUnderLock, cluster);
 }
 
 static void MR_GetRedisVersion() {
@@ -1620,11 +1621,11 @@ static void MR_GetRedisVersion() {
     RedisModule_FreeCallReply(reply);
 }
 
-int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
+int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
 
-    if (MR_ClusterInit(ctx, password) != REDISMODULE_OK) {
+    if (MR_ClusterInit(ctx, password, topologyEvents) != REDISMODULE_OK) {
         return REDISMODULE_ERR;
     }
 
