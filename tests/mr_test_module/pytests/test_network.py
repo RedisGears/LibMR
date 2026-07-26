@@ -360,6 +360,53 @@ def testInternalCommandDuringLongFormClusterSet(env, conn):
     env.broadcast('MRTESTS.REFRESHCLUSTER')
 
 
+@MRTestDecorator(skipOnSingleShard=True)
+def testInternalCommandDuringClusterRefresh(env, conn):
+    refresh_conn = env.getConnection(shardId=1)
+    internal_command_conn = env.getConnection(shardId=1)
+    start = threading.Barrier(3)
+    errors = []
+
+    def refresh_topology():
+        try:
+            start.wait()
+            # Repetition makes the real free/rebuild window deterministic
+            # without introducing a test-only delay in production code.
+            for _ in range(50):
+                refresh_conn.execute_command('MRTESTS.REFRESHCLUSTER')
+        except Exception as error:
+            errors.append(error)
+
+    def run_internal_commands():
+        try:
+            start.wait()
+            for _ in range(500):
+                internal_command_conn.execute_command('lmrtest.internalcommand')
+        except Exception as error:
+            errors.append(error)
+
+    refresh_thread = threading.Thread(target=refresh_topology)
+    internal_command_thread = threading.Thread(target=run_internal_commands)
+    refresh_thread.start()
+    internal_command_thread.start()
+    start.wait()
+
+    refresh_thread.join(timeout=20)
+    internal_command_thread.join(timeout=20)
+
+    env.assertFalse(refresh_thread.is_alive(), message='REFRESHCLUSTER did not finish')
+    env.assertFalse(internal_command_thread.is_alive(), message='internal commands did not finish')
+    env.assertEqual(errors, [])
+
+    # Execution start is asynchronous. A command classified from the temporary
+    # one-shard refresh state reaches the worker assertion after its reply.
+    time.sleep(0.5)
+    env.assertTrue(internal_command_conn.ping())
+
+    # Verify that the final refreshed topology can still run distributed work.
+    env.expect('lmrtest.readerror').equal([0, env.shardsCount])
+
+
 @MRTestDecorator(skipOnCluster=True)
 def testMessageIdCorrectness(env, conn):
     for host in _get_hosts():
