@@ -1,6 +1,7 @@
 import pytest
 from common import MRTestDecorator, ShardsConnectionTimeoutException, initialiseCluster, TimeLimit
 import time
+import unittest
 
 @MRTestDecorator()
 def testBasicMR(env, conn):
@@ -91,6 +92,14 @@ def testRemoteTaskOnAllShards(env, conn):
     for i in range(100):
         conn.execute_command('del', 'doc%d' % i)
     env.expect('lmrtest.dbsize').equal(0)
+
+@MRTestDecorator()
+def testInternalCommandExecutionUsesEventLoop(env, conn):
+    if not env.isCluster():
+        raise unittest.SkipTest()
+    # Internal-command executions use the event-loop distribution path even
+    # when the current topology contains only one shard.
+    env.expect('lmrtest.internalcommand').equal(env.shardsCount)
 
 @MRTestDecorator(skipOnVersionLowerThan='8.0.0', skipOnCluster=False)
 def testInternalCommandsAreNotAllowed(env, conn):
