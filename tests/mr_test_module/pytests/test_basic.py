@@ -94,11 +94,12 @@ def testRemoteTaskOnAllShards(env, conn):
     env.expect('lmrtest.dbsize').equal(0)
 
 @MRTestDecorator()
-def testInternalCommandExecutionUsesEventLoop(env, conn):
+def testInternalCommandIsNeverRoutedLocally(env, conn):
     if not env.isCluster():
         raise unittest.SkipTest()
-    # Internal-command executions use the event-loop distribution path even
-    # when the current topology contains only one shard.
+    # This is an invariant test, not a topology-race reproducer: supported
+    # internal commands always use the event-loop distribution path, including
+    # when the installed cluster has only one shard.
     env.expect('lmrtest.internalcommand').equal(env.shardsCount)
 
 @MRTestDecorator(skipOnVersionLowerThan='8.0.0', skipOnCluster=False)
