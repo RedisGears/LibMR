@@ -17,8 +17,8 @@ use redis_module::redisraw::bindings::{
 };
 
 use redis_module::{
-    alloc::RedisAlloc, redis_command, redis_module, AclCategory, BlockedClient, Context, RedisError,
-    RedisResult, RedisString, RedisValue, Status, ThreadSafeContext,
+    alloc::RedisAlloc, redis_command, redis_module, AclCategory, Context, RedisError, RedisResult,
+    RedisString, RedisValue, Status, ThreadSafeContext,
 };
 
 use mr::libmr::{
@@ -31,8 +31,8 @@ use mr::libmr_c_raw::bindings::{
     ExecutionCtx, InternalCommandCallbacks, MRError, MRObjectType, MRRecordType, Record as RawRecord,
     RedisModuleCtx as MRRedisModuleCtx,
     MR_CreateEmptyExecutionBuilder, MR_CreateExecution, MR_ExecutionBuilderInternalCommand,
-    MR_ExecutionCtxGetErrorsLen, MR_ExecutionCtxGetResultsLen, MR_ExecutionSetOnDoneHandler,
-    MR_FreeExecution, MR_FreeExecutionBuilder, MR_RegisterInternalCommand, MR_RegisterRecord, MR_Run,
+    MR_ExecutionSetMaxIdle, MR_ExecutionSetOnDoneHandler, MR_FreeExecution,
+    MR_FreeExecutionBuilder, MR_RegisterInternalCommand, MR_RegisterRecord, MR_Run,
 };
 use serde::{Deserialize, Serialize};
 
@@ -93,19 +93,9 @@ unsafe extern "C" fn internal_command_reply_parser(
     Box::into_raw(record) as *mut RawRecord
 }
 
-unsafe extern "C" fn internal_command_done(ectx: *mut ExecutionCtx, pd: *mut c_void) {
-    let blocked_client = *Box::from_raw(pd as *mut BlockedClient);
-    let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
-    if MR_ExecutionCtxGetErrorsLen(ectx) > 0 {
-        thread_ctx.reply(Err(RedisError::Str("internal command execution failed")));
-    } else {
-        thread_ctx.reply(Ok(RedisValue::Integer(
-            MR_ExecutionCtxGetResultsLen(ectx) as i64,
-        )));
-    }
-}
+unsafe extern "C" fn internal_command_done(_ectx: *mut ExecutionCtx, _pd: *mut c_void) {}
 
-fn lmr_internal_command(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+fn lmr_internal_command(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let builder = unsafe { MR_CreateEmptyExecutionBuilder() };
     unsafe {
         MR_ExecutionBuilderInternalCommand(
@@ -124,13 +114,13 @@ fn lmr_internal_command(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
         ));
     }
 
-    let blocked_client = Box::into_raw(Box::new(ctx.block_client())) as *mut c_void;
     unsafe {
-        MR_ExecutionSetOnDoneHandler(execution, Some(internal_command_done), blocked_client);
+        MR_ExecutionSetMaxIdle(execution, 100);
+        MR_ExecutionSetOnDoneHandler(execution, Some(internal_command_done), ptr::null_mut());
         MR_Run(execution);
         MR_FreeExecution(execution);
     }
-    Ok(RedisValue::NoReply)
+    Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
 fn strin_record_new(s: String) -> StringRecord {

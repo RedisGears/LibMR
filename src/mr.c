@@ -562,9 +562,7 @@ Execution* MR_CreateExecution(ExecutionBuilder* builder, MRError** err) {
     }
 
     e->flags |= ExecutionFlag_Initiator;
-    /* Internal commands must always be distributed through the event loop.
-     * During a topology replacement MR_ClusterFree temporarily reports one shard. */
-    if (!MR_ClusterIsClusterMode() && !MR_IsInternalCommandsExecution(e)) {
+    if (!MR_ClusterIsClusterMode()) {
         e->flags |= ExecutionFlag_Local;
     }
 

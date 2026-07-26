@@ -4,6 +4,7 @@ import gevent.queue
 import gevent.socket
 import time
 import socket
+import threading
 
 class Connection(object):
     def __init__(self, sock, bufsize=4096, underlying_sock=None):
@@ -294,6 +295,70 @@ def _is_ipv6_enabled():
 
 def _get_hosts():
     return ['localhost', '::0'] if _is_ipv6_enabled() else ['localhost']
+
+
+def _long_form_cluster_set_args(conn, repetitions):
+    """Repeat the installed ranges to make the real replacement window observable."""
+    info = conn.execute_command('MRTESTS.INFOCLUSTER')
+    my_id = info[1]
+    nodes = [dict(zip(node[::2], node[1::2])) for node in info[4]]
+    args = [
+        'HASHFUNC', 'CRC16',
+        'NUMSLOTS', '16384',
+        'MYID', my_id,
+        'RANGES', str(len(nodes) * repetitions),
+    ]
+    for _ in range(repetitions):
+        for node in nodes:
+            host = node['ip']
+            endpoint_host = '[%s]' % host if ':' in host else host
+            args.extend([
+                'SHARD', node['id'],
+                'SLOTRANGE', str(node['minHslot']), str(node['maxHslot']),
+                'ADDR', 'password@%s:%s' % (endpoint_host, node['port']),
+                'MASTER',
+            ])
+    return args
+
+
+@MRTestDecorator(skipOnSingleShard=True)
+def testInternalCommandDuringLongFormClusterSet(env, conn):
+    topology_conn = env.getConnection(shardId=1)
+    internal_command_conn = env.getConnection(shardId=1)
+    promote_internal_client_if_supported(conn=topology_conn)
+
+    # MR_ClusterFree() sets clusterSize to one before SetClusterDataLongForm()
+    # installs the replacement. Repeating valid ranges widens that real
+    # replacement window without adding a test-only production hook.
+    cluster_set_args = _long_form_cluster_set_args(topology_conn, 2048)
+    topology_error = []
+
+    def replace_topology():
+        try:
+            topology_conn.execute_command('MRTESTS.CLUSTERSET', *cluster_set_args)
+            topology_conn.execute_command('MRTESTS.FORCESHARDSCONNECTION')
+        except Exception as error:
+            topology_error.append(error)
+
+    topology_thread = threading.Thread(target=replace_topology)
+    topology_thread.start()
+    time.sleep(0.01)
+
+    result = internal_command_conn.execute_command('lmrtest.internalcommand')
+    topology_thread.join(timeout=10)
+
+    env.assertFalse(topology_thread.is_alive(), message='CLUSTERSET did not finish')
+    env.assertEqual(topology_error, [])
+    env.assertEqual(result, 'OK')
+
+    # Execution start is asynchronous. On the buggy code it is marked local
+    # during the replacement window and reaches the worker assertion.
+    time.sleep(0.5)
+    env.assertTrue(internal_command_conn.ping())
+
+    # Restore the native topology so later tests never see repeated ranges.
+    env.broadcast('MRTESTS.REFRESHCLUSTER')
+
 
 @MRTestDecorator(skipOnCluster=True)
 def testMessageIdCorrectness(env, conn):
@@ -743,4 +808,3 @@ def testSendMultiRangePerNodeTopology(env, conn):
 
             res = env.cmd(*cmd)
             assert res == 'OK'
-

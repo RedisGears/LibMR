@@ -1382,12 +1382,16 @@ static void MR_ClusterRefreshFromCommand(void* ctx){
     RedisModule_UnblockClient(bc, NULL);
 }
 
-/* runs in the event loop so its safe to update cluster
- * topology here */
+/* Runs on the LibMR event loop. Redis' main thread also reads clusterCtx while
+ * creating executions, so hold the Redis lock across the legacy free/rebuild
+ * sequence and do not expose its temporary one-shard state. */
 static void MR_ClusterSetFromCommand(void* ctx){
     ClusterSetCtx* csCtx = ctx;
     if (!clusterCtx.CurrCluster || csCtx->force) {
-        if (MR_SetClusterData(csCtx->argv, csCtx->argc) != REDISMODULE_OK) {
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        int status = MR_SetClusterData(csCtx->argv, csCtx->argc);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        if (status != REDISMODULE_OK) {
             csCtx->errReply = CLUSTER_ERROR" Failed to set cluster topology";
         }
     }
