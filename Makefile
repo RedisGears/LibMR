@@ -24,7 +24,13 @@ else
 	VENV_PYTHON := $(shell test -x $(CURDIR)/.venv/bin/python && echo $(CURDIR)/.venv/bin/python || echo python3)
 endif
 
-run_tests:
+test_runtime_detection:
+	$(CC) -std=c99 -Wall -Wextra -Werror -pedantic \
+		tests/cluster_runtime_test.c -o tests/cluster_runtime_test
+	./tests/cluster_runtime_test
+	$(RM) tests/cluster_runtime_test
+
+run_tests: test_runtime_detection
 	LIBCLANG_PATH="$(LIBCLANG_PATH)" OPENSSL_PREFIX="$(OPENSSL_PREFIX)" PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" PYTHON="$(VENV_PYTHON)" make -C ./tests/mr_test_module/ test
 
 run_tests_valgrind:
@@ -35,4 +41,4 @@ run_tests_ssl:
 
 clean_libmr:
 	make clean -C src/
-
+	$(RM) tests/cluster_runtime_test

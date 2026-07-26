@@ -12,6 +12,7 @@
 #include "common.h"
 #include "mr.h"
 #include "cluster.h"
+#include "cluster_runtime.h"
 #include "event_loop.h"
 #include "utils/arr_rm_alloc.h"
 #include "utils/buffer.h"
@@ -1757,6 +1758,42 @@ static void MR_NetworkTest(RedisModuleCtx *ctx, const char *sender_id, uint8_t t
     RedisModule_Log(ctx, "notice", "got a nextwork test msg");
 }
 
+static bool ConfigValueEquals(RedisModuleCtx *ctx, const char *name,
+                              const char *expected, bool *resolved) {
+    *resolved = false;
+    RedisModuleCallReply *reply = RedisModule_Call(ctx, "config", "cc", "get", name);
+    if (!reply) {
+        return false;
+    }
+
+    /* CONFIG GET replies as a flat array in RESP2 and as a map in RESP3. */
+    int replyType = RedisModule_CallReplyType(reply);
+    RedisModuleCallReply *value = NULL;
+    if (replyType == REDISMODULE_REPLY_ARRAY &&
+        RedisModule_CallReplyLength(reply) >= 2) {
+        value = RedisModule_CallReplyArrayElement(reply, 1);
+    } else if (replyType == REDISMODULE_REPLY_MAP &&
+               RedisModule_CallReplyMapElement &&
+               RedisModule_CallReplyLength(reply) >= 1) {
+        RedisModule_CallReplyMapElement(reply, 0, NULL, &value);
+    }
+
+    bool matches = false;
+    if (value && RedisModule_CallReplyType(value) == REDISMODULE_REPLY_STRING) {
+        size_t valueLen = 0;
+        const char *valueStr = RedisModule_CallReplyStringPtr(value, &valueLen);
+        if (valueStr) {
+            size_t expectedLen = strlen(expected);
+            *resolved = true;
+            matches = valueLen == expectedLen &&
+                      memcmp(valueStr, expected, expectedLen) == 0;
+        }
+    }
+
+    RedisModule_FreeCallReply(reply);
+    return matches;
+}
+
 int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     clusterCtx.CurrCluster = NULL;
     clusterCtx.callbacks = array_new(MR_ClusterMessageReceiver, 10);
@@ -1771,36 +1808,9 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
     /* Note: RedisModule_GetContextFlags() does NOT report
      * REDISMODULE_CTX_FLAGS_CLUSTER yet at module-load time, so read the
      * cluster-enabled config directly to learn the runtime mode. */
-    bool ossClusterRuntime = false;
     bool ceResolved = false;
-    RedisModuleCallReply *ceReply = RedisModule_Call(rctx, "config", "cc", "get", "cluster-enabled");
-    if (ceReply) {
-        /* CONFIG GET replies as a flat array in RESP2 and as a map in RESP3.
-         * The module ctx defaults to RESP2, but handle both shapes so a future
-         * RESP3 default can't silently break detection and misclassify an
-         * OSS-cluster shard as enterprise. */
-        int ceType = RedisModule_CallReplyType(ceReply);
-        RedisModuleCallReply *val = NULL;
-        if (ceType == REDISMODULE_REPLY_ARRAY && RedisModule_CallReplyLength(ceReply) >= 2) {
-            val = RedisModule_CallReplyArrayElement(ceReply, 1);
-        } else if (ceType == REDISMODULE_REPLY_MAP && RedisModule_CallReplyMapElement &&
-                   RedisModule_CallReplyLength(ceReply) >= 1) {
-            RedisModule_CallReplyMapElement(ceReply, 0, NULL, &val);
-        }
-        if (val && RedisModule_CallReplyType(val) == REDISMODULE_REPLY_STRING) {
-            size_t vlen = 0;
-            const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
-            if (vstr) {
-                ceResolved = true;
-                /* CONFIG GET returns the canonical lowercase "yes"/"no" (Redis
-                 * spec), so a case-sensitive compare of exactly 3 bytes is safe. */
-                if (vlen == 3 && memcmp(vstr, "yes", 3) == 0) {
-                    ossClusterRuntime = true;
-                }
-            }
-        }
-        RedisModule_FreeCallReply(ceReply);
-    }
+    bool clusterEnabled =
+        ConfigValueEquals(rctx, "cluster-enabled", "yes", &ceResolved);
     if (!ceResolved) {
         /* CONFIG GET cluster-enabled should always succeed; an error, an
          * unexpected reply shape, or an empty value leaves the runtime cluster
@@ -1819,17 +1829,30 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password) {
      * present-but-unparseable rlec_version would otherwise read as OSS.
      *
      * Treat the shard as enterprise only when rlec_version is present AND we
-     * are not in OSS cluster mode. This is the load-bearing decision of the
-     * PR: it unblocks an enterprise binary running as an OSS cluster (e.g. the
-     * env0 testing setup), which must take the OSS path (internal-secret AUTH,
-     * no _proxy-filtered command flags) rather than the enterprise path. */
-    if (MR_RlecVersionPresent && !ossClusterRuntime) {
+     * are not in native cluster mode, except for an Enterprise-managed native
+     * cluster. In ASM, ClusterPlugin is loaded before data modules and registers
+     * an immutable clusterplugin.cluster-topology-uri config. ClusterPlugin
+     * refuses to load while the URI is "unset", so a non-default value narrowly
+     * distinguishes ASM from an enterprise binary running as a standalone OSS
+     * cluster (e.g. the env0 testing setup). */
+    bool managedNativeCluster = false;
+    if (MR_RlecVersionPresent && clusterEnabled) {
+        bool topologyUriResolved = false;
+        bool topologyUriUnset =
+            ConfigValueEquals(rctx, "clusterplugin.cluster-topology-uri",
+                              "unset", &topologyUriResolved);
+        managedNativeCluster = topologyUriResolved && !topologyUriUnset;
+    }
+    if (MR_IsEnterpriseRuntime(MR_RlecVersionPresent, clusterEnabled,
+                               managedNativeCluster)) {
         clusterCtx.isOss = false;
     }
 
-    RedisModule_Log(rctx, "notice", "Detected redis %s (cluster-enabled=%s)",
+    RedisModule_Log(rctx, "notice",
+                    "Detected redis %s (cluster-enabled=%s, managed-native-cluster=%s)",
                     clusterCtx.isOss ? "oss" : "enterprise",
-                    ossClusterRuntime ? "yes" : "no");
+                    clusterEnabled ? "yes" : "no",
+                    managedNativeCluster ? "yes" : "no");
 
     const char *command_flags = "readonly deny-script";
     if (!clusterCtx.isOss) {
