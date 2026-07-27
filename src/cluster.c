@@ -1287,6 +1287,9 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
     }
 
+    if(clusterCtx.CurrCluster)
+        MR_ClusterFree();
+
     // RedisModule_GetClusterNodeSlotRanges may be NULL when the host Redis
     // build does not export it (e.g. OSS Redis without the backport). Reject
     // the command with an error instead of crashing or silently no-op'ing, so
@@ -1337,6 +1340,9 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
         RedisModule_Assert(!MR_TopologyEventSeen);  // Since no handler was registered for topology events
         RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
     }
+
+    if(clusterCtx.CurrCluster)
+        MR_ClusterFree();
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
     InitClusterData(clusterCtx.CurrCluster, argv, argc);
@@ -1401,9 +1407,6 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
 }
 
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
-    if(clusterCtx.CurrCluster)
-        MR_ClusterFree();
-
     if (IsLongFormClusterSet(argc)) {
         SetClusterDataLongForm(argv, argc);
         return REDISMODULE_OK;
