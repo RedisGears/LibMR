@@ -1417,8 +1417,10 @@ static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
     for (int i = 1; i < argc; ++i) {
         if (i == CLUSTERSET_MYID_LONG_FORM_INDEX)
             continue;
-        const char* arg = RedisModule_StringPtrLen(argv[i], NULL);
-        if (strcmp(arg, current->clusterSetCommand[i]) != 0)
+        size_t argLen;
+        const char* arg = RedisModule_StringPtrLen(argv[i], &argLen);
+        if (argLen != strlen(current->clusterSetCommand[i]) ||
+            memcmp(arg, current->clusterSetCommand[i], argLen) != 0)
             return false;
     }
     return true;

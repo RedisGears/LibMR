@@ -211,7 +211,7 @@ class ShardMock():
         conn = Connection(sock)
         self.new_conns.put(conn)
 
-    def _send_cluster_set(self, mock_shard_id='2'):
+    def _send_cluster_set(self, mock_shard_id='2', first_arg='NO-USED'):
         # try to promote to internal connection
         promote_internal_client_if_supported(env=self.env)
         # IPv6 endpoints must be bracketed in host:port strings
@@ -220,7 +220,7 @@ class ShardMock():
         # argv[6] => myId, argv[7] => "RANGES", argv[8] => numOfRanges, then repeating:
         # "SHARD" <id> "SLOTRANGE" <min> <max> "ADDR" <password@host:port> ["MASTER"]
         args = [
-            'NO-USED',  # [1]
+            first_arg,  # [1]
             'NO-USED',  # [2]
             'NO-USED',  # [3]
             'NO-USED',  # [4]
@@ -807,6 +807,13 @@ def testIdenticalLongFormClusterSetIsNoOp(env, conn):
             shardMock._send_cluster_set()
             env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
 
+            # RedisModuleString can carry embedded NUL bytes. Its explicit length
+            # must participate in the comparison so this safely rebuilds.
+            shardMock._send_cluster_set(first_arg=b'NO-USED\0changed')
+            env.assertNotEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            shardMock.GetConnection()
+
+            run_id = env.cmd('MRTESTS.INFOCLUSTER')[3]
             shardMock._send_cluster_set(mock_shard_id='3')
             env.assertNotEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
             shardMock.GetConnection()
