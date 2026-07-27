@@ -211,7 +211,7 @@ class ShardMock():
         conn = Connection(sock)
         self.new_conns.put(conn)
 
-    def _cluster_set_args(self, mock_shard_id='2', password='password'):
+    def _cluster_set_args(self, mock_shard_id='2'):
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
         # Build arguments according to MR_SetClusterData parser:
@@ -229,20 +229,20 @@ class ShardMock():
             # Shard 1 (current Redis) - HARDCODED PORT 6379
             'SHARD', '1',
             'SLOTRANGE', '0', '8192',
-            'ADDR', '%s@%s:6379' % (password, endpoint_host),
+            'ADDR', 'password@%s:6379' % endpoint_host,
             'MASTER',
             # Shard 2 (mock shard)
             'SHARD', mock_shard_id,
             'SLOTRANGE', '8193', '16383',
-            'ADDR', '%s@%s:%d' % (password, endpoint_host, self.port),
+            'ADDR', 'password@%s:%d' % (endpoint_host, self.port),
             'MASTER'
         ]
 
-    def _send_cluster_set(self, mock_shard_id='2', password='password'):
+    def _send_cluster_set(self, mock_shard_id='2'):
         # try to promote to internal connection
         promote_internal_client_if_supported(env=self.env)
         self.env.cmd('MRTESTS.CLUSTERSET',
-                     *self._cluster_set_args(mock_shard_id, password))
+                     *self._cluster_set_args(mock_shard_id))
         self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
     def __enter__(self):
@@ -261,9 +261,9 @@ class ShardMock():
     def __exit__(self, type, value, traceback):
         self.stream_server.stop()
 
-    def GetConnection(self, runid='1', sendHelloResponse=True, password='password'):
+    def GetConnection(self, runid='1', sendHelloResponse=True):
         conn = self.new_conns.get(block=True, timeout=None)
-        self.env.assertEqual(conn.read_request(), ['AUTH', password])
+        self.env.assertEqual(conn.read_request(), ['AUTH', 'password'])
         conn.send_status('OK')  # auth response
         if(sendHelloResponse):
             self.env.assertEqual(conn.read_request(), ['MRTESTS.HELLO'])
@@ -815,10 +815,10 @@ def testIdenticalClusterSetIsNoOp(env, conn):
             env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
 
             env.expect('MRTESTS.CLUSTERSET',
-                       *shardMock._cluster_set_args(password='password2')).equal('OK')
+                       *shardMock._cluster_set_args(mock_shard_id='3')).equal('OK')
             env.assertNotEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
             env.cmd('MRTESTS.FORCESHARDSCONNECTION')
-            shardMock.GetConnection(password='password2')
+            shardMock.GetConnection()
 
 
 @MRTestDecorator(skipOnCluster=True)

@@ -1187,15 +1187,8 @@ Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* passwor
     return cluster;
 }
 
-static bool SameNullableString(const char* a, const char* b) {
-    return a == b || (a != NULL && b != NULL && strcmp(a, b) == 0);
-}
-
 static bool SameNode(Node* a, Node* b) {
-    return strcmp(a->id, b->id) == 0 &&
-           strcmp(a->ip, b->ip) == 0 &&
-           a->port == b->port &&
-           SameNullableString(a->password, b->password);
+    return strcmp(a->id, b->id) == 0 && strcmp(a->ip, b->ip) == 0 && a->port == b->port;
 }
 
 static bool SameSlotRanges(Node* a, Node* b) {
@@ -1218,8 +1211,6 @@ static bool SameCluster(Cluster* a, Cluster* b) {
     if (a == b)
         return true;
     if (a == NULL || b == NULL)
-        return false;
-    if (strcmp(a->myId, b->myId) != 0)
         return false;
     if (mr_dictSize(a->nodes) != mr_dictSize(b->nodes))
         return false;
@@ -1296,6 +1287,9 @@ static int SetClusterDataShortForm(RedisModuleString** argv, int argc){
         RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (short form)");
     }
 
+    if(clusterCtx.CurrCluster)
+        MR_ClusterFree();
+
     // RedisModule_GetClusterNodeSlotRanges may be NULL when the host Redis
     // build does not export it (e.g. OSS Redis without the backport). Reject
     // the command with an error instead of crashing or silently no-op'ing, so
@@ -1347,8 +1341,12 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
         RedisModule_Log(mr_staticCtx, "notice", "Got cluster set command (long form)");
     }
 
-    Cluster* cluster = MR_CALLOC(1, sizeof(*cluster));
-    InitClusterData(cluster, argv, argc);
+    if(clusterCtx.CurrCluster)
+        MR_ClusterFree();
+
+    clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
+    InitClusterData(clusterCtx.CurrCluster, argv, argc);
+    memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
     size_t index = CLUSTERSET_MYID_LONG_FORM_INDEX + 1;
     const char *token = RedisModule_StringPtrLen(argv[index], NULL);
@@ -1384,25 +1382,63 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
             continue;
 
         // Create a new node or update an existing one
-        Node* aMasterNode = MR_GetNode(cluster, realId);
+        Node* aMasterNode = MR_GetNode(clusterCtx.CurrCluster, realId);
         if(!aMasterNode){
-            aMasterNode = MR_CreateNode(cluster, realId, ip, port, password, NULL, minSlot, maxSlot);
+            aMasterNode = MR_CreateNode(clusterCtx.CurrCluster, realId, ip, port, password, NULL, minSlot, maxSlot);
         } else {
             RedisModule_Assert(minSlot <= maxSlot);  // slotless nodes are only created (above)
             mr_listAddNodeTail(aMasterNode->slotRanges, NewSlotRange(minSlot, maxSlot));
         }
 
         for(int k = minSlot ; k <= maxSlot ; ++k){
-            cluster->slots[k] = aMasterNode;
+            clusterCtx.CurrCluster->slots[k] = aMasterNode;
+        }
+
+        if (aMasterNode->isMe) {
+            // fill the fallback single-range; see the comment at the declaration of minSlot and maxSlot
+            clusterCtx.minSlot = minSlot;
+            clusterCtx.maxSlot = maxSlot;
         }
 
         index++;
     }
-    MR_UpdateClusterTopologyIfNeeded(cluster);
+    clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
+    mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+}
+
+/* Long-form CLUSTERSET carries the complete topology in its arguments. MYID
+ * identifies the receiving shard rather than the topology and is not retained
+ * in clusterSetCommand (see CopyClusterSetArgs). */
+static bool LongFormClusterSetIsUnchanged(RedisModuleString** argv, int argc){
+    Cluster* cluster = clusterCtx.CurrCluster;
+    if (!IsLongFormClusterSet(argc) ||
+        !cluster ||
+        !cluster->clusterSetCommand ||
+        cluster->clusterSetCommandSize != argc) {
+        return false;
+    }
+
+    for (int i = 1; i < argc; ++i) {
+        if (i == CLUSTERSET_MYID_LONG_FORM_INDEX)
+            continue;
+
+        size_t argLen;
+        const char* arg = RedisModule_StringPtrLen(argv[i], &argLen);
+        if (argLen != strlen(cluster->clusterSetCommand[i]) ||
+            memcmp(arg, cluster->clusterSetCommand[i], argLen) != 0) {
+            return false;
+        }
+    }
+    return true;
 }
 
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
     if (IsLongFormClusterSet(argc)) {
+        if (LongFormClusterSetIsUnchanged(argv, argc)) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                            "Got cluster set command with an unchanged topology, skipping the rebuild");
+            return REDISMODULE_OK;
+        }
         SetClusterDataLongForm(argv, argc);
         return REDISMODULE_OK;
     } else if (IsShortFormClusterSet(argc)) {
