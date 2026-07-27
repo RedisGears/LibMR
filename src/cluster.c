@@ -1406,8 +1406,31 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
 }
 
+/* MYID identifies the receiving shard and is not retained in clusterSetCommand. */
+static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
+    Cluster* current = clusterCtx.CurrCluster;
+    if (!current ||
+        !current->clusterSetCommand ||
+        current->clusterSetCommandSize != argc)
+        return false;
+
+    for (int i = 1; i < argc; ++i) {
+        if (i == CLUSTERSET_MYID_LONG_FORM_INDEX)
+            continue;
+        const char* arg = RedisModule_StringPtrLen(argv[i], NULL);
+        if (strcmp(arg, current->clusterSetCommand[i]) != 0)
+            return false;
+    }
+    return true;
+}
+
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
     if (IsLongFormClusterSet(argc)) {
+        if (IsSameLongFormClusterSet(argv, argc)) {
+            RedisModule_Log(mr_staticCtx, "notice",
+                            "Skipping identical long-form cluster set");
+            return REDISMODULE_OK;
+        }
         SetClusterDataLongForm(argv, argc);
         return REDISMODULE_OK;
     } else if (IsShortFormClusterSet(argc)) {

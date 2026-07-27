@@ -211,7 +211,7 @@ class ShardMock():
         conn = Connection(sock)
         self.new_conns.put(conn)
 
-    def _send_cluster_set(self):
+    def _send_cluster_set(self, mock_shard_id='2'):
         # try to promote to internal connection
         promote_internal_client_if_supported(env=self.env)
         # IPv6 endpoints must be bracketed in host:port strings
@@ -234,7 +234,7 @@ class ShardMock():
             'ADDR', 'password@%s:6379' % endpoint_host,
             'MASTER',
             # Shard 2 (mock shard)
-            'SHARD', '2',
+            'SHARD', mock_shard_id,
             'SLOTRANGE', '8193', '16383',
             'ADDR', 'password@%s:%d' % (endpoint_host, self.port),
             'MASTER'
@@ -793,7 +793,23 @@ def testMassiveClusterSet(env, conn):
         with ShardMock(env, host) as shardMock:
             for i in range(1000):
                 conn = shardMock.GetConnection(sendHelloResponse=False)
-                shardMock._send_cluster_set()
+                # Keep exercising rebuilds now that identical updates are skipped.
+                shardMock._send_cluster_set(mock_shard_id=str(3 - (i % 2)))
+
+
+@MRTestDecorator(skipOnCluster=True)
+def testIdenticalLongFormClusterSetIsNoOp(env, conn):
+    for host in _get_hosts():
+        with ShardMock(env, host) as shardMock:
+            shardMock.GetConnection()
+            run_id = env.cmd('MRTESTS.INFOCLUSTER')[3]
+
+            shardMock._send_cluster_set()
+            env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+
+            shardMock._send_cluster_set(mock_shard_id='3')
+            env.assertNotEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+            shardMock.GetConnection()
 
 @MRTestDecorator(skipOnCluster=True)
 def testMassiveClusterSetFromShard(env, conn):
