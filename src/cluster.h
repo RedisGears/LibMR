@@ -47,6 +47,14 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents);
 // Set to true once a cluster topology-change event is seen
 extern bool MR_TopologyEventSeen;
 
+/* Schedule an OSS cluster topology refresh on the event loop. 'change_flags'
+ * is a bitmask of REDISMODULE_CLUSTER_TOPOLOGY_CHANGE_FLAG_* reasons and is
+ * advisory only: the refresh rebuilds the connections when the set of master
+ * nodes changed and otherwise just updates the slot->node routing in place.
+ * No-op outside of OSS cluster mode. Safe to call from a Redis server-event
+ * callback. */
+void MR_ClusterRefreshTopology(int change_flags);
+
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
 
 int MR_ClusterIsMySlot(size_t slot);
