@@ -27,15 +27,25 @@ void MR_ClusterCopyAndSendMsgBySlot(size_t slot, functionId function, char* msg,
 
 functionId MR_ClusterRegisterMsgReceiver(MR_ClusterMessageReceiver receiver);
 
+typedef struct Cluster Cluster;
+Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* password);
+void MR_UpdateClusterTopologyIfNeeded(void* ctx);
+void MR_UpdateClusterTopologyIfNeededUnderLock(void* ctx);
+
 int MR_ClusterIsClusterMode();
 
 const char* MR_ClusterGetMyId();
+
+const char *MR_ClusterGetPassword();
 
 int MR_IsClusterInitialize();
 
 size_t MR_ClusterGetSize();
 
-int MR_ClusterInit(RedisModuleCtx* rctx, char *password);
+int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents);
+
+// Set to true once a cluster topology-change event is seen
+extern bool MR_TopologyEventSeen;
 
 size_t MR_ClusterGetSlotByKey(const char* key, size_t len);
 
