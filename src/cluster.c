@@ -984,34 +984,41 @@ static void CopyClusterSetArgs(Cluster* cluster, RedisModuleString** argv, int a
     }
 }
 
-// serverMyId is our id as reported by the server, already checked for NULL by the caller. Only
-// the short form uses it; the long form carries MYID in argv, so it passes NULL.
-static void SetMyId(Cluster* cluster, RedisModuleString** argv, int argc, const char* serverMyId){
-    const char* myId = serverMyId;
+static int SetMyId(Cluster* cluster, RedisModuleString** argv, int argc){
+    const char* myId = RedisModule_GetMyClusterID();
     size_t myIdLen = REDISMODULE_NODE_ID_LEN;
     if (IsLongFormClusterSet(argc)) {
         RedisModule_Assert(CLUSTERSET_MYID_LONG_FORM_INDEX < argc);
         myId = RedisModule_StringPtrLen(argv[CLUSTERSET_MYID_LONG_FORM_INDEX], &myIdLen);
+    } else if (!myId) {
+        // The short form has no MYID of its own, and the server reports none while the cluster
+        // plugin is replacing the topology -- with cluster mode still reported on (MOD-17358).
+        RedisModule_Log(mr_staticCtx, "warning",
+            "Short-form CLUSTERSET rejected: shard has no cluster identity");
+        return REDISMODULE_ERR;
     }
-    RedisModule_Assert(myId != NULL);
 
     cluster->myId = MR_ALLOC(REDISMODULE_NODE_ID_LEN + 1);
     size_t zerosPadding = REDISMODULE_NODE_ID_LEN - myIdLen;
     memset(cluster->myId, '0', zerosPadding);
     memcpy(cluster->myId + zerosPadding, myId, myIdLen);
     cluster->myId[REDISMODULE_NODE_ID_LEN] = '\0';
+    return REDISMODULE_OK;
 }
 
-static void InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc, const char* serverMyId){
+static int InitClusterData(Cluster* cluster, RedisModuleString** argv, int argc){
     cluster->clusterSetCommand = MR_ALLOC(sizeof(char*) * argc);
     cluster->clusterSetCommandSize = argc;
     cluster->clusterSetCommand[0] = MR_STRDUP(CLUSTER_SET_FROM_SHARD_COMMAND);
 
     GenerateRunId(cluster);
     CopyClusterSetArgs(cluster, argv, argc);
-    SetMyId(cluster, argv, argc, serverMyId);
+    if (SetMyId(cluster, argv, argc) != REDISMODULE_OK) {
+        return REDISMODULE_ERR;
+    }
 
     cluster->nodes = mr_dictCreate(&mr_dictTypeHeapStrings, NULL);
+    return REDISMODULE_OK;
 }
 
 #define INTERNAL_PASSWORD_MAX_SIZE 100
@@ -1107,17 +1114,6 @@ static int ParseShardEntry(RedisModuleString** argv, int argc, int index,
 }
 
 Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* password) {
-    // The short form carries no MYID, so we take our id from the server. Read it once here and
-    // pass it down: it is NULL while the cluster plugin is replacing the topology -- even with
-    // cluster mode reported on -- and re-reading it further down would reopen that window
-    // (MOD-17358). NULL also covers a shard that is not in cluster mode at all.
-    const char* myId = RedisModule_GetMyClusterID();
-    if (!myId) {
-        RedisModule_Log(mr_staticCtx, "warning",
-            "Short-form CLUSTERSET rejected: shard has no cluster identity");
-        return NULL;
-    }
-
     size_t numNodes;
     char **nodeList = RedisModule_GetClusterNodesList(mr_staticCtx, &numNodes);
     if (!nodeList) {
@@ -1126,7 +1122,11 @@ Cluster* MR_BuildCluster(RedisModuleString** argv, int argc, const char* passwor
     }
 
     Cluster* cluster = MR_CALLOC(1, sizeof(*cluster));
-    InitClusterData(cluster, argv, argc, myId);
+    if (InitClusterData(cluster, argv, argc) != REDISMODULE_OK) {
+        FreeCluster(cluster);
+        RedisModule_FreeClusterNodesList(nodeList);
+        return NULL;
+    }
     size_t coveredSlots = 0;
 
     for (size_t i = 0; i < numNodes; i++) {
@@ -1365,7 +1365,8 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
         MR_ClusterFree();
 
     clusterCtx.CurrCluster = MR_CALLOC(1, sizeof(*clusterCtx.CurrCluster));
-    InitClusterData(clusterCtx.CurrCluster, argv, argc, NULL);  // MYID comes from argv
+    int initRes = InitClusterData(clusterCtx.CurrCluster, argv, argc);
+    RedisModule_Assert(initRes == REDISMODULE_OK);  // long form carries MYID in argv
     memcpy(clusterCtx.myId, clusterCtx.CurrCluster->myId, REDISMODULE_NODE_ID_LEN + 1);
 
     size_t index = CLUSTERSET_MYID_LONG_FORM_INDEX + 1;
