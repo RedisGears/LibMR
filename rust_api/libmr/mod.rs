@@ -9,7 +9,7 @@
 //! This module provides with the Map-Reduce operations supported.
 
 use crate::libmr_c_raw::bindings::{
-    MRRecordType, MR_CalculateSlot, MR_ClusterIsInClusterMode, MR_Init, MR_IsMySlot, RedisModuleCtx,
+    MRRecordType, MR_CalculateSlot, MR_ClusterIsInClusterMode, MR_InitWithTopologyEvents, MR_IsMySlot, RedisModuleCtx,
 };
 use redis_module::Context;
 
@@ -43,7 +43,7 @@ pub type RustMRError = String;
 pub fn mr_init(ctx: &Context, num_threads: usize, password: Option<&str>, topology_events: bool) {
     let password = password.map(|v| CString::new(v).unwrap());
     unsafe {
-        MR_Init(
+        MR_InitWithTopologyEvents(
             ctx.ctx as *mut RedisModuleCtx,
             num_threads,
             password

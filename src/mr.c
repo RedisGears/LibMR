@@ -1621,7 +1621,11 @@ static void MR_GetRedisVersion() {
     RedisModule_FreeCallReply(reply);
 }
 
-int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents) {
+int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password) {
+    return MR_InitWithTopologyEvents(ctx, numThreads, password, false);
+}
+
+int MR_InitWithTopologyEvents(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents) {
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
 

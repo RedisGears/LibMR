@@ -188,8 +188,17 @@ LIBMR_API void MR_FreeExecution(Execution* e);
  */
 LIBMR_API void MR_UpdateClusterTopology();
 
-/* Initialize mr library */
-LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents);
+/* Initialize mr library.
+ * Pass topologyEvents=true only if the consumer registers a topology-change handler and calls
+ * MR_UpdateClusterTopology() from it; otherwise the topology-event paths stay inert and the
+ * cluster is configured by CLUSTERSET / REFRESHCLUSTER as before. */
+LIBMR_API int MR_InitWithTopologyEvents(struct RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents);
+
+/* Initialize mr library without topology events.
+ * Kept at the pre-topology-events signature so consumers that predate them (RedisTimeSeries 8.8
+ * and older) build against this library unchanged; equivalent to
+ * MR_InitWithTopologyEvents(..., false). */
+LIBMR_API int MR_Init(struct RedisModuleCtx* ctx, size_t numThreads, char *password);
 
 /* Resize the execution thread pool with a new size if worker threads were never started.
  * Requires MR_Init() to have created the pool. Returns REDISMODULE_ERR if the pool does not
