@@ -1964,8 +1964,9 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
      * connection, on which commands registered with the `internal` flag are
      * hidden from us; the HELLO handshake then fails with `unknown command` and
      * never recovers. So an enterprise binary must never register them as
-     * `internal`, even when it runs with cluster-enabled=yes (which is the case
-     * for every ASM-enabled database). */
+     * `internal`, not even when it runs with cluster-enabled=yes - which is a
+     * per-database property there (enabled for the OSS cluster API and/or ASM),
+     * not a property of the deployment. */
     clusterCtx.useInternalConn = clusterCtx.isOss && !MR_RlecVersionPresent &&
                                  RedisModule_GetInternalSecret != NULL;
 
