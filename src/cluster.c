@@ -163,11 +163,8 @@ struct ClusterCtx {
     size_t clusterSize;
     char myId[REDISMODULE_NODE_ID_LEN + 1];
     int isOss;
-    /* Whether our commands were registered with the `internal` flag, i.e. are
-     * only visible on an internal connection. This is a separate decision from
-     * `isOss`: `isOss` says where the topology comes from, while this says which
-     * commands are visible to us and therefore how we must authenticate - see
-     * the comment in MR_ClusterInit(). */
+    /* Our commands were registered `internal`, so only an internal connection
+     * sees them. Not the same question as `isOss` - see MR_ClusterInit(). */
     bool commandsAreInternal;
     functionId networkTestMsgReceiver;
     char *password;
@@ -426,13 +423,11 @@ static void MR_AuthResponseArrived(struct redisAsyncContext* c, void* a, void* b
     }
     Node* n = (Node*)b;
     if (!c->data) {
-        // the node is gone, same guard as MR_HelloResponseArrived
+        // the node is gone
         return;
     }
-    /* A failed AUTH leaves us on a connection with fewer privileges than we
-     * expect, on which the commands we registered may not even be visible. It is
-     * not recoverable from here, but it must not be silent - it is the difference
-     * between diagnosing this and staring at `unknown command` retries. */
+    /* Not recoverable from here, but a silent AUTH failure only resurfaces later
+     * as `unknown command` on the hello. */
     RedisModule_Log(mr_staticCtx, "warning",
         "AUTH to %s (%s:%d) failed: %s. The connection will not have the expected "
         "privileges and the hello handshake is likely to fail.",
@@ -451,8 +446,7 @@ static void SendInternalSecretAuth(const struct redisAsyncContext* c, const Node
 
 static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Node *n) {
     if (clusterCtx.commandsAreInternal) {
-        /* Only an internal connection can see the commands we registered, so a
-         * password is of no use here even if a CLUSTERSET handed us one. */
+        /* A password cannot make the connection internal. */
         SendInternalSecretAuth(c, n);
         return;
     }
@@ -462,10 +456,7 @@ static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Nod
         return;
     }
     if (RedisModule_GetInternalSecret && clusterCtx.isOss) {
-        /* No password to use, but the server may still require us to
-         * authenticate (e.g. requirepass), and the internal secret is the one
-         * credential we always have. Our commands are visible on a regular
-         * connection here, so this is only about being authenticated at all. */
+        /* No password, but the server may still require us to authenticate. */
         SendInternalSecretAuth(c, n);
     }
 }
@@ -1951,12 +1942,8 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
      * Treat the shard as enterprise only when rlec_version is present AND we
      * are not in OSS cluster mode: it unblocks an enterprise binary running as
      * an OSS cluster (e.g. the env0 testing setup), which must read its topology
-     * from the native cluster view rather than wait for a DMC CLUSTERSET.
-     *
-     * Note that this decides the *topology source* only. How we authenticate,
-     * and therefore which commands are visible on our inter-shard connections,
-     * is decided separately below - the two are not the same question, and an
-     * enterprise binary in OSS cluster mode answers them differently. */
+     * from the native cluster view rather than wait for a DMC CLUSTERSET. This
+     * decides the topology source only; the command flags are decided below. */
     if (MR_RlecVersionPresent && !ossClusterRuntime) {
         clusterCtx.isOss = false;
     }
@@ -1965,25 +1952,16 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
                     clusterCtx.isOss ? "oss" : "enterprise",
                     ossClusterRuntime ? "yes" : "no");
 
-    /* Whether we can authenticate our inter-shard connections as internal ones.
-     * This is deliberately *not* keyed off `clusterCtx.isOss`: an enterprise
-     * shard gets its topology (and its credentials) from DMC through CLUSTERSET,
-     * and authenticates with the password carried in the `ADDR <pwd>@<ip>:<port>`
-     * entry - see SendAuthCommandIfNeeded(). That yields a regular, non-internal
-     * connection, on which commands registered with the `internal` flag are
-     * hidden from us; the HELLO handshake then fails with `unknown command` and
-     * never recovers. So an enterprise binary must never register them as
-     * `internal`, not even when it runs with cluster-enabled=yes - which is a
-     * per-database property there (enabled for the OSS cluster API and/or ASM),
-     * not a property of the deployment. */
+    /* Not keyed off `isOss`: an enterprise shard authenticates with the password
+     * from CLUSTERSET, which gives a regular connection that cannot see
+     * `internal` commands, so the hello fails `unknown command` forever. Note
+     * that cluster-enabled is per-database there, so isOss may well be true. */
     clusterCtx.commandsAreInternal = clusterCtx.isOss && !MR_RlecVersionPresent &&
                                      RedisModule_GetInternalSecret != NULL;
 
     const char *command_flags = "readonly deny-script";
     if (MR_RlecVersionPresent) {
-        /* An enterprise binary understands `_proxy-filtered` regardless of the
-         * cluster mode it runs in, and needs it so the proxy hides these
-         * commands from clients. */
+        /* Understood, and needed, regardless of the cluster mode we run in. */
         command_flags = "readonly deny-script _proxy-filtered";
     } else if (clusterCtx.commandsAreInternal) {
         /* We run at a version that supports internal commands, let use it. */
@@ -2066,8 +2044,6 @@ const char* MR_ClusterGetMyId(){
 }
 
 const char *MR_ClusterGetPassword(){
-    /* Only drop the password when our commands are internal, since then only an
-     * internal connection is of any use to us; otherwise the password may be the
-     * only credential we have. */
+    /* Only drop it when nothing but an internal connection is of use to us. */
     return clusterCtx.commandsAreInternal ? NULL : clusterCtx.password;
 }
