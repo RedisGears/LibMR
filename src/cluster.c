@@ -434,20 +434,28 @@ static void MR_AuthResponseArrived(struct redisAsyncContext* c, void* a, void* b
         n->id, n->ip, n->port, reply->str);
 }
 
-static void SendInternalSecretAuth(const struct redisAsyncContext* c, const Node *n) {
+/* The secret is only set where the server actually has one to share, so it can
+ * be NULL even when the API is available - a cluster wired up by CLUSTERSET
+ * alone never gets one. Returns false when there is nothing to send. */
+static bool TrySendInternalSecretAuth(const struct redisAsyncContext* c, const Node *n) {
+    if (!RedisModule_GetInternalSecret) {
+        return false;
+    }
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
     size_t len;
     const char *secret = RedisModule_GetInternalSecret(mr_staticCtx, &len);
-    RedisModule_Assert(secret);
-    redisAsyncCommand((redisAsyncContext*)c, MR_AuthResponseArrived, (void*)n,
-                      "AUTH %s %b", "internal connection", secret, len);
+    if (secret) {
+        redisAsyncCommand((redisAsyncContext*)c, MR_AuthResponseArrived, (void*)n,
+                          "AUTH %s %b", "internal connection", secret, len);
+    }
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    return secret != NULL;
 }
 
 static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Node *n) {
-    if (clusterCtx.commandsAreInternal) {
-        /* A password cannot make the connection internal. */
-        SendInternalSecretAuth(c, n);
+    /* Prefer the internal secret when our commands are internal, since only an
+     * internal connection can see them and a password cannot make one. */
+    if (clusterCtx.commandsAreInternal && TrySendInternalSecretAuth(c, n)) {
         return;
     }
     if (n->password){
@@ -455,9 +463,9 @@ static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Nod
         redisAsyncCommand((redisAsyncContext*)c, MR_AuthResponseArrived, (void*)n, "AUTH %s", n->password);
         return;
     }
-    if (RedisModule_GetInternalSecret && clusterCtx.isOss) {
+    if (clusterCtx.isOss) {
         /* No password, but the server may still require us to authenticate. */
-        SendInternalSecretAuth(c, n);
+        TrySendInternalSecretAuth(c, n);
     }
 }
 
