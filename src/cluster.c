@@ -162,7 +162,6 @@ struct ClusterCtx {
     size_t maxSlot;
     size_t clusterSize;
     char myId[REDISMODULE_NODE_ID_LEN + 1];
-    int isOss;
     functionId networkTestMsgReceiver;
     char *password;
     bool topologyEvents;
@@ -195,11 +194,28 @@ typedef struct MessageCtx {
     MessageReply reply;
 }MessageCtx;
 
+typedef enum ClusterType {
+    ClusterType_NONE   = 0,
+    ClusterType_OSS    = 1,
+    ClusterType_RE     = 2,
+    ClusterType_RE_OSS = ClusterType_RE | ClusterType_OSS
+}ClusterType;
+
 static void MR_OnStatusResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* a, void* b);  // A response to an internal-commands command
 static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static Node* MR_GetNode(Cluster* cluster, const char* id);
+
+static inline __attribute__((always_inline)) ClusterType GetClusterType() {
+    ClusterType result = ClusterType_NONE;
+    if (RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)
+        result |= ClusterType_OSS;
+    if (RedisModule_GetKeyspaceNotificationFlagsAll() & REDISMODULE_NOTIFY_TRIMMED)
+        result |= ClusterType_RE;
+    RedisModule_Assert(result != ClusterType_NONE);
+    return result;
+}
 
 static SlotRange* NewSlotRange(uint16_t minSlot, uint16_t maxSlot) {
     SlotRange* result = MR_ALLOC(sizeof(*result));
@@ -414,12 +430,7 @@ static void MR_ClusterResendHelloMessage(void* ctx){
 }
 
 static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Node *n) {
-    if (n->password){
-        /* If password is provided to us we will use it (it means it was given to us with clusterset) */
-        redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
-        return;
-    }
-    if (RedisModule_GetInternalSecret && clusterCtx.isOss) {
+    if (RedisModule_GetInternalSecret && (GetClusterType() & ClusterType_OSS)) {
         /* OSS deployment that support internal secret, lets use it. */
         RedisModule_ThreadSafeContextLock(mr_staticCtx);
         size_t len;
@@ -427,6 +438,9 @@ static void SendAuthCommandIfNeeded(const struct redisAsyncContext* c, const Nod
         RedisModule_Assert(secret);
         redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s %b", "internal connection", secret, len);
         RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+    } else if (n->password){
+        /* If password is provided to us we will use it (it means it was given to us with clusterset) */
+        redisAsyncCommand((redisAsyncContext*)c, NULL, NULL, "AUTH %s", n->password);
     }
 }
 
@@ -453,7 +467,7 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
             // accepted connections but did not set its internal secret to the cluster's yet.
             // In such cases we will have a regular (i.e., non-internal) connection and the
             // hidden commands (including `<module>.HELLO`) will not be visible to us.
-            if (clusterCtx.isOss && strstr(reply->str, "unknown command") != NULL)
+            if (GetClusterType() == ClusterType_OSS && strstr(reply->str, "unknown command") != NULL)
                 SendAuthCommandIfNeeded(c, n);
         }
         n->resendHelloEvent = MR_EventLoopAddTaskWithDelay(MR_ClusterResendHelloMessage, n, RETRY_INTERVAL);
@@ -1853,76 +1867,16 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
     clusterCtx.minSlot = 0;
     clusterCtx.maxSlot = 0;
     clusterCtx.clusterSize = 1;
-    clusterCtx.isOss = true;
     clusterCtx.password = password ? MR_STRDUP(password) : NULL;
     clusterCtx.topologyEvents = topologyEvents;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
 
-    /* Note: RedisModule_GetContextFlags() does NOT report
-     * REDISMODULE_CTX_FLAGS_CLUSTER yet at module-load time, so read the
-     * cluster-enabled config directly to learn the runtime mode. */
-    bool ossClusterRuntime = false;
-    bool ceResolved = false;
-    RedisModuleCallReply *ceReply = RedisModule_Call(rctx, "config", "cc", "get", "cluster-enabled");
-    if (ceReply) {
-        /* CONFIG GET replies as a flat array in RESP2 and as a map in RESP3.
-         * The module ctx defaults to RESP2, but handle both shapes so a future
-         * RESP3 default can't silently break detection and misclassify an
-         * OSS-cluster shard as enterprise. */
-        int ceType = RedisModule_CallReplyType(ceReply);
-        RedisModuleCallReply *val = NULL;
-        if (ceType == REDISMODULE_REPLY_ARRAY && RedisModule_CallReplyLength(ceReply) >= 2) {
-            val = RedisModule_CallReplyArrayElement(ceReply, 1);
-        } else if (ceType == REDISMODULE_REPLY_MAP && RedisModule_CallReplyMapElement &&
-                   RedisModule_CallReplyLength(ceReply) >= 1) {
-            RedisModule_CallReplyMapElement(ceReply, 0, NULL, &val);
-        }
-        if (val && RedisModule_CallReplyType(val) == REDISMODULE_REPLY_STRING) {
-            size_t vlen = 0;
-            const char *vstr = RedisModule_CallReplyStringPtr(val, &vlen);
-            if (vstr) {
-                ceResolved = true;
-                /* CONFIG GET returns the canonical lowercase "yes"/"no" (Redis
-                 * spec), so a case-sensitive compare of exactly 3 bytes is safe. */
-                if (vlen == 3 && memcmp(vstr, "yes", 3) == 0) {
-                    ossClusterRuntime = true;
-                }
-            }
-        }
-        RedisModule_FreeCallReply(ceReply);
-    }
-    if (!ceResolved) {
-        /* CONFIG GET cluster-enabled should always succeed; an error, an
-         * unexpected reply shape, or an empty value leaves the runtime cluster
-         * mode unknown. Keep the conservative default (ossClusterRuntime stays
-         * false, i.e. an rlec_version shard is treated as enterprise as before)
-         * but log it so a resulting misclassification is diagnosable rather than
-         * silent. */
-        RedisModule_Log(rctx, "warning",
-                        "Could not read cluster-enabled config; assuming not in OSS cluster mode");
-    }
-    /* rlec_version is only present on enterprise binaries. Its presence was
-     * already detected by MR_GetRedisVersion() (run before MR_ClusterInit) and
-     * recorded in MR_RlecVersionPresent, so reuse it here instead of fetching
-     * Server info a second time. Use the presence flag, not MR_RlecMajorVersion
-     * >= 0: the latter only becomes true once sscanf parses the version, so a
-     * present-but-unparseable rlec_version would otherwise read as OSS.
-     *
-     * Treat the shard as enterprise only when rlec_version is present AND we
-     * are not in OSS cluster mode. This is the load-bearing decision of the
-     * PR: it unblocks an enterprise binary running as an OSS cluster (e.g. the
-     * env0 testing setup), which must take the OSS path (internal-secret AUTH,
-     * no _proxy-filtered command flags) rather than the enterprise path. */
-    if (MR_RlecVersionPresent && !ossClusterRuntime) {
-        clusterCtx.isOss = false;
-    }
-
     RedisModule_Log(rctx, "notice", "Detected redis %s (cluster-enabled=%s)",
-                    clusterCtx.isOss ? "oss" : "enterprise",
-                    ossClusterRuntime ? "yes" : "no");
+                    (GetClusterType() & ClusterType_RE) ? "enterprise" : "oss",
+                    (GetClusterType() & ClusterType_OSS) ? "yes" : "no");
 
     const char *command_flags = "readonly deny-script";
-    if (!clusterCtx.isOss) {
+    if (GetClusterType() & ClusterType_RE) {
         command_flags = "readonly deny-script _proxy-filtered";
     } else {
         if (RedisModule_GetInternalSecret) {
@@ -1931,7 +1885,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
         }
     }
 
-    if (clusterCtx.isOss) {
+    if (GetClusterType() == ClusterType_OSS) {
         /* Refresh cluster is only relevant for oss, also notice that refresh cluster
          * is not considered internal and should be performed by the user. */
         if (!RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
@@ -1943,7 +1897,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
     /* The CLUSTERSET should be visible in COMMAND LIST, otherwise the RAMP packer
      * will miss it and a module will not be notified in an enterprise cluster */
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
-                            !clusterCtx.isOss ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
+                            (GetClusterType() & ClusterType_RE) ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
                             0, 0, -1)) {
         return REDISMODULE_ERR;
     }
@@ -1987,7 +1941,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
 }
 
 int MR_IsClusterInitialize() {
-    return clusterCtx.isOss || clusterCtx.CurrCluster != NULL;
+    return clusterCtx.CurrCluster != NULL;
 }
 
 size_t MR_ClusterGetSize(){

@@ -31,11 +31,6 @@
 #define STR_ID_LEN  REDISMODULE_NODE_ID_LEN + 13
 
 MR_RedisVersion MR_currVersion;
-int MR_RlecMajorVersion;
-int MR_RlecMinorVersion;
-int MR_RlecPatchVersion;
-int MR_RlecBuild;
-int MR_RlecVersionPresent;
 
 RedisModuleCtx* mr_staticCtx;
 
@@ -1597,22 +1592,16 @@ static void MR_GetRedisVersion() {
         RedisModule_Log(NULL, "warning", "Could not extract redis version");
     }
 
-    MR_RlecMajorVersion = -1;
-    MR_RlecMinorVersion = -1;
-    MR_RlecPatchVersion = -1;
-    MR_RlecBuild = -1;
+    int rlecMajorVersion = -1, rlecMinorVersion = -1, rlecPatchVersion = -1;
+    int rlecBuild = -1;
     const char *enterpriseStr = strstr(replyStr, "rlec_version:");
-    /* Presence of the rlec_version field is the enterprise signal, independent
-     * of whether the version numbers below parse. Record it separately so a
-     * present-but-unparseable value isn't mistaken for an OSS build. */
-    MR_RlecVersionPresent = (enterpriseStr != NULL);
     if (enterpriseStr) {
         n = sscanf(enterpriseStr,
                    "rlec_version:%d.%d.%d-%d",
-                   &MR_RlecMajorVersion,
-                   &MR_RlecMinorVersion,
-                   &MR_RlecPatchVersion,
-                   &MR_RlecBuild);
+                   &rlecMajorVersion,
+                   &rlecMinorVersion,
+                   &rlecPatchVersion,
+                   &rlecBuild);
         if (n != 4) {
             RedisModule_Log(NULL, "warning", "Could not extract enterprise version");
         }
