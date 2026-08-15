@@ -219,7 +219,7 @@ static void SetCachedClusterType(RedisModuleCtx* ctx) {
     cachedClusterType = result;
 }
 
-static inline __attribute__((always_inline)) ClusterType GetClusterType() {
+static ClusterType GetClusterType(void) {
     ClusterType result = cachedClusterType;
     // Unfortunately, even the RE tests run with the redis oss binary,
     // so we use the CLUSTERSET command as a hint that the test is actually for RE
