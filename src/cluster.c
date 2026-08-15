@@ -1892,7 +1892,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
         }
     }
 
-    if (GetClusterType() == ClusterType_OSS) {
+    if (!(GetClusterType() & ClusterType_RE)) {
         /* Refresh cluster is only relevant for oss, also notice that refresh cluster
          * is not considered internal and should be performed by the user. */
         if (!RegisterRedisCommand(rctx, CLUSTER_REFRESH_COMMAND, MR_ClusterRefresh,
