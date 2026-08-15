@@ -207,11 +207,17 @@ static void MR_ConnectToShard(Node* n);
 static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* b);
 static Node* MR_GetNode(Cluster* cluster, const char* id);
 
+static bool clusterSetCommandReceived = false;
+
 static inline __attribute__((always_inline)) ClusterType GetClusterType() {
     ClusterType result = ClusterType_NONE;
     if (RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)
         result |= ClusterType_OSS;
     if (RedisModule_GetKeyspaceNotificationFlagsAll() & REDISMODULE_NOTIFY_TRIMMED)
+        result |= ClusterType_RE;
+    // Unfortunately, even the RE tests run with the redis oss binary,
+    // so we use the CLUSTERSET command as a hint that the test is actually for RE
+    if (clusterSetCommandReceived)
         result |= ClusterType_RE;
     RedisModule_Assert(result != ClusterType_NONE || MR_IsMainThread());
     return result;
@@ -1441,6 +1447,7 @@ static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
 }
 
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
+    clusterSetCommandReceived = true;
     if (IsLongFormClusterSet(argc)) {
         if (IsSameLongFormClusterSet(argv, argc)) {
             RedisModule_Log(mr_staticCtx, "notice",
