@@ -33,6 +33,7 @@
 MR_RedisVersion MR_currVersion;
 
 RedisModuleCtx* mr_staticCtx;
+pthread_t mr_mainThreadId;
 
 /* Remote functions ids. NOTE: The actual values are set during MR_Init() and they start at 1! (0 is MR_NetworkTest) */
 functionId NEW_EXECUTION_RECEIVED_FUNCTION_ID = 0;
@@ -1610,7 +1611,12 @@ static void MR_GetRedisVersion() {
     RedisModule_FreeCallReply(reply);
 }
 
+bool MR_IsMainThread() {
+    return pthread_equal(pthread_self(), mr_mainThreadId) != 0;
+}
+
 int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topologyEvents) {
+    mr_mainThreadId = pthread_self();
     mr_staticCtx = RedisModule_GetDetachedThreadSafeContext(ctx);
     MR_GetRedisVersion();
 

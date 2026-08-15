@@ -213,7 +213,7 @@ static inline __attribute__((always_inline)) ClusterType GetClusterType() {
         result |= ClusterType_OSS;
     if (RedisModule_GetKeyspaceNotificationFlagsAll() & REDISMODULE_NOTIFY_TRIMMED)
         result |= ClusterType_RE;
-    RedisModule_Assert(result != ClusterType_NONE);
+    RedisModule_Assert(result != ClusterType_NONE || MR_IsMainThread());
     return result;
 }
 
