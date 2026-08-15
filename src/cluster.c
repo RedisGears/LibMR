@@ -1948,7 +1948,7 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
 }
 
 int MR_IsClusterInitialize() {
-    return clusterCtx.CurrCluster != NULL;
+    return !(GetClusterType() & ClusterType_RE) || clusterCtx.CurrCluster != NULL;
 }
 
 size_t MR_ClusterGetSize(){
