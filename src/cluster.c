@@ -208,13 +208,19 @@ static void MR_HelloResponseArrived(struct redisAsyncContext* c, void* a, void* 
 static Node* MR_GetNode(Cluster* cluster, const char* id);
 
 static bool clusterSetCommandReceived = false;
+static ClusterType cachedClusterType = ClusterType_NONE;
 
-static inline __attribute__((always_inline)) ClusterType GetClusterType() {
+static void SetCachedClusterType(RedisModuleCtx* ctx) {
     ClusterType result = ClusterType_NONE;
-    if (RedisModule_GetContextFlags(mr_staticCtx) & REDISMODULE_CTX_FLAGS_CLUSTER)
+    if (RedisModule_GetContextFlags(ctx) & REDISMODULE_CTX_FLAGS_CLUSTER)
         result |= ClusterType_OSS;
     if (RedisModule_GetKeyspaceNotificationFlagsAll() & REDISMODULE_NOTIFY_TRIMMED)
         result |= ClusterType_RE;
+    cachedClusterType = result;
+}
+
+static inline __attribute__((always_inline)) ClusterType GetClusterType() {
+    ClusterType result = cachedClusterType;
     // Unfortunately, even the RE tests run with the redis oss binary,
     // so we use the CLUSTERSET command as a hint that the test is actually for RE
     if (clusterSetCommandReceived)
@@ -1877,6 +1883,8 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
     clusterCtx.password = password ? MR_STRDUP(password) : NULL;
     clusterCtx.topologyEvents = topologyEvents;
     memset(clusterCtx.myId, '0', REDISMODULE_NODE_ID_LEN);
+
+    SetCachedClusterType(rctx);
 
     RedisModule_Log(rctx, "notice", "Detected redis %s (cluster-enabled=%s)",
                     (GetClusterType() & ClusterType_RE) ? "enterprise" : "oss",
