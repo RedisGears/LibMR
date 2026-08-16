@@ -26,10 +26,4 @@ typedef struct MR_RedisVersion
 
 extern MR_RedisVersion MR_currVersion;
 
-extern int MR_RlecMajorVersion;
-extern int MR_RlecMinorVersion;
-extern int MR_RlecPatchVersion;
-extern int MR_RlecBuild;
-extern int MR_RlecVersionPresent;
-
 #endif /* SRC_COMMON_H_ */

@@ -22,6 +22,8 @@ typedef struct MRError MRError;
 struct RedisModuleString;
 extern struct RedisModuleCtx* mr_staticCtx;
 
+bool MR_IsMainThread(void);
+
 /* Opaque struct build an execution */
 typedef struct ExecutionBuilder ExecutionBuilder;
 
