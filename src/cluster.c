@@ -710,6 +710,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         SSL *ssl = SSL_new(ssl_context);
         SSL_CTX_free(ssl_context);
         if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
+            SSL_free(ssl);
             const char *err = "Unknown error";
             if (c->c.err != 0) {
                 err = c->c.errstr;
