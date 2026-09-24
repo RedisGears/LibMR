@@ -111,8 +111,12 @@ Record* MR_RecordDeSerialize(mr_BufferReader* reader) {
     MRObjectType* type = MR_GetObjectType(id);
     MRError* err = NULL;
     Record* r = type->deserialize(reader, &err);
-    // todo: handle deserialization failure
-    RedisModule_Assert(!err);
+    if (err) {
+        if (r) type->free(r);
+        r = MR_ErrorRecordCreate(MR_ErrorGetMessage(err));
+        MR_ErrorFree(err);
+        return r;
+    }
     r->recordType = (MRRecordType*)type;
     return r;
 }
