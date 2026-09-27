@@ -1624,7 +1624,10 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topolog
         return REDISMODULE_ERR;
     }
 
-    mrCtx.lastExecutionId = 0;
+    // We want the execution id to be unique, even after a shard crashes and comes back to life, so we set its
+    // high 32 bits to the current time (if a shard crashes multiple times a second we have a bigger problem...)
+    size_t now = time(NULL);
+    mrCtx.lastExecutionId = now << 32;
     mrCtx.executionsDict = mr_dictCreate(&dictTypeHeapIds, NULL);
     mrCtx.remoteDict = mr_dictCreate(&dictTypeHeapIds, NULL);
 
