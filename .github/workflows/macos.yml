@@ -44,7 +44,12 @@ jobs:
         python -m pip install -U pip "setuptools<81"
         python -m pip install git+https://github.com/RedisLabsModules/RLTest@60e3290 gevent "redis>=5"
     - name: install redis
-      run: git clone https://github.com/redis/redis; cd redis; git checkout ${{ matrix.redis_version }}; BUILD_TLS=yes make install
+      run: |
+        git clone https://github.com/redis/redis
+        cd redis
+        git checkout ${{ matrix.redis_version }}
+        BUILD_TLS=yes make -j8
+        sudo make install BUILD_TLS=yes SKIP_BUILD=1
     - name: Build the dependencies
       run: make build_deps
     - name: Default tests
