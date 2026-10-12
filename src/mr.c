@@ -22,6 +22,7 @@
 #include "utils/buffer.h"
 
 #include <pthread.h>
+#include <time.h>
 #include <hiredis.h>
 #ifndef EXECUTION_DEFAULT_MAX_IDLE_MS
 #define EXECUTION_DEFAULT_MAX_IDLE_MS 5000
@@ -45,6 +46,7 @@ functionId NOTIFY_STEP_DONE_FUNCTION_ID = 0;
 functionId DROP_EXECUTION_FUNCTION_ID = 0;
 functionId REMOTE_TASK_FUNCTION_ID = 0;
 functionId REMOTE_TASK_DONE_FUNCTION_ID = 0;
+static functionId RECORD_CHUNK_FUNCTION_ID = 0;
 
 typedef struct RemoteFunctionDef {
     functionId* funcIdPointer;
@@ -74,6 +76,10 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
 static void MR_DropExecution(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
 static void MR_RemoteTask(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
 static void MR_RemoteTaskDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t type, RedisModuleString* payload);
+
+static void MR_RecordChunk(RedisModuleCtx*, const char*, uint8_t, RedisModuleString*);
+static void MR_ResponseTimeoutCheck(void*);
+static void MR_CancelResponseTimer(Execution*);
 
 /* Remote functions array */
 static RemoteFunctionDef remoteFunctions[] = {
@@ -113,6 +119,7 @@ static RemoteFunctionDef remoteFunctions[] = {
                 .funcIdPointer = &REMOTE_TASK_DONE_FUNCTION_ID,
                 .functionPointer = MR_RemoteTaskDone,
         },
+        { &RECORD_CHUNK_FUNCTION_ID, MR_RecordChunk },
 };
 
 typedef struct MRStats {
@@ -268,6 +275,16 @@ typedef struct ExecutionCallbacks {
     ExecutionCallbackData hold;
 }ExecutionCallbacks;
 
+/* Response state belongs exclusively to the event-loop thread. Ordered chunk
+ * messages allow one incomplete record per sender. No heartbeat resets time. */
+typedef struct ResponsePeer {
+    char id[REDISMODULE_NODE_ID_LEN];
+    uint64_t lastDataMS;
+    bool complete;
+    size_t recordId, total;
+    mr_Buffer* partial;
+} ResponsePeer;
+
 struct Execution {
     int flags;
     size_t refCount;
@@ -285,6 +302,12 @@ struct Execution {
     ExecutionCallbacks callbacks;
     MR_LoopTaskCtx* timeoutTask;
     size_t timeoutMS;
+    size_t progressMS, deadlineMS;
+    uint64_t startedMS;
+    MR_LoopTaskCtx* responseTimer;
+    ARR(ResponsePeer) responsePeers;
+    size_t nextRecordId;
+
 };
 
 struct ExecutionCtx {
@@ -311,6 +334,12 @@ struct MRError {
 
 MRError UINITIALIZED_CLUSTER_ERROR = {.type = MRErrorType_Static, .msg = "uninitialized cluster"};
 MRError BUFFER_READ_ERROR = {.type = MRErrorType_Static, .msg = "failed reading data from buffer"};
+
+static uint64_t MR_MonotonicMS(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
 static StepDefinition* MR_GetStepDefinition(StepType type, const char* name) {
     switch (type) {
@@ -530,6 +559,10 @@ static Execution* MR_ExecutionAlloc() {
     e->timeoutTask = NULL;
     e->timeoutMS = EXECUTION_DEFAULT_MAX_IDLE_MS;
     e->flags = 0;
+    e->progressMS = e->deadlineMS = e->startedMS = 0;
+    e->responseTimer = NULL;
+    e->responsePeers = array_new(ResponsePeer, 4);
+    e->nextRecordId = 0;
     return e;
 }
 
@@ -681,6 +714,7 @@ static void MR_PassRecord(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
         return;
     }
 
+    MR_ExecutionResponseProgress(e, sender_id);
     /* run the execution on the thread pool */
     MR_ExecutionAddTask(e, MR_SetRecord, RedisModule_HoldString(NULL, payload));
 }
@@ -712,7 +746,30 @@ static void MR_SendRecord(Execution* e, Step* s, Record* r, const char* nodeId) 
     /* Write the record */
     MR_RecordSerialize(r, &buffWriter);
 
-    MR_ClusterSendMsg(nodeId, PASS_RECORD_FUNCTION_ID, buff.buff, buff.size);
+    if (!e->progressMS) {
+        MR_ClusterSendMsg(nodeId, PASS_RECORD_FUNCTION_ID, buff.buff, buff.size);
+        return;
+    }
+    /* A complete Redis command must arrive before its module handler can run.
+     * Split the serialized record into small commands with execution identity,
+     * so useful data progress is visible without a Redis parser modification. */
+    size_t recordId = ++e->nextRecordId;
+    for (size_t offset = 0; offset < buff.size;) {
+        size_t length = buff.size - offset;
+        if (length > 8192) length = 8192;
+        mr_Buffer chunk;
+        mr_BufferInitialize(&chunk);
+        mr_BufferWriter writer;
+        mr_BufferWriterInit(&writer, &chunk);
+        mr_BufferWriterWriteBuff(&writer, e->id, ID_LEN);
+        mr_BufferWriterWriteLongLong(&writer, recordId);
+        mr_BufferWriterWriteLongLong(&writer, buff.size);
+        mr_BufferWriterWriteLongLong(&writer, offset);
+        mr_BufferWriterWriteBuff(&writer, buff.buff + offset, length);
+        MR_ClusterSendMsg(nodeId, RECORD_CHUNK_FUNCTION_ID, chunk.buff, chunk.size);
+        offset += length;
+    }
+    MR_FREE(buff.buff);
 }
 
 /* Remote function call, runs on the event loop */
@@ -725,6 +782,7 @@ static void MR_NotifyStepDone(RedisModuleCtx *ctx, const char *sender_id, uint8_
         return;
     }
 
+    if (e->progressMS) MR_ExecutionResponseComplete(e, sender_id);
     /* run the execution on the thread pool */
     MR_ExecutionAddTask(e, MR_StepDone, RedisModule_HoldString(NULL, payload));
 }
@@ -986,6 +1044,7 @@ static bool MR_DisposeExecution(Execution* e, void* pd) {
  * executions dictionary and send a dispose task */
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
+    MR_CancelResponseTimer(e);
     mr_dictDelete(mrCtx.executionsDict, e->id);
     /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
@@ -1032,6 +1091,12 @@ static void MR_NotifyDone(RedisModuleCtx *ctx, const char *sender_id, uint8_t ty
 static bool MR_RunExecution(Execution* e, void* pd) {
     MR_ExecutionInvokeCallback(e, &e->callbacks.resume);
     if (MR_RunExecutionInternal(e)) {
+        /* A worker cannot be preempted by the event loop. Reject a result that
+         * finished past the absolute deadline even if its timeout task is
+         * queued behind this worker. */
+        if (e->progressMS && (e->flags & ExecutionFlag_Initiator) &&
+            MR_MonotonicMS() - e->startedMS >= e->deadlineMS)
+            e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution response deadline reached"));
         /* we are done, invoke on done callback and perform termination process. */
         bool doneInvoked = MR_ExecutionInvokeCallback(e, &e->callbacks.done);
         e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
@@ -1148,6 +1213,14 @@ static Execution* MR_ExecutionDeserialize(mr_BufferReader* buffReader) {
         s.child = child;
         e->steps = array_append(e->steps, s);
         child = e->steps + array_len(e->steps) - 1;
+    }
+    /* Optional trailer: old peers stop after the steps. Only a new initiator
+     * advertises chunk support, so old coordinators never receive new frames. */
+    if (!mr_BufferReaderIsDepleted(buffReader)) {
+        int error = 0;
+        size_t version = mr_BufferReaderReadLongLong(buffReader, &error);
+        size_t progress = mr_BufferReaderReadLongLong(buffReader, &error);
+        if (!error && version == 1) e->progressMS = progress;
     }
     return e;
 }
@@ -1279,6 +1352,10 @@ static void MR_ExecutionSerialize(mr_BufferWriter* buffWriter, Execution* e) {
     for (size_t i = 0 ; i < array_len(e->steps) ; ++i) {
         MR_ExecutionStepSerialize(buffWriter, e->steps + i);
     }
+    if (e->progressMS) {
+        mr_BufferWriterWriteLongLong(buffWriter, 1);
+        mr_BufferWriterWriteLongLong(buffWriter, e->progressMS);
+    }
 }
 
 /* Execution task distribute callback */
@@ -1326,6 +1403,159 @@ static void MR_ExecutionTimedOut(void* ctx) {
     MR_ExecutionAddTask(e, MR_ExecutionTimedOutInternal, NULL);
 }
 
+/* All response state/timer mutations run on the LibMR event loop. */
+static ResponsePeer* MR_ResponsePeer(Execution* e, const char* nodeId) {
+    for (size_t i = 0; i < array_len(e->responsePeers); ++i)
+        if (!memcmp(e->responsePeers[i].id, nodeId, REDISMODULE_NODE_ID_LEN))
+            return &e->responsePeers[i];
+    if (array_len(e->responsePeers) >= MR_ClusterGetSize()) return NULL;
+    ResponsePeer peer = {0};
+    memcpy(peer.id, nodeId, REDISMODULE_NODE_ID_LEN);
+    e->responsePeers = array_append(e->responsePeers, peer);
+    return &e->responsePeers[array_len(e->responsePeers) - 1];
+}
+
+void MR_ExecutionResponseProgress(Execution* e, const char* nodeId) {
+    if (!e || !e->progressMS || !(e->flags & ExecutionFlag_Initiator)) return;
+    ResponsePeer* peer = MR_ResponsePeer(e, nodeId);
+    if (peer && !peer->complete) peer->lastDataMS = MR_MonotonicMS();
+}
+
+void MR_ExecutionResponseComplete(Execution* e, const char* nodeId) {
+    if (!e || !e->progressMS || !(e->flags & ExecutionFlag_Initiator)) return;
+    ResponsePeer* peer = MR_ResponsePeer(e, nodeId);
+    if (peer) peer->complete = true;
+}
+
+static void MR_CancelResponseTimer(Execution* e) {
+    if (e->responseTimer) {
+        MR_EventLoopDelayTaskCancel(e->responseTimer);
+        e->responseTimer = NULL;
+    }
+}
+
+static bool MR_ResponseFailedInternal(Execution* e, void* reason) {
+    e->errors = array_append(e->errors, MR_ErrorRecordCreate(reason));
+    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done)) return false;
+    e->callbacks.done.callback = NULL;
+    MR_FreeExecution(e);
+    return true;
+}
+
+static void MR_ResponseFailed(Execution* e, const char* reason) {
+    MR_CancelResponseTimer(e);
+    mr_dictDelete(mrCtx.executionsDict, e->id);
+    MR_ExecutionAddTask(e, MR_ResponseFailedInternal, (void*)reason);
+}
+
+static void MR_ResponseTimeoutCheck(void* ctx) {
+    Execution* e = ctx;
+    e->responseTimer = NULL;
+    uint64_t now = MR_MonotonicMS();
+    if (now - e->startedMS >= e->deadlineMS) {
+        MR_ResponseFailed(e, "execution response deadline reached");
+        return;
+    }
+    size_t delay = e->deadlineMS - (now - e->startedMS);
+    for (size_t i = 0; i < array_len(e->responsePeers); ++i) {
+        ResponsePeer* peer = &e->responsePeers[i];
+        if (peer->complete || !peer->lastDataMS) continue;
+        uint64_t idle = now - peer->lastDataMS;
+        if (idle >= e->progressMS) {
+            MR_ResponseFailed(e, "execution response progress timeout reached");
+            return;
+        }
+        if (e->progressMS - idle < delay) delay = e->progressMS - idle;
+    }
+    /* Poll timestamps rather than cancel/reallocate a timer on every read. */
+    if (delay > 100) delay = 100;
+    e->responseTimer = MR_EventLoopAddTaskWithDelay(MR_ResponseTimeoutCheck, e, delay);
+}
+
+bool MR_ExecutionSetResponseTimeouts(Execution* e, size_t progressMS, size_t deadlineMS) {
+    if (!progressMS || !deadlineMS || progressMS > deadlineMS || e->startedMS) return false;
+    if (!MR_IsInternalCommandsExecution(e)) {
+        size_t n = array_len(e->steps);
+        if (!n || e->steps[n - 1].bStep.type != StepType_Collect) return false;
+        for (size_t i = 0; i + 1 < n; ++i)
+            if (e->steps[i].bStep.type == StepType_Collect ||
+                e->steps[i].bStep.type == StepType_Reshuffle) return false;
+    }
+    e->progressMS = progressMS;
+    e->deadlineMS = deadlineMS;
+    /* Legacy peers ignore the optional trailer and keep a bounded idle limit. */
+    e->timeoutMS = deadlineMS;
+    return true;
+}
+
+static void MR_RecordChunk(RedisModuleCtx* ctx, const char* sender_id,
+                           uint8_t type, RedisModuleString* payload) {
+    size_t length;
+    const char* data = RedisModule_StringPtrLen(payload, &length);
+    const size_t header = 5 * sizeof(long) + ID_LEN;
+    if (length < header) return;
+    long idLength, recordId, total, offset, bytes;
+    memcpy(&idLength, data, sizeof(long));
+    if (idLength != ID_LEN) return;
+    Execution* e = mr_dictFetchValue(mrCtx.executionsDict, data + sizeof(long));
+    if (!e || !e->progressMS || !(e->flags & ExecutionFlag_Initiator)) return;
+    const char* fields = data + sizeof(long) + ID_LEN;
+    memcpy(&recordId, fields, sizeof(long));
+    memcpy(&total, fields + sizeof(long), sizeof(long));
+    memcpy(&offset, fields + 2 * sizeof(long), sizeof(long));
+    memcpy(&bytes, fields + 3 * sizeof(long), sizeof(long));
+    /* Match Redis' default maximum bulk size and bound incomplete reassembly.
+     * Validate subtraction before adding offsets to avoid overflow. */
+    if (recordId <= 0 || total <= 0 || total > 512L * 1024 * 1024 ||
+        offset < 0 || offset >= total || bytes <= 0 || bytes > 8192 ||
+        bytes > total - offset || (size_t)bytes != length - header) {
+        MR_ResponseFailed(e, "invalid response chunk");
+        return;
+    }
+    ResponsePeer* peer = MR_ResponsePeer(e, sender_id);
+    if (!peer || peer->complete) return;
+    if ((size_t)recordId < peer->recordId ||
+        ((size_t)recordId == peer->recordId && !peer->partial)) return;
+    if ((size_t)recordId != peer->recordId) {
+        if (peer->partial || offset != 0) {
+            MR_ResponseFailed(e, "out of order response chunk");
+            return;
+        }
+        peer->recordId = recordId;
+        peer->total = total;
+        peer->partial = mr_BufferNew(bytes);
+    }
+    if ((size_t)total != peer->total) {
+        MR_ResponseFailed(e, "response chunk size changed");
+        return;
+    }
+    if ((size_t)offset < peer->partial->size) return; /* replay is not progress */
+    if ((size_t)offset != peer->partial->size) {
+        MR_ResponseFailed(e, "missing response chunk");
+        return;
+    }
+    mr_Buffer* buffer = peer->partial;
+    size_t required = buffer->size + bytes;
+    if (required > buffer->cap) {
+        size_t capacity = buffer->cap * 2;
+        if (capacity < required) capacity = required;
+        if (capacity > peer->total) capacity = peer->total;
+        buffer->buff = MR_REALLOC(buffer->buff, capacity);
+        buffer->cap = capacity;
+    }
+    memcpy(buffer->buff + buffer->size, data + header, bytes);
+    buffer->size = required;
+    peer->lastDataMS = MR_MonotonicMS();
+    if (buffer->size == peer->total) {
+        /* Reuse the existing record deserializer on the worker, preserving its
+         * GIL/lifetime rules. The transport frame is not a new record type. */
+        RedisModuleString* record = RedisModule_CreateString(NULL, buffer->buff, buffer->size);
+        mr_BufferFree(buffer);
+        peer->partial = NULL;
+        MR_ExecutionAddTask(e, MR_SetRecord, record);
+    }
+}
+
 // Thread pool task: fires the done callback with a cluster topology change error
 static bool MR_ExecutionAbortedOnClusterChange(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("cluster topology changed"));
@@ -1368,7 +1598,8 @@ static void MR_ExecutionMain(void* pd) {
     // anymore, so it would re-fire forever (appending to e->errors every tick). A pending
     // MR_DisposeExecution, if one was queued, still runs and frees e.
     bool terminal = (callback == MR_ExecutionTimedOutInternal ||
-                     callback == MR_ExecutionAbortedOnClusterChange);
+                     callback == MR_ExecutionAbortedOnClusterChange ||
+                     callback == MR_ResponseFailedInternal);
 
     pthread_mutex_lock(&e->eLock);
     /* pop current task out */
@@ -1379,7 +1610,7 @@ static void MR_ExecutionMain(void* pd) {
         /* more work to do, for fairness we will not run now.
          * We will add ourselves to the thread pool */
         mr_thpool_add_work(mrCtx.executionsThreadPool, MR_ExecutionMain, e);
-    } else if (!terminal) {
+    } else if (!terminal && !(e->progressMS && (e->flags & ExecutionFlag_Initiator))) {
         e->timeoutTask = MR_EventLoopAddTaskWithDelay(MR_ExecutionTimedOut, e, e->timeoutMS);
     }
 
@@ -1415,6 +1646,10 @@ static void MR_ExecutionStart(void* ctx) {
 
     /* add the execution to the execution dictionary */
     mr_dictAdd(mrCtx.executionsDict, e->id, e);
+    if (e->progressMS) {
+        MR_ResponseTimeoutCheck(e);
+        if (!mr_dictFetchValue(mrCtx.executionsDict, e->id)) return;
+    }
 
     if (e->flags & ExecutionFlag_Local) {
         /* not need to distribute the execution,
@@ -1438,6 +1673,7 @@ void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle) {
 }
 
 void MR_Run(Execution* e) {
+    if (e->progressMS) e->startedMS = MR_MonotonicMS();
     /* take ownership on the execution */
     __atomic_add_fetch(&e->refCount, 1, __ATOMIC_RELAXED);
 
@@ -1489,6 +1725,7 @@ LIBMR_API void MR_AbortRunningExecutions(void) {
 
     for (size_t i = 0; i < array_len(to_abort); ++i) {
         Execution* e = to_abort[i];
+        MR_CancelResponseTimer(e);
         // Cancel the pending idle-timeout timer if it is already armed
         if (e->timeoutTask) {
             MR_EventLoopDelayTaskCancel(e->timeoutTask);
@@ -1543,6 +1780,9 @@ void MR_FreeExecution(Execution* e) {
         MR_StepDispose(e->steps + i);
     }
     array_free(e->steps);
+    for (size_t i = 0; i < array_len(e->responsePeers); ++i)
+        if (e->responsePeers[i].partial) mr_BufferFree(e->responsePeers[i].partial);
+    array_free(e->responsePeers);
     mr_listRelease(e->tasks);
     for (size_t i = 0 ; i < array_len(e->results) ; ++i) {
         MR_RecordFree(e->results[i]);

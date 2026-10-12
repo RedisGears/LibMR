@@ -170,6 +170,23 @@ LIBMR_API void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
 
+/* Opt in to response-progress timeouts. Both limits are milliseconds and must
+ * be nonzero. The absolute deadline starts at MR_Run; the per-shard progress
+ * limit starts with its first response data (computation before first byte is
+ * bounded by the absolute deadline). Only collect and internal-command
+ * executions are supported; reshuffles retain their existing idle semantics.
+ * Returns false for unsupported executions or invalid limits. Set before MR_Run.
+ * Legacy peers remain supported, but only complete records count as progress
+ * when they do not support response chunking. Chunked records are limited to
+ * 512 MiB each. Deadlines are cooperative: workers are not preempted, but a
+ * result finishing after the deadline is rejected. */
+LIBMR_API bool MR_ExecutionSetResponseTimeouts(Execution* e, size_t progressMS, size_t deadlineMS);
+
+/* Transport hooks: event-loop only, never keep an Execution pointer across IO.
+ * nodeId identifies the shard whose response made progress or completed. */
+void MR_ExecutionResponseProgress(Execution* e, const char* nodeId);
+void MR_ExecutionResponseComplete(Execution* e, const char* nodeId);
+
 /* Set on execution done callback */
 /* Note that the `onDone` should not assume the cluster is stable because it might have been torn down
  * by `MR_ClusterFree` (e.g., in case of an aborted execution) */

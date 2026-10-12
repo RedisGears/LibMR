@@ -26,6 +26,9 @@ endif
 
 run_tests:
 	LIBCLANG_PATH="$(LIBCLANG_PATH)" OPENSSL_PREFIX="$(OPENSSL_PREFIX)" PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" PYTHON="$(VENV_PYTHON)" make -C ./tests/mr_test_module/ test
+ifeq ($(uname_S),Linux)
+	$(MAKE) -C tests/response_progress test PYTHON="$(VENV_PYTHON)"
+endif
 
 run_tests_valgrind:
 	LIBCLANG_PATH="$(LIBCLANG_PATH)" OPENSSL_PREFIX="$(OPENSSL_PREFIX)" PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" PYTHON="$(VENV_PYTHON)" DEBUG=1 make -C ./tests/mr_test_module/ test_valgrind
@@ -33,6 +36,9 @@ run_tests_valgrind:
 run_tests_ssl:
 	LIBCLANG_PATH="$(LIBCLANG_PATH)" OPENSSL_PREFIX="$(OPENSSL_PREFIX)" PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" PYTHON="$(VENV_PYTHON)" make -C ./tests/mr_test_module/ test_ssl
 
+ifeq ($(uname_S),Linux)
+	$(MAKE) -C tests/response_progress test PYTHON="$(VENV_PYTHON)" ARGS="--tls --tls-cert-file ../mr_test_module/tests/tls/redis.crt --tls-key-file ../mr_test_module/tests/tls/redis.key --tls-ca-cert-file ../mr_test_module/tests/tls/ca.crt --tls-passphrase foobar"
+endif
+
 clean_libmr:
 	make clean -C src/
-

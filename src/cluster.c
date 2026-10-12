@@ -388,6 +388,7 @@ static void MR_OnDataResponseArrived(struct redisAsyncContext* c, void* r, void*
     Execution *e = MR_GetExecution(message->msg->msg, message->msg->msgLen);
     mr_listDelNode(node->pendingMessages, pendingMessage);
 
+    MR_ExecutionResponseComplete(e, node->id);
     MR_SetInternalCommandResults(node->index, reply, e);
 }
 
@@ -676,6 +677,43 @@ error:
     return NULL;
 }
 
+/* Own the wrapper with the hiredis context, not Node: deferred disconnects can
+ * outlive a topology's Node objects. TLS keeps its original privctx untouched. */
+typedef struct ResponseIO {
+    redisContextFuncs funcs;
+    const redisContextFuncs* original;
+} ResponseIO;
+
+static void MR_ResponseIOClose(redisContext* c) {
+    ResponseIO* io = (ResponseIO*)c->funcs;
+    c->funcs = io->original;
+    MR_FREE(io);
+    if (c->funcs->close) c->funcs->close(c);
+}
+
+static ssize_t MR_ResponseRead(redisContext* c, char* buffer, size_t capacity) {
+    ResponseIO* io = (ResponseIO*)c->funcs;
+    ssize_t bytes = io->original->read(c, buffer, capacity);
+    redisAsyncContext* ac = (redisAsyncContext*)c;
+    Node* node = ac->data;
+    /* Before feeding these bytes to hiredis, the first outstanding callback
+     * identifies the RESP reply they begin with. Hiredis drains all complete
+     * replies after each read. Do not count status/auth/hello replies, socket
+     * readiness, SSL WANT_READ, or traffic for a different execution. A read
+     * spanning replies conservatively credits only its first reply. */
+    if (bytes > 0 && node && node->status == NodeStatus_Connected &&
+        ac->replies.head && ac->replies.head->fn == MR_OnDataResponseArrived) {
+        mr_listNode* first = mr_listFirst(node->pendingMessages);
+        if (first) {
+            NodeSendMsg* message = first->value;
+            if (message->msg->function & FUNCTION_ID_INTERNAL)
+                MR_ExecutionResponseProgress(
+                    MR_GetExecution(message->msg->msg, message->msg->msgLen), node->id);
+        }
+    }
+    return bytes;
+}
+
 static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
     if(!c->data){
         return;
@@ -723,6 +761,13 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
     }
 
     RedisModule_Log(mr_staticCtx, "notice", "connected : %s:%d, status = %d", c->c.tcp.host, c->c.tcp.port, status);
+
+    ResponseIO* io = MR_ALLOC(sizeof(*io));
+    io->original = c->c.funcs;
+    io->funcs = *io->original;
+    io->funcs.read = MR_ResponseRead;
+    io->funcs.close = MR_ResponseIOClose;
+    ((redisContext*)&c->c)->funcs = &io->funcs;
 
     SendAuthCommandIfNeeded(c, n);
 

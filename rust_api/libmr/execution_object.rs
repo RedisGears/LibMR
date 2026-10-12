@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 use crate::libmr_c_raw::bindings::{
     Execution, ExecutionCtx, MR_ExecutionCtxGetError, MR_ExecutionCtxGetErrorsLen,
     MR_ExecutionCtxGetResult, MR_ExecutionCtxGetResultsLen, MR_ExecutionSetMaxIdle,
-    MR_ExecutionSetOnDoneHandler, MR_FreeExecution, MR_Run,
+    MR_ExecutionSetOnDoneHandler, MR_ExecutionSetResponseTimeouts, MR_FreeExecution, MR_Run,
 };
 
 use crate::libmr::record;
@@ -55,6 +55,13 @@ pub extern "C" fn rust_on_done<R: record::Record, F: FnOnce(Vec<&mut R>, Vec<&st
 impl<R: record::Record> ExecutionObj<R> {
     pub fn set_max_idle(&self, max_idle: usize) {
         unsafe { MR_ExecutionSetMaxIdle(self.inner_e, max_idle) };
+    }
+
+    /// Opt in to a per-shard response stall limit and a total execution deadline.
+    /// Both arguments are milliseconds. Returns false for invalid limits or
+    /// unsupported pipelines (for example, reshuffle).
+    pub fn set_response_timeouts(&self, progress_ms: usize, deadline_ms: usize) -> bool {
+        unsafe { MR_ExecutionSetResponseTimeouts(self.inner_e, progress_ms, deadline_ms) }
     }
 
     pub fn set_done_hanlder<F: FnOnce(Vec<&mut R>, Vec<&str>)>(&self, f: F) {
