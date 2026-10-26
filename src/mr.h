@@ -57,8 +57,10 @@ typedef struct MRObjectType{
 
 typedef size_t functionId;
 
-// or-ed with a functionId to indicate internal commands (that should run on the recipient server's main message loop)
+// Dispatch internal commands on main; opted-in prepared work may continue on workers.
 #define FUNCTION_ID_INTERNAL    ((functionId)1 << (sizeof(functionId) * 8 - 1))
+/* Old receivers ignore this bit. Only opted-in callers receive the worker hint. */
+#define FUNCTION_ID_WORKER_HINT ((functionId)1 << (sizeof(functionId) * 8 - 2))
 
 LIBMR_API int MR_ClusterIsInClusterMode();
 
@@ -116,6 +118,8 @@ LIBMR_API void MR_RunOnAllShards(const char* remoteTaskName,
 
 /* Create either an empty execution builder or one that already includes the initial reader */
 LIBMR_API ExecutionBuilder* MR_CreateEmptyExecutionBuilder();
+/* INTERNAL executions only. Parsers must support concurrent independent executions. */
+LIBMR_API void MR_ExecutionBuilderSetReplyParsingOnWorkers(ExecutionBuilder* builder);
 LIBMR_API ExecutionBuilder* MR_CreateExecutionBuilder(const char* readerName, void* args);
 
 /* Add an internal command step (usually to an empty builder or a builder with internal commands only) */
@@ -166,6 +170,7 @@ typedef struct redisReply redisReply;
 /* Set internal commands results in *all* Execution's steps' internalCommand; Run in event-loop */
 /* Return the total number of nodes that completed the execution (and responded with RESP results) */
 LIBMR_API void MR_SetInternalCommandResults(unsigned short nodeIndex, redisReply* reply, Execution *e);
+bool MR_UnwrapInternalWorkerHint(redisReply *reply, const Execution *e);
 
 /* Set max idle time (in ms) for the given execution */
 LIBMR_API void MR_ExecutionSetMaxIdle(Execution* e, size_t maxIdle);
@@ -207,6 +212,8 @@ LIBMR_API void MR_RegisterReader(const char* name, ExecutionReader reader, MRObj
 /* Register an internal command */
 typedef void (*InternalCommand)(struct RedisModuleCtx *ctx, void *args);  // Replies to caller client via the RedisModule_Reply...() family of functions
 typedef Record* (*InternalCommandReplyParser)(const redisReply *reply);  // Creates an object that's "derived from" Record that should be freed by the caller
+// Input is borrowed until the parser returns. By default parsers run on the event loop;
+// MR_ExecutionBuilderSetReplyParsingOnWorkers opts into concurrent worker execution.
 typedef struct InternalCommandCallbacks
 {
     InternalCommand command;
@@ -214,6 +221,25 @@ typedef struct InternalCommandCallbacks
 } InternalCommandCallbacks;
 /* Note: pass static InternalCommandCallback structs since the pointer is opaque to some of the functions and we don't really need to delete it */
 LIBMR_API void MR_RegisterInternalCommand(const char* name, InternalCommandCallbacks*, MRObjectType* argType);
+
+/* Optional two-phase execution for an already registered internal command.
+ * prepare runs on main and must detach all data needed by run from the keyspace.
+ * Its return value requests a worker; false permits cheap prepared work on main.
+ * run and free must be safe on either thread and must not access live Redis data.
+ * batchPrepare/batchFree optionally share metadata within one uninterrupted main
+ * callback only. Prepared objects must own copies of any shared batch data.
+ * Callback storage must outlive the registration. The command payload and
+ * synchronous reply format remain unchanged. */
+typedef struct InternalCommandPreparation {
+    bool (*canPrepare)(struct RedisModuleCtx *ctx, void *args); /* Main-thread eligibility/cost check. */
+    void *(*batchPrepare)(struct RedisModuleCtx *ctx);
+    void (*batchFree)(struct RedisModuleCtx *ctx, void *batch);
+    bool (*prepare)(struct RedisModuleCtx *ctx, void *args, void *batch, void **prepared);
+    void (*run)(struct RedisModuleCtx *ctx, void *args, void *prepared);
+    void (*free)(void *prepared);
+} InternalCommandPreparation;
+LIBMR_API void MR_RegisterInternalCommandPreparation(const char *name,
+                                                     const InternalCommandPreparation *callbacks);
 
 
 /* Register a map step */
@@ -232,6 +258,8 @@ LIBMR_API void MR_RegisterRemoteTask(const char* name, RemoteTask remote, MRObje
 LIBMR_API void MR_SerializationCtxReaderRewind(ReaderSerializationCtx* sctx);
 LIBMR_API void MR_SerializationCtxWriterRewind(WriteSerializationCtx* sctx);
 LIBMR_API bool MR_SerializationCtxReaderIsDepleted(ReaderSerializationCtx* sctx);
+/* Consume an optional extension marker only if it matches; otherwise leave the reader unchanged. */
+LIBMR_API bool MR_SerializationCtxReadOptionalMarker(ReaderSerializationCtx* sctx, long long marker);
 LIBMR_API bool MR_SerializationCtxWriterIsDepleted(WriteSerializationCtx* sctx);
 
 /* Serialization Context functions */

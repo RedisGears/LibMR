@@ -12,7 +12,7 @@ use mr::redis_module;
 use redis_module::redisraw::bindings::{
     RedisModuleCtx, RedisModuleKey, RedisModuleScanCursor, RedisModuleString,
     RedisModule_GetDetachedThreadSafeContext, RedisModule_Scan, RedisModule_ScanCursorCreate,
-    RedisModule_ScanCursorDestroy, RedisModule_ReplyWithLongLong, RedisModule_ThreadSafeContextLock,
+    RedisModule_ScanCursorDestroy, RedisModule_ReplyWithLongLong, RedisModule_ReplyWithSimpleString, RedisModule_ThreadSafeContextLock,
     RedisModule_ThreadSafeContextUnlock,
 };
 
@@ -33,11 +33,15 @@ use mr::libmr_c_raw::bindings::{
     MR_CreateEmptyExecutionBuilder, MR_CreateExecution, MR_ExecutionBuilderInternalCommand,
     MR_ExecutionSetMaxIdle, MR_ExecutionSetOnDoneHandler, MR_FreeExecution,
     MR_FreeExecutionBuilder, MR_RegisterInternalCommand, MR_RegisterRecord, MR_Run,
+    MR_ExecutionBuilderSetReplyParsingOnWorkers, MR_ExecutionCtxGetResult,
+    MR_ExecutionCtxGetResultsLen, MR_ExecutionCtxGetErrorsLen, MR_ErrorFree,
+    InternalCommandPreparation, MR_RegisterInternalCommandPreparation,
 };
 use serde::{Deserialize, Serialize};
 
 use std::os::raw::{c_char, c_void};
 use std::ptr;
+use std::sync::OnceLock;
 
 use std::{thread, time};
 
@@ -45,6 +49,7 @@ use mr_derive::BaseObject;
 
 static mut DETACHED_CTX: *mut RedisModuleCtx = std::ptr::null_mut();
 static mut INTERNAL_COMMAND_RECORD_TYPE: *mut MRRecordType = ptr::null_mut();
+static MAIN_THREAD: OnceLock<thread::ThreadId> = OnceLock::new();
 
 fn get_redis_ctx() -> *mut RedisModuleCtx {
     unsafe { DETACHED_CTX }
@@ -72,6 +77,7 @@ fn ctx_unlock() {
 #[repr(C)]
 struct InternalCommandRecord {
     base: RawRecord,
+    parser_thread: thread::ThreadId,
 }
 
 unsafe extern "C" fn internal_command_record_free(record: *mut c_void) {
@@ -82,6 +88,10 @@ unsafe extern "C" fn internal_command(ctx: *mut MRRedisModuleCtx, _args: *mut c_
     RedisModule_ReplyWithLongLong.unwrap()(ctx.cast(), 1);
 }
 
+unsafe extern "C" fn internal_hint_string(ctx: *mut MRRedisModuleCtx, _args: *mut c_void) {
+    RedisModule_ReplyWithSimpleString.unwrap()(ctx.cast(), b"__libmr_worker_reply_v1\0".as_ptr().cast());
+}
+
 unsafe extern "C" fn internal_command_reply_parser(
     _reply: *const mr::libmr_c_raw::bindings::redisReply,
 ) -> *mut RawRecord {
@@ -89,11 +99,43 @@ unsafe extern "C" fn internal_command_reply_parser(
         base: RawRecord {
             recordType: INTERNAL_COMMAND_RECORD_TYPE,
         },
+        parser_thread: thread::current().id(),
     });
     Box::into_raw(record) as *mut RawRecord
 }
 
 unsafe extern "C" fn internal_command_done(_ectx: *mut ExecutionCtx, _pd: *mut c_void) {}
+
+unsafe extern "C" fn prepare_batch(_ctx: *mut MRRedisModuleCtx) -> *mut c_void {
+    assert_eq!(MAIN_THREAD.get(), Some(&thread::current().id()));
+    Box::into_raw(Box::new(thread::current().id())).cast()
+}
+
+unsafe extern "C" fn free_batch(_ctx: *mut MRRedisModuleCtx, data: *mut c_void) {
+    assert_eq!(MAIN_THREAD.get(), Some(&thread::current().id()));
+    drop(Box::from_raw(data as *mut thread::ThreadId));
+}
+
+unsafe extern "C" fn prepare_internal(_ctx: *mut MRRedisModuleCtx, _args: *mut c_void,
+                                     batch: *mut c_void, output: *mut *mut c_void) -> bool {
+    assert_eq!(MAIN_THREAD.get(), Some(&thread::current().id()));
+    assert_eq!(*(batch as *const thread::ThreadId), thread::current().id());
+    *output = Box::into_raw(Box::new(thread::current().id())).cast();
+    true
+}
+
+unsafe extern "C" fn run_prepared_internal(ctx: *mut MRRedisModuleCtx, _args: *mut c_void,
+                                          data: *mut c_void) {
+    assert_ne!(MAIN_THREAD.get(), Some(&thread::current().id()));
+    assert_ne!(*(data as *const thread::ThreadId), thread::current().id());
+    // Keep several shard requests in flight, including on a single coordinator.
+    thread::sleep(time::Duration::from_millis(5));
+    RedisModule_ReplyWithLongLong.unwrap()(ctx.cast(), 1);
+}
+
+unsafe extern "C" fn free_prepared_internal(data: *mut c_void) {
+    drop(Box::from_raw(data as *mut thread::ThreadId));
+}
 
 fn lmr_internal_command(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
     let builder = unsafe { MR_CreateEmptyExecutionBuilder() };
@@ -121,6 +163,69 @@ fn lmr_internal_command(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult 
         MR_FreeExecution(execution);
     }
     Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+unsafe extern "C" fn internal_reply_done<F: FnOnce(*mut ExecutionCtx)>(
+    ectx: *mut ExecutionCtx,
+    pd: *mut c_void,
+) {
+    Box::from_raw(pd as *mut F)(ectx);
+}
+
+fn set_internal_reply_done<F: FnOnce(*mut ExecutionCtx)>(
+    execution: *mut mr::libmr_c_raw::bindings::Execution,
+    callback: F,
+) {
+    unsafe {
+        MR_ExecutionSetOnDoneHandler(execution, Some(internal_reply_done::<F>),
+            Box::into_raw(Box::new(callback)).cast());
+    }
+}
+
+fn lmr_internal_reply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() > 2 || (args.len() == 2 && !["WORKERS", "PREPARED", "HINTSTRING"].contains(&args[1].to_string().as_str())) {
+        return Err(RedisError::Str("expected optional WORKERS, PREPARED or HINTSTRING argument"));
+    }
+    unsafe {
+        let builder = MR_CreateEmptyExecutionBuilder();
+        if args.len() == 2 {
+            MR_ExecutionBuilderSetReplyParsingOnWorkers(builder);
+        }
+        // Exercise multiple internal steps, each returning one record per shard.
+        for _ in 0..2 {
+            let name = if args.len() == 2 && args[1].to_string() == "PREPARED" {
+                b"LMRTEST.PREPARED\0".as_ptr()
+            } else if args.len() == 2 && args[1].to_string() == "HINTSTRING" {
+                b"LMRTEST.HINTSTRING\0".as_ptr()
+            } else { b"LMRTEST.INTERNAL\0".as_ptr() };
+            MR_ExecutionBuilderInternalCommand(builder, name.cast(), ptr::null_mut());
+        }
+        let mut error = ptr::null_mut();
+        let execution = MR_CreateExecution(builder, &mut error);
+        MR_FreeExecutionBuilder(builder);
+        if !error.is_null() {
+            MR_ErrorFree(error);
+            MR_FreeExecution(execution);
+            return Err(RedisError::Str("failed creating reply execution"));
+        }
+        let blocked = ctx.block_client();
+        set_internal_reply_done(execution, move |ectx| {
+            let count = MR_ExecutionCtxGetResultsLen(ectx);
+            let mut same_thread = 0;
+            for i in 0..count {
+                let record = &*(MR_ExecutionCtxGetResult(ectx, i) as *const InternalCommandRecord);
+                same_thread += i64::from(record.parser_thread == thread::current().id());
+            }
+            ThreadSafeContext::with_blocked_client(blocked).reply(Ok(RedisValue::Array(vec![
+                RedisValue::Integer(count as i64),
+                RedisValue::Integer(MR_ExecutionCtxGetErrorsLen(ectx) as i64),
+                RedisValue::Integer(same_thread),
+            ])));
+        });
+        MR_Run(execution);
+        MR_FreeExecution(execution);
+    }
+    Ok(RedisValue::NoReply)
 }
 
 fn strin_record_new(s: String) -> StringRecord {
@@ -916,6 +1021,7 @@ impl Drop for KeysReader {
 }
 
 fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
+    MAIN_THREAD.set(thread::current().id()).unwrap();
     unsafe {
         DETACHED_CTX = RedisModule_GetDetachedThreadSafeContext.unwrap()(ctx.ctx);
     }
@@ -951,6 +1057,21 @@ fn init_func(ctx: &Context, args: &[RedisString]) -> Status {
             callbacks,
             ptr::null_mut(),
         );
+        MR_RegisterInternalCommand(b"LMRTEST.PREPARED\0".as_ptr().cast(), callbacks, ptr::null_mut());
+        MR_RegisterInternalCommand(b"LMRTEST.HINTSTRING\0".as_ptr().cast(),
+            Box::into_raw(Box::new(InternalCommandCallbacks {
+                command: Some(internal_hint_string),
+                replyParser: Some(internal_command_reply_parser),
+            })), ptr::null_mut());
+        MR_RegisterInternalCommandPreparation(b"LMRTEST.PREPARED\0".as_ptr().cast(),
+            Box::into_raw(Box::new(InternalCommandPreparation {
+                canPrepare: None,
+                batchPrepare: Some(prepare_batch),
+                batchFree: Some(free_batch),
+                prepare: Some(prepare_internal),
+                run: Some(run_prepared_internal),
+                free: Some(free_prepared_internal),
+            })));
     }
     Status::Ok
 }
@@ -977,5 +1098,6 @@ redis_module! {
         ["lmrtest.readerror", lmr_read_error, "readonly", 0,0,0, AclCategory::None],
         ["lmrtest.unevenwork", lmr_uneven_work, "readonly", 0,0,0, AclCategory::None],
         ["lmrtest.internalcommand", lmr_internal_command, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.internalreply", lmr_internal_reply, "readonly", 0,0,0, AclCategory::None],
     ],
 }
