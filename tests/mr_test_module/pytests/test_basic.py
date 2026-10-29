@@ -100,3 +100,21 @@ def testInternalCommandsAreNotAllowed(env, conn):
     env.expect('MRTESTS.INFOCLUSTER').error().contains('unknown command')
     env.expect('MRTESTS.NETWORKTEST').error().contains('unknown command')
     env.expect('MRTESTS.FORCESHARDSCONNECTION').error().contains('unknown command')
+
+
+@MRTestDecorator()
+def testCompletedExecutionCleanup(env, conn):
+    if env.shardsCount < 2:
+        env.skip()
+    connections = [env.getConnection(i) for i in range(1, env.shardsCount + 1)]
+    env.assertEqual([c.execute_command('lmrtest.liveuneven') for c in connections], [0] * len(connections))
+    env.expect('lmrtest.unevencleanup').equal(['record'])
+    # Initiator completes before peers. Its timeout must release ownership even
+    # though the done callback is gone; peers must release their copies as well.
+    deadline = time.monotonic() + 15
+    while True:
+        live = [c.execute_command('lmrtest.liveuneven') for c in connections]
+        if live == [0] * len(connections) or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
+    env.assertEqual(live, [0] * len(connections))

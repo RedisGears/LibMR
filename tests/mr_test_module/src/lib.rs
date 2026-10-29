@@ -205,11 +205,23 @@ fn lmr_accumulate_error(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
 }
 
 fn lmr_uneven_work(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    uneven_work(ctx, 30000, 2000)
+}
+
+fn lmr_uneven_cleanup(ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    uneven_work(ctx, 3000, 500)
+}
+
+fn lmr_live_uneven(_ctx: &Context, _args: Vec<RedisString>) -> RedisResult {
+    Ok(RedisValue::Integer(LIVE_UNEVEN.load(std::sync::atomic::Ordering::Relaxed) as i64))
+}
+
+fn uneven_work(ctx: &Context, remote_delay_ms: u64, max_idle_ms: usize) -> RedisResult {
     let execution = create_builder(MaxIdleReader::new(1))
-        .map(UnevenWorkMapper::new())
+        .map(UnevenWorkMapper::new(remote_delay_ms))
         .create_execution()
         .map_err(RedisError::String)?;
-    execution.set_max_idle(2000);
+    execution.set_max_idle(max_idle_ms);
     let blocked_client = ctx.block_client();
     execution.set_done_hanlder(|mut res, mut errs| {
         let thread_ctx = ThreadSafeContext::with_blocked_client(blocked_client);
@@ -687,16 +699,41 @@ impl MapStep for DummyMapper {
     }
 }
 
-/* map key name to its type */
+// Count every owned mapper, including builder clones and deserialized shard copies.
+static LIVE_UNEVEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct UnevenLifetime;
+impl Default for UnevenLifetime {
+    fn default() -> Self {
+        LIVE_UNEVEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+impl Clone for UnevenLifetime {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+impl Drop for UnevenLifetime {
+    fn drop(&mut self) {
+        LIVE_UNEVEN.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 #[derive(Clone, Serialize, Deserialize, BaseObject)]
 struct UnevenWorkMapper {
+    remote_delay_ms: u64,
+    #[serde(skip)]
+    _lifetime: UnevenLifetime,
     #[serde(skip)]
     is_initiator: bool,
 }
 
 impl UnevenWorkMapper {
-    fn new() -> UnevenWorkMapper {
-        UnevenWorkMapper { is_initiator: true }
+    fn new(remote_delay_ms: u64) -> UnevenWorkMapper {
+        UnevenWorkMapper {
+            is_initiator: true,
+            remote_delay_ms,
+            _lifetime: UnevenLifetime::default(),
+        }
     }
 }
 
@@ -706,7 +743,7 @@ impl MapStep for UnevenWorkMapper {
 
     fn map(&self, r: Self::InRecord) -> Result<Self::OutRecord, RustMRError> {
         if !self.is_initiator {
-            let millis = time::Duration::from_millis(30000 as u64);
+            let millis = time::Duration::from_millis(self.remote_delay_ms);
             thread::sleep(millis);
         }
         Ok(r)
@@ -976,6 +1013,8 @@ redis_module! {
         ["lmrtest.accumulatererror", lmr_accumulate_error, "readonly", 0,0,0, AclCategory::None],
         ["lmrtest.readerror", lmr_read_error, "readonly", 0,0,0, AclCategory::None],
         ["lmrtest.unevenwork", lmr_uneven_work, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.unevencleanup", lmr_uneven_cleanup, "readonly", 0,0,0, AclCategory::None],
+        ["lmrtest.liveuneven", lmr_live_uneven, "readonly", 0,0,0, AclCategory::None],
         ["lmrtest.internalcommand", lmr_internal_command, "readonly", 0,0,0, AclCategory::None],
     ],
 }
