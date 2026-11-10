@@ -24,7 +24,7 @@ else
 	VENV_PYTHON := $(shell test -x $(CURDIR)/.venv/bin/python && echo $(CURDIR)/.venv/bin/python || echo python3)
 endif
 
-run_tests:
+run_tests: test_execution_cleanup
 	LIBCLANG_PATH="$(LIBCLANG_PATH)" OPENSSL_PREFIX="$(OPENSSL_PREFIX)" PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" PYTHON="$(VENV_PYTHON)" make -C ./tests/mr_test_module/ test
 
 run_tests_valgrind:

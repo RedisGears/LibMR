@@ -34,8 +34,6 @@ jobs:
         echo "LIBCLANG_PATH=$(llvm-config --libdir)" >> $GITHUB_ENV
     - name: Checkout submodules
       run: git submodule update --init --recursive
-    - name: Execution cleanup ordering (ASan/UBSan)
-      run: bash tests/unit/run.sh
     - name: format
       run: cargo fmt -- --check
     - name: clippy
