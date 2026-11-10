@@ -36,3 +36,7 @@ run_tests_ssl:
 clean_libmr:
 	make clean -C src/
 
+
+.PHONY: test_execution_cleanup
+test_execution_cleanup:
+	bash tests/unit/run.sh
