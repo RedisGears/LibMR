@@ -1484,6 +1484,14 @@ static void MR_ClusterRefreshFromCommand(void* ctx){
     RedisModule_UnblockClient(bc, NULL);
 }
 
+static void ClusterSetCtxFree(ClusterSetCtx* csCtx){
+    for(size_t i = 0 ; i < csCtx->argc ; ++i){
+        RedisModule_FreeString(NULL, csCtx->argv[i]);
+    }
+    MR_FREE(csCtx->argv);
+    MR_FREE(csCtx);
+}
+
 /* Runs on the LibMR event loop. Redis' main thread also reads clusterCtx while
  * creating executions, so hold the Redis lock across the legacy free/rebuild
  * sequence and do not expose its temporary one-shard state. */
@@ -1497,17 +1505,23 @@ static void MR_ClusterSetFromCommand(void* ctx){
             csCtx->errReply = CLUSTER_ERROR" Failed to set cluster topology";
         }
     }
+    if (!csCtx->bc) {
+        /* The client was already answered (see MR_ClusterSetInternal). */
+        if (csCtx->errReply) {
+            RedisModule_Log(mr_staticCtx, "warning", "%s", csCtx->errReply);
+        }
+        RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        ClusterSetCtxFree(csCtx);
+        RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
+        return;
+    }
     RedisModule_UnblockClient(csCtx->bc, csCtx);
 }
 
 static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     ClusterSetCtx* csCtx = RedisModule_GetBlockedClientPrivateData(ctx);
     const char* errReply = csCtx->errReply;
-    for(size_t i = 0 ; i < csCtx->argc ; ++i){
-        RedisModule_FreeString(NULL, csCtx->argv[i]);
-    }
-    MR_FREE(csCtx->argv);
-    MR_FREE(csCtx);
+    ClusterSetCtxFree(csCtx);
     if (errReply) {
         RedisModule_ReplyWithError(ctx, errReply);
     } else {
@@ -1517,13 +1531,20 @@ static int MR_ClusterSetUnblock(RedisModuleCtx *ctx, RedisModuleString **argv, i
 }
 
 static int MR_ClusterSetInternal(RedisModuleCtx *ctx, RedisModuleString **argv, int argc, bool force){
+    /* While loading, the main thread holds the Redis lock until the load ends, so the
+     * event loop cannot apply the topology or unblock the client before then. Reply
+     * right away and let the event loop apply it once the load is done. */
+    bool replyNow = RedisModule_GetContextFlags(ctx) & REDISMODULE_CTX_FLAGS_LOADING;
     ClusterSetCtx* csCtx = MR_ALLOC(sizeof(*csCtx));
-    csCtx->bc = RedisModule_BlockClient(ctx, MR_ClusterSetUnblock, NULL, NULL, 0);
+    csCtx->bc = replyNow ? NULL : RedisModule_BlockClient(ctx, MR_ClusterSetUnblock, NULL, NULL, 0);
     csCtx->argv = argv;
     csCtx->argc = argc;
     csCtx->force = force;
     csCtx->errReply = NULL;
     MR_EventLoopAddTask(MR_ClusterSetFromCommand, csCtx);
+    if (replyNow) {
+        RedisModule_ReplyWithSimpleString(ctx, "OK");
+    }
     return REDISMODULE_OK;
 }
 
@@ -1912,8 +1933,11 @@ int MR_ClusterInit(RedisModuleCtx* rctx, char *password, bool topologyEvents) {
 
     /* The CLUSTERSET should be visible in COMMAND LIST, otherwise the RAMP packer
      * will miss it and a module will not be notified in an enterprise cluster */
+    /* allow-loading: CLUSTERSET arrives right after a shard restart, often while it is
+     * still loading its data. Rejecting it with LOADING leaves the module without a
+     * topology. CLUSTERSET only updates topology, it never touches the keyspace. */
     if (!RegisterRedisCommand(rctx, CLUSTER_SET_COMMAND, MR_ClusterSet,
-                            (GetClusterType() & ClusterType_RE) ? "readonly deny-script _proxy-filtered" : "readonly deny-script",
+                            (GetClusterType() & ClusterType_RE) ? "readonly deny-script allow-loading _proxy-filtered" : "readonly deny-script allow-loading",
                             0, 0, -1)) {
         return REDISMODULE_ERR;
     }
