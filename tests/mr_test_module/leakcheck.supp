@@ -1,3 +1,4 @@
+{
    <ignore_connection_leak_for_now>
    Memcheck:Leak
    ...
