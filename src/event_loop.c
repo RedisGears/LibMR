@@ -22,6 +22,7 @@ struct {
     struct event_base *loop;
     pthread_t loopThread;
     volatile int isThreadStarted;
+    int isStopping;
     pthread_mutex_t isThreadStartedLock;
     struct event *taskEvent;
 }evLoopCtx;
@@ -35,12 +36,8 @@ typedef struct MR_LoopTaskCtx{
 static void* MR_Loop(void *arg);
 
 static void MR_StartThread() {
-    if (evLoopCtx.isThreadStarted) {
-        return;
-    }
-
     pthread_mutex_lock(&evLoopCtx.isThreadStartedLock);
-    if (evLoopCtx.isThreadStarted) {
+    if (evLoopCtx.isThreadStarted || evLoopCtx.isStopping) {
         pthread_mutex_unlock(&evLoopCtx.isThreadStartedLock);
         return;
     }
@@ -104,7 +101,7 @@ static void* MR_Loop(void *arg) {
 #else
   err("thread_do(): pthread_setname_np is not supported on this system");
 #endif
-    while (1) {
+    while (!__atomic_load_n(&evLoopCtx.isStopping, __ATOMIC_ACQUIRE)) {
         event_base_loop(evLoopCtx.loop, EVLOOP_NO_EXIT_ON_EMPTY);
     }
     return NULL;
@@ -119,5 +116,25 @@ void MR_EventLoopStart() {
     evthread_use_pthreads();
     evLoopCtx.loop = (struct event_base*)event_base_new();
     evLoopCtx.isThreadStarted = 0;
+    evLoopCtx.isStopping = 0;
     pthread_mutex_init(&(evLoopCtx.isThreadStartedLock), NULL);
+}
+
+void MR_EventLoopStop() {
+    pthread_mutex_lock(&evLoopCtx.isThreadStartedLock);
+    if (evLoopCtx.isStopping) {
+        pthread_mutex_unlock(&evLoopCtx.isThreadStartedLock);
+        return;
+    }
+    __atomic_store_n(&evLoopCtx.isStopping, 1, __ATOMIC_RELEASE);
+    int threadStarted = evLoopCtx.isThreadStarted;
+    pthread_t loopThread = evLoopCtx.loopThread;
+    pthread_mutex_unlock(&evLoopCtx.isThreadStartedLock);
+
+    if (!threadStarted) {
+        return;
+    }
+
+    event_base_loopbreak(evLoopCtx.loop);
+    pthread_join(loopThread, NULL);
 }

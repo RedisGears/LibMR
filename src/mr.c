@@ -1553,6 +1553,41 @@ void MR_FreeExecution(Execution* e) {
     MR_FREE(e);
 }
 
+static void MR_FreeRemainingExecutions(void) {
+    ARR(Execution*) executions = array_new(Execution*, 10);
+    mr_dictIterator* iter = mr_dictGetIterator(mrCtx.executionsDict);
+    mr_dictEntry* entry;
+    while ((entry = mr_dictNext(iter))) {
+        executions = array_append(executions, mr_dictGetVal(entry));
+    }
+    mr_dictReleaseIterator(iter);
+
+    for (size_t i = 0; i < array_len(executions); ++i) {
+        Execution* e = executions[i];
+        int result = mr_dictDelete(mrCtx.executionsDict, e->id);
+        RedisModule_Assert(result == DICT_OK);
+        MR_FreeExecution(e);
+    }
+    array_free(executions);
+}
+
+static void MR_OnServerShutdown(RedisModuleCtx* ctx,
+                                RedisModuleEvent event,
+                                uint64_t subevent,
+                                void* data) {
+    (void)ctx;
+    (void)event;
+    (void)subevent;
+    (void)data;
+
+    /* Let the event loop finish its current callback before draining its work. */
+    MR_EventLoopStop();
+    mr_thpool_wait(mrCtx.executionsThreadPool);
+
+    /* NOTIFY_DONE may not be processed once shutdown stops the event loop. */
+    MR_FreeRemainingExecutions();
+}
+
 void MR_UpdateClusterTopology() {
     MR_TopologyEventSeen = true;
     RedisModuleString** argv = NULL;
@@ -1652,6 +1687,10 @@ int MR_Init(RedisModuleCtx* ctx, size_t numThreads, char *password, bool topolog
     MR_RecordInitialize();
 
     MR_EventLoopStart();
+
+    if (RedisModule_SubscribeToServerEvent) {
+        RedisModule_SubscribeToServerEvent(ctx, RedisModuleEvent_Shutdown, MR_OnServerShutdown);
+    }
 
     return REDISMODULE_OK;
 }

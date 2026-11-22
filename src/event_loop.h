@@ -31,6 +31,7 @@ void MR_EventLoopDelayTaskCancel(MR_LoopTaskCtx* dtCtx);
 void MR_EventLoopAddTask(EventLoopTaskCallback callback, void* ctx);
 struct event_base* MR_EventLoopGet();
 void MR_EventLoopStart();
+void MR_EventLoopStop();
 
 
 #endif /* SRC_EVENT_LOOP_H_ */
