@@ -271,6 +271,8 @@ typedef struct ExecutionCallbacks {
 struct Execution {
     int flags;
     size_t refCount;
+    /* Published by the worker or event loop before scheduling final disposal. */
+    bool disposalPending;
     char id[ID_LEN];
     char idStr[STR_ID_LEN];
     ARR(Step) steps;
@@ -514,6 +516,7 @@ static void MR_CreateExecutionStep(Step*s, ExecutionBuilderStep* builderStep) {
 static Execution* MR_ExecutionAlloc() {
     Execution* e = MR_ALLOC(sizeof(*e));
     e->refCount = 1;
+    e->disposalPending = false;
     e->steps = array_new(Step, 10);
     pthread_mutex_init(&e->eLock, NULL);
     e->tasks = mr_listCreate();
@@ -986,6 +989,7 @@ static bool MR_DisposeExecution(Execution* e, void* pd) {
  * executions dictionary and send a dispose task */
 static void MR_DeleteExecution(void* ctx) {
     Execution* e = ctx;
+    __atomic_store_n(&e->disposalPending, true, __ATOMIC_RELEASE);
     mr_dictDelete(mrCtx.executionsDict, e->id);
     /* Send dispose execution task, this will be last task this execution will ever receive. */
     MR_ExecutionAddTask(e, MR_DisposeExecution, NULL);
@@ -1039,6 +1043,7 @@ static bool MR_RunExecution(Execution* e, void* pd) {
             bool executionDone = (e->flags & ExecutionFlag_Local) != 0;   // either no need to wait to any shard
             executionDone = executionDone || MR_IsInternalCommandsExecution(e); // or we don't need a NOTIFY_DONE message
             if (executionDone) {
+                __atomic_store_n(&e->disposalPending, true, __ATOMIC_RELEASE);
                 MR_EventLoopAddTask(MR_DeleteExecution, e);
                 return false;  // disposal happens later via MR_DeleteExecution -> MR_DisposeExecution
             }
@@ -1301,13 +1306,10 @@ static bool MR_ExecutionDistribute(Execution* e, void* pd) {
 
 static bool MR_ExecutionTimedOutInternal(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("execution max idle reached"));
-    /* We are done: invoke the on-done callback and free the execution. If the done
-     * callback was already fired (a normal completion won the race and nulled it),
-     * a MR_DisposeExecution is already queued to free the execution - so we must NOT
-     * free it here (that would double-free). Return false so MR_ExecutionMain keeps
-     * draining the task queue and that pending MR_DisposeExecution still runs;
-     * otherwise the execution (and its results) would leak. */
-    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
+    /* A completed execution may still be waiting for peers, with no disposal
+     * scheduled. Only defer release when normal completion actually owns it. */
+    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done) &&
+        __atomic_load_n(&e->disposalPending, __ATOMIC_ACQUIRE))
         return false;
     e->callbacks.done.callback = NULL; // make sure the done callback will not be called again.
     MR_FreeExecution(e);
@@ -1329,14 +1331,11 @@ static void MR_ExecutionTimedOut(void* ctx) {
 // Thread pool task: fires the done callback with a cluster topology change error
 static bool MR_ExecutionAbortedOnClusterChange(Execution* e, void* pd) {
     e->errors = array_append(e->errors, MR_ErrorRecordCreate("cluster topology changed"));
-    /* We are done: invoke the on-done callback and free the execution. If the done
-     * callback was already fired (a normal completion won the race and nulled it),
-     * a MR_DisposeExecution is already queued to free the execution - so we must NOT
-     * free it here (that would double-free, or free out from under the queued
-     * MR_DeleteExecution which still dereferences e -> use-after-free). Return false so
-     * MR_ExecutionMain keeps draining the task queue and that pending MR_DisposeExecution
-     * still runs; otherwise the execution (and its results) would leak. */
-    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done))
+    /* Nulling the done callback does not transfer ownership by itself.
+     * A queued normal-completion disposal must retain ownership; otherwise
+     * this abort task releases it, even after the callback already ran. */
+    if (!MR_ExecutionInvokeCallback(e, &e->callbacks.done) &&
+        __atomic_load_n(&e->disposalPending, __ATOMIC_ACQUIRE))
         return false;
     e->callbacks.done.callback = NULL; /* make sure the done callback will not be called again */
     MR_FreeExecution(e);
@@ -1354,8 +1353,7 @@ static void MR_ExecutionMain(void* pd) {
     if (callback(e, task->pd)) {
         // The callback disposed (freed) the execution; we must not touch it afterwards.
         // Note: MR_ExecutionTimedOutInternal / MR_ExecutionAbortedOnClusterChange return
-        // false (do NOT dispose) when their done callback was already fired by a racing
-        // normal completion, which leaves a MR_DisposeExecution queued behind this task.
+        // false (do NOT dispose) when normal completion already scheduled disposal.
         // Falling through in that case lets us drain the queue so that pending
         // MR_DisposeExecution runs and frees the execution (otherwise it would leak).
         return;
