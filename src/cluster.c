@@ -1377,8 +1377,7 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
 
     size_t index = CLUSTERSET_MYID_LONG_FORM_INDEX + 1;
     const char *token = RedisModule_StringPtrLen(argv[index], NULL);
-    bool hasReplication = strcasecmp(token, "HASREPLICATION") == 0;
-    if (hasReplication) {  // skip this token; we ignore it
+    if (strcasecmp(token, "HASREPLICATION") == 0) {
         index++;
         RedisModule_Assert(index < argc);
         token = RedisModule_StringPtrLen(argv[index], NULL);
@@ -1389,9 +1388,6 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
     RedisModule_Assert(index < argc);
     long long numOfRanges;
     RedisModule_Assert(RedisModule_StringToLongLong(argv[index], &numOfRanges) == REDISMODULE_OK);
-    if (hasReplication) {
-        RedisModule_Assert(numOfRanges % 2 == 0);
-    }
     index++;
 
     for (size_t j = 0 ; j < numOfRanges ; ++j){

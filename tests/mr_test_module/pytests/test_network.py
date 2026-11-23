@@ -878,3 +878,12 @@ def testSendMultiRangePerNodeTopology(env, conn):
 
             res = env.cmd(*cmd)
             assert res == 'OK'
+
+            # Add a second replica for shard 4 to the installed topology.
+            cmd[cmd.index('RANGES') + 1] = '9'
+            cmd.extend(['SHARD', '7', 'SLOTRANGE', '10001', '15999',
+                        'ADDR', 'password@%s:6385' % shardMock.host])
+            env.assertEqual(env.cmd(*cmd), 'OK')
+            nodes = [dict(zip(node[::2], node[1::2]))
+                     for node in env.cmd('MRTESTS.INFOCLUSTER')[4]]
+            env.assertEqual({int(node['id']) for node in nodes}, {1, 4, 6})
