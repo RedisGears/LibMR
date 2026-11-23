@@ -900,20 +900,9 @@ static Node* MR_CreateNode(Cluster* cluster, const char* id, const char* ip, uns
     return n;
 }
 
-static void MR_RefreshClusterData(){
-    if (clusterCtx.topologyEvents) {
-        if (MR_TopologyEventSeen) {
-            RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster refresh command when topology events are enabled - skipping");
-            return;
-        }
-        RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster refresh command when topology events are enabled");
-        // Topology events are enabled, but we haven't seen one yet. maybe the redis-server doesn't support them.
-        // So to be on the safe side, we'll process the command .
-    } else {
-        RedisModule_Assert(!MR_TopologyEventSeen);  // Since no handler was registered for topology events
-        RedisModule_Log(mr_staticCtx, "notice", "Got cluster refresh command");
-    }
-
+/* Caller holds the Redis thread-safe lock. Event refreshes must be allowed
+ * to rebuild even after event-driven topology becomes authoritative. */
+static void MR_RebuildClusterData(){
     if(clusterCtx.CurrCluster){
         MR_ClusterFree();
     }
@@ -993,6 +982,23 @@ static void MR_RefreshClusterData(){
     RedisModule_FreeCallReply(allSlotsReply);
     clusterCtx.clusterSize = mr_dictSize(clusterCtx.CurrCluster->nodes);
     mr_dictEmpty(clusterCtx.nodesMsgIds, NULL);
+}
+
+static void MR_RefreshClusterData(){
+    if (clusterCtx.topologyEvents) {
+        if (MR_TopologyEventSeen) {
+            RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster refresh command when topology events are enabled - skipping");
+            return;
+        }
+        RedisModule_Log(mr_staticCtx, "warning", "Got unexpected cluster refresh command when topology events are enabled");
+        // Topology events are enabled, but we haven't seen one yet. maybe the redis-server doesn't support them.
+        // So to be on the safe side, we'll process the command .
+    } else {
+        RedisModule_Assert(!MR_TopologyEventSeen);  // Since no handler was registered for topology events
+        RedisModule_Log(mr_staticCtx, "notice", "Got cluster refresh command");
+    }
+
+    MR_RebuildClusterData();
 }
 
 /* One entry of a topology view: a master node and one of its slot ranges
@@ -1154,8 +1160,7 @@ static bool MR_TryApplyTopologyInPlace(const TopologyViewEntry* view, size_t n){
         if (view[i].minSlot <= view[i].maxSlot)
             mr_listAddNodeTail(node->slotRanges, NewSlotRange(view[i].minSlot, view[i].maxSlot));
         if (node->isMe && !mySlotsSet) {
-            /* fill the fallback single-range from my first range, like the
-             * full builders do */
+            /* Retain the legacy range metadata; ownership checks use slots[]. */
             clusterCtx.minSlot = view[i].minSlot;
             clusterCtx.maxSlot = view[i].maxSlot;
             mySlotsSet = true;
@@ -1177,7 +1182,7 @@ static void MR_UpdateClusterSlots(){
 
     ARR(TopologyViewEntry) view = BuildClusterApiView(false);
     if (view == NULL) {
-        MR_RefreshClusterData();
+        MR_RebuildClusterData();
         return;
     }
     if (!MR_TopologyViewIsValid(view, array_len(view))) {
@@ -1188,7 +1193,7 @@ static void MR_UpdateClusterSlots(){
     bool applied = MR_TryApplyTopologyInPlace(view, array_len(view));
     array_free(view);
     if (!applied)
-        MR_RefreshClusterData();
+        MR_RebuildClusterData();
 }
 
 static void GenerateRunId(Cluster* cluster){
@@ -1878,7 +1883,11 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 /* Runs on the event loop. */
 static void MR_TopoRefreshTask(void* ctx){
     REDISMODULE_NOT_USED(ctx);
+    RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    if (clusterCtx.topologyEvents)
+        MR_TopologyEventSeen = true;
     MR_UpdateClusterSlots();
+    RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 }
 
 /* Request an OSS cluster topology refresh; every event schedules one reconcile
@@ -2198,7 +2207,13 @@ int MR_ClusterIsMySlot(size_t slot) {
         RedisModule_ShardingGetSlotRange(&first_slot, &last_slot);
         return first_slot <= slot && last_slot >= slot;
     }
-    // Fallback.
+    /* Older Redis versions have no slot-access API. Use the complete installed
+     * map: a local shard can own several disjoint ranges after resharding. */
+    if (clusterCtx.CurrCluster) {
+        if (slot >= NUMBER_OF_SLOTS) return false;
+        Node *owner = clusterCtx.CurrCluster->slots[slot];
+        return owner && owner->isMe;
+    }
     return clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
 }
 
