@@ -11,7 +11,9 @@
  * No Redis processes or network connections are created by this test. */
 #include "../../src/cluster.c"
 #include <assert.h>
+#include <errno.h>
 #include <stdarg.h>
+#include <time.h>
 
 RedisModuleCtx *mr_staticCtx;
 static int locked, unlocked_api_calls, rebuilds, aborted;
@@ -21,6 +23,25 @@ static const char local_id[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 static const char remote_id[] = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 static int current_port = 7000, master_count = 1;
 static int test_failures;
+static pthread_mutex_t pause_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t pause_cond = PTHREAD_COND_INITIALIZER;
+static int pause_mode, writer_paused, release_writer, worker_started, worker_done, worker_result;
+
+static void pause_writer(int mode) {
+    pthread_mutex_lock(&pause_lock);
+    if (pause_mode == mode && !writer_paused) {
+        writer_paused = 1;
+        pthread_cond_broadcast(&pause_cond);
+        while (!release_writer)
+            pthread_cond_wait(&pause_cond, &pause_lock);
+    }
+    pthread_mutex_unlock(&pause_lock);
+}
+static void *test_alloc(size_t size) {
+    if (clusterCtx.CurrCluster && !clusterCtx.CurrCluster->slots[8192])
+        pause_writer(2);
+    return malloc(size);
+}
 
 #define CHECK(expr)                                                                                \
     do {                                                                                           \
@@ -46,6 +67,8 @@ static void unlock_ctx(RedisModuleCtx *ctx) {
 static int context_flags(RedisModuleCtx *ctx) {
     (void)ctx;
     require_lock();
+    if (!clusterCtx.CurrCluster)
+        pause_writer(1);
     return REDISMODULE_CTX_FLAGS_CLUSTER;
 }
 static const char *my_id(void) {
@@ -184,8 +207,68 @@ static void run_event(void) {
     CHECK(!locked);
 }
 
+static void *refresh_thread(void *unused) {
+    (void)unused;
+    MR_TopoRefreshTask(NULL);
+    return NULL;
+}
+static void *ownership_thread(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&pause_lock);
+    worker_started = 1;
+    pthread_cond_broadcast(&pause_cond);
+    pthread_mutex_unlock(&pause_lock);
+    int result = MR_ClusterIsMySlot(8192);
+    pthread_mutex_lock(&pause_lock);
+    worker_result = result;
+    worker_done = 1;
+    pthread_cond_broadcast(&pause_cond);
+    pthread_mutex_unlock(&pause_lock);
+    return NULL;
+}
+/* Pause a real writer in the temporary unconfigured/empty-map window. The
+ * worker must wait for publication and report local ownership, never the gap. */
+static void test_worker_ownership(int mode) {
+    pthread_t writer, worker;
+    pause_mode = mode;
+    writer_paused = release_writer = worker_started = worker_done = 0;
+    if (mode == 1)
+        current_port++;
+    CHECK(pthread_create(&writer, NULL, refresh_thread, NULL) == 0);
+    pthread_mutex_lock(&pause_lock);
+    while (!writer_paused)
+        pthread_cond_wait(&pause_cond, &pause_lock);
+    pthread_mutex_unlock(&pause_lock);
+    CHECK(pthread_create(&worker, NULL, ownership_thread, NULL) == 0);
+    pthread_mutex_lock(&pause_lock);
+    while (!worker_started)
+        pthread_cond_wait(&pause_cond, &pause_lock);
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec++;
+    int wait_result = 0;
+    while (!worker_done && wait_result != ETIMEDOUT)
+        wait_result = pthread_cond_timedwait(&pause_cond, &pause_lock, &deadline);
+    CHECK(!worker_done);
+    release_writer = 1;
+    pthread_cond_broadcast(&pause_cond);
+    pthread_mutex_unlock(&pause_lock);
+    pthread_join(writer, NULL);
+    pthread_join(worker, NULL);
+    CHECK(worker_result);
+    pause_mode = 0;
+}
+static void install_old_command(void) {
+    Cluster *c = clusterCtx.CurrCluster;
+    CHECK(c->clusterSetCommand == NULL);
+    c->clusterSetCommandSize = 10;
+    c->clusterSetCommand = calloc(10, sizeof(char *));
+    for (int i = 0; i < 10; i++)
+        c->clusterSetCommand[i] = strdup("stale-long-form");
+}
+
 int main(void) {
-    RedisModule_Alloc = malloc;
+    RedisModule_Alloc = test_alloc;
     RedisModule_Calloc = calloc;
     RedisModule_Realloc = realloc;
     RedisModule_Free = free;
@@ -287,6 +370,39 @@ int main(void) {
     CHECK(!MR_ClusterIsMySlot(49));
     CHECK(!MR_ClusterIsMySlot(61));
     RedisModule_ShardingGetSlotRange = NULL;
+    run_event(); /* Restore one local master before the concurrent checks. */
+    CHECK(MR_ClusterIsMySlot(8192));
+    test_worker_ownership(1);
+    test_worker_ownership(2);
+
+    /* A same-topology snapshot must replace an old broadcast command too. */
+    install_old_command();
+    Node *retained = MR_GetNode(clusterCtx.CurrCluster, local_id);
+    lock_ctx(NULL);
+    Cluster *snapshot = MR_BuildCluster(NULL, 1, NULL);
+    unlock_ctx(NULL);
+    MR_UpdateClusterTopologyIfNeededUnderLock(snapshot);
+    CHECK(MR_GetNode(clusterCtx.CurrCluster, local_id) == retained);
+    CHECK(clusterCtx.CurrCluster->clusterSetCommandSize == 1);
+    CHECK(!strcmp(clusterCtx.CurrCluster->clusterSetCommand[0], CLUSTER_SET_FROM_SHARD_COMMAND));
+
+    /* Changed ranges with the same masters take the in-place snapshot path. */
+    master_count = 2;
+    MR_CreateNode(clusterCtx.CurrCluster, remote_id, "127.0.0.2", 7002, NULL, NULL, 4000, 7999);
+    view[0].port = view[2].port = current_port;
+    view[0].maxSlot = 3999;
+    view[1].minSlot = 4000;
+    view[1].maxSlot = 7999;
+    CHECK(MR_TryApplyTopologyInPlace(view, 3));
+    lock_ctx(NULL);
+    snapshot = MR_BuildCluster(NULL, 1, NULL);
+    unlock_ctx(NULL);
+    char **fresh_command = snapshot->clusterSetCommand;
+    MR_UpdateClusterTopologyIfNeededUnderLock(snapshot);
+    CHECK(MR_GetNode(clusterCtx.CurrCluster, local_id) == retained);
+    CHECK(clusterCtx.CurrCluster->clusterSetCommand == fresh_command);
+    CHECK(MR_ClusterIsMySlot(8191));
+    CHECK(!MR_ClusterIsMySlot(8192));
     CHECK(unlocked_api_calls == 0);
     FreeCluster(clusterCtx.CurrCluster);
     mr_dictRelease(clusterCtx.nodesMsgIds);

@@ -19,6 +19,7 @@
 #include "utils/adlist.h"
 
 #include <ctype.h>
+#include <pthread.h>
 
 #include <hiredis.h>
 #include <hiredis_ssl.h>
@@ -167,6 +168,11 @@ struct ClusterCtx {
     char *password;
     bool topologyEvents;
 }clusterCtx;
+
+/* Redis' lock protects main-thread readers, but execution workers do not
+ * hold it. Keep fallback slot reads outside every topology write transaction.
+ * Writers acquire Redis' lock first; readers hold only this lock. */
+static pthread_rwlock_t topologyLock = PTHREAD_RWLOCK_INITIALIZER;
 
 bool MR_TopologyEventSeen = false;
 
@@ -1453,12 +1459,24 @@ static bool SameCluster(Cluster* a, Cluster* b) {
     return entry == NULL;
 }
 
+/* Retain the snapshot's current reconnect command even when nodes are reused.
+ * Give the old command to the discarded snapshot so FreeCluster releases it. */
+static void SwapClusterSetCommand(Cluster *installed, Cluster *snapshot) {
+    char **oldCommand = installed->clusterSetCommand;
+    size_t oldSize = installed->clusterSetCommandSize;
+    installed->clusterSetCommand = snapshot->clusterSetCommand;
+    installed->clusterSetCommandSize = snapshot->clusterSetCommandSize;
+    snapshot->clusterSetCommand = oldCommand;
+    snapshot->clusterSetCommandSize = oldSize;
+}
+
 void MR_UpdateClusterTopologyIfNeeded(void* ctx){
     Cluster* cluster = ctx;
     RedisModule_Assert(cluster != NULL);
 
     if (SameCluster(cluster, clusterCtx.CurrCluster)) {
         RedisModule_Log(mr_staticCtx, "notice", "Skipping cluster topology update, same cluster topology");
+        SwapClusterSetCommand(clusterCtx.CurrCluster, cluster);
         FreeCluster(cluster);
         return;
     }
@@ -1487,6 +1505,7 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
                        MR_TryApplyTopologyInPlace(view, array_len(view));
         array_free(view);
         if (applied) {
+            SwapClusterSetCommand(clusterCtx.CurrCluster, cluster);
             FreeCluster(cluster);
             return;
         }
@@ -1525,7 +1544,9 @@ void MR_UpdateClusterTopologyIfNeeded(void* ctx){
 
 void MR_UpdateClusterTopologyIfNeededUnderLock(void* ctx){
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    pthread_rwlock_wrlock(&topologyLock);
     MR_UpdateClusterTopologyIfNeeded(ctx);
+    pthread_rwlock_unlock(&topologyLock);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 }
 
@@ -1823,7 +1844,9 @@ static int MR_SetClusterData(RedisModuleString** argv, int argc){
 static void MR_ClusterRefreshFromCommand(void* ctx){
     RedisModuleBlockedClient* bc = ctx;
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    pthread_rwlock_wrlock(&topologyLock);
     MR_RefreshClusterData();
+    pthread_rwlock_unlock(&topologyLock);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
     RedisModuleCtx* rCtx = RedisModule_GetThreadSafeContext(bc);
     RedisModule_ReplyWithSimpleString(rCtx, "OK");
@@ -1838,7 +1861,9 @@ static void MR_ClusterSetFromCommand(void* ctx){
     ClusterSetCtx* csCtx = ctx;
     if (!clusterCtx.CurrCluster || csCtx->force) {
         RedisModule_ThreadSafeContextLock(mr_staticCtx);
+        pthread_rwlock_wrlock(&topologyLock);
         int status = MR_SetClusterData(csCtx->argv, csCtx->argc);
+        pthread_rwlock_unlock(&topologyLock);
         RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
         if (status != REDISMODULE_OK) {
             csCtx->errReply = CLUSTER_ERROR" Failed to set cluster topology";
@@ -1884,9 +1909,11 @@ static int MR_ClusterRefresh(RedisModuleCtx *ctx, RedisModuleString **argv, int 
 static void MR_TopoRefreshTask(void* ctx){
     REDISMODULE_NOT_USED(ctx);
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
+    pthread_rwlock_wrlock(&topologyLock);
     if (clusterCtx.topologyEvents)
         MR_TopologyEventSeen = true;
     MR_UpdateClusterSlots();
+    pthread_rwlock_unlock(&topologyLock);
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
 }
 
@@ -2209,12 +2236,16 @@ int MR_ClusterIsMySlot(size_t slot) {
     }
     /* Older Redis versions have no slot-access API. Use the complete installed
      * map: a local shard can own several disjoint ranges after resharding. */
+    pthread_rwlock_rdlock(&topologyLock);
+    int isMine;
     if (clusterCtx.CurrCluster) {
-        if (slot >= NUMBER_OF_SLOTS) return false;
-        Node *owner = clusterCtx.CurrCluster->slots[slot];
-        return owner && owner->isMe;
+        Node *owner = slot < NUMBER_OF_SLOTS ? clusterCtx.CurrCluster->slots[slot] : NULL;
+        isMine = owner && owner->isMe;
+    } else {
+        isMine = clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
     }
-    return clusterCtx.minSlot <= slot && clusterCtx.maxSlot >= slot;
+    pthread_rwlock_unlock(&topologyLock);
+    return isMine;
 }
 
 uint16_t MR_Crc16(const char *buf, int len);
