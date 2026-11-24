@@ -1132,7 +1132,7 @@ static void GenerateRunId(Cluster* cluster){
 
 static void CopyClusterSetArgs(Cluster* cluster, RedisModuleString** argv, int argc){
     for(int i = 1 ; i < argc ; ++i){
-        if (i == CLUSTERSET_MYID_LONG_FORM_INDEX) {
+        if (IsLongFormClusterSet(argc) && i == CLUSTERSET_MYID_LONG_FORM_INDEX) {
             cluster->clusterSetCommand[i] = NULL;
             continue;
         }
