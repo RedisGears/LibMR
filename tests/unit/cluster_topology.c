@@ -211,6 +211,24 @@ int main(void) {
     Node *retained = MR_GetNode(clusterCtx.CurrCluster, local_id);
     CHECK(apply_command() == REDISMODULE_OK);
     CHECK(MR_GetNode(clusterCtx.CurrCluster, local_id) == retained);
+    /* Native events own topology once observed: late commands must not mutate it. */
+    clusterCtx.topologyEvents = true;
+    MR_TopologyEventSeen = true;
+    Cluster *event_cluster = clusterCtx.CurrCluster;
+    char **event_command = event_cluster->clusterSetCommand;
+    command[1] = "late-announcement";
+    CHECK(apply_command() == REDISMODULE_OK);
+    CHECK(clusterCtx.CurrCluster == event_cluster);
+    CHECK(clusterCtx.CurrCluster->clusterSetCommand == event_command);
+    CHECK(!strcmp(clusterCtx.CurrCluster->clusterSetCommand[1], "unused"));
+    snprintf(endpoint, sizeof(endpoint), "password@127.0.0.1:7009");
+    CHECK(apply_command() == REDISMODULE_OK);
+    CHECK(clusterCtx.CurrCluster == event_cluster);
+    /* Restore command mode before the independent concurrency checks. */
+    clusterCtx.topologyEvents = false;
+    MR_TopologyEventSeen = false;
+    snprintf(endpoint, sizeof(endpoint), "password@127.0.0.1:7000");
+    CHECK(apply_command() == REDISMODULE_OK);
     test_worker_ownership(1);
     retained = MR_GetNode(clusterCtx.CurrCluster, local_id);
     test_worker_ownership(2);

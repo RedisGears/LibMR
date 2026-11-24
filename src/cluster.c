@@ -1660,6 +1660,9 @@ static int MR_SetClusterData(RedisModuleString** argv, int argc){
      * without changing LibMR peers. Keep their connections and pending messages
      * in that case; rebuild when peer identity, address or credentials change. */
     if (IsLongFormClusterSet(argc)) {
+        /* Honor native-event ownership before reconciling or freeing anything. */
+        if (clusterCtx.topologyEvents && MR_TopologyEventSeen)
+            return REDISMODULE_OK;
         if (LongFormMyIdUnchanged(argv, argc) && ClusterSetArgsUnchanged(argv, argc)) {
             RedisModule_Log(mr_staticCtx, "notice",
                             "Got cluster set command with an unchanged topology, skipping the rebuild");
