@@ -26,6 +26,7 @@
 #include <libevent.h>
 
 #include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 #include <openssl/err.h>
 
 
@@ -570,46 +571,48 @@ char* getConfigValue(RedisModuleCtx *ctx, const char* confName){
     return res;
 }
 
-static int checkTLS(char** client_key, char** client_cert, char** ca_cert, char** key_pass){
-    int ret = 1;
+/* Read transport and identity settings under the same Redis lock on every connect. */
+typedef struct {
+    char *key, *cert, *ca, *ca_dir, *key_pass, *peer_names;
+} ClusterTLSConfig;
+
+static bool readClusterTLSConfig(ClusterTLSConfig *cfg) {
     RedisModule_ThreadSafeContextLock(mr_staticCtx);
-    char* clusterTls = NULL;
-    char* tlsPort = NULL;
-
-    clusterTls = getConfigValue(mr_staticCtx, "tls-cluster");
-    bool clusterTlsEnabled = clusterTls && !strcmp(clusterTls, "yes");
-    if (!clusterTlsEnabled) {
-        ret = 0;
-        goto done;
-    }
-
-    *client_key = getConfigValue(mr_staticCtx, "tls-key-file");
-    *client_cert = getConfigValue(mr_staticCtx, "tls-cert-file");
-    *ca_cert = getConfigValue(mr_staticCtx, "tls-ca-cert-file");
-    *key_pass = getConfigValue(mr_staticCtx, "tls-key-file-pass");
-
-    if (!*client_key || !*client_cert || !*ca_cert) {
-        ret = 0;
-        if (*client_key) {
-            MR_FREE(*client_key);
+    char *flag = getConfigValue(mr_staticCtx, "tls-cluster");
+    bool enabled = flag && !strcmp(flag, "yes");
+    MR_FREE(flag);
+    if (enabled) {
+        cfg->cert = getConfigValue(mr_staticCtx, "tls-client-cert-file");
+        if (cfg->cert && *cfg->cert) {
+            cfg->key = getConfigValue(mr_staticCtx, "tls-client-key-file");
+            cfg->key_pass = getConfigValue(mr_staticCtx, "tls-client-key-file-pass");
+        } else {
+            MR_FREE(cfg->cert);
+            cfg->cert = getConfigValue(mr_staticCtx, "tls-cert-file");
+            cfg->key = getConfigValue(mr_staticCtx, "tls-key-file");
+            cfg->key_pass = getConfigValue(mr_staticCtx, "tls-key-file-pass");
         }
-        if (*client_cert) {
-            MR_FREE(*client_cert);
-        }
-        if (*ca_cert) {
-            MR_FREE(*ca_cert);
-        }
-    }
-
-done:
-    if (clusterTls) {
-        MR_FREE(clusterTls);
-    }
-    if (tlsPort) {
-        MR_FREE(tlsPort);
+        cfg->ca = getConfigValue(mr_staticCtx, "tls-ca-cert-file");
+        cfg->ca_dir = getConfigValue(mr_staticCtx, "tls-ca-cert-dir");
+        cfg->peer_names = getConfigValue(mr_staticCtx, "tls-expected-peer-name");
     }
     RedisModule_ThreadSafeContextUnlock(mr_staticCtx);
-    return ret;
+    return enabled;
+}
+
+static bool configurePeerNames(SSL_CTX *ctx, char *names) {
+    if (!names || !*names) return true;
+    X509_VERIFY_PARAM *param = SSL_CTX_get0_param(ctx);
+    X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+    bool first = true;
+    char *state = NULL;
+    for (char *name = strtok_r(names, " ", &state); name; name = strtok_r(NULL, " ", &state)) {
+        int ok = first ? X509_VERIFY_PARAM_set1_host(param, name, 0)
+                       : X509_VERIFY_PARAM_add1_host(param, name, 0);
+        if (!ok) return false;
+        first = false;
+    }
+    return !first;
 }
 
 /* Callback for passing a keyfile password stored as an sds to OpenSSL */
@@ -625,55 +628,29 @@ static int MR_TlsPasswordCallback(char *buf, int size, int rwflag, void *u) {
     return (int) pass_len;
 }
 
-SSL_CTX* MR_CreateSSLContext(const char *cacert_filename,
-                             const char *cert_filename,
-                             const char *private_key_filename,
-                             const char *private_key_pass,
-                             redisSSLContextError *error)
+static SSL_CTX *createClusterSSLContext(ClusterTLSConfig *cfg)
 {
     SSL_CTX *ssl_ctx = SSL_CTX_new(SSLv23_client_method());
-    if (!ssl_ctx) {
-        if (error) *error = REDIS_SSL_CTX_CREATE_FAILED;
-        goto error;
-    }
+    if (!ssl_ctx) return NULL;
 
     SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
     SSL_CTX_set_verify(ssl_ctx, SSL_VERIFY_PEER, NULL);
-
-    /* always set the callback, otherwise if key is encrypted and password
-     * was not given, we will be waiting on stdin. */
     SSL_CTX_set_default_passwd_cb(ssl_ctx, MR_TlsPasswordCallback);
-    SSL_CTX_set_default_passwd_cb_userdata(ssl_ctx, (void *) private_key_pass);
+    SSL_CTX_set_default_passwd_cb_userdata(ssl_ctx, cfg->key_pass);
 
-    if ((cert_filename != NULL && private_key_filename == NULL) ||
-            (private_key_filename != NULL && cert_filename == NULL)) {
-        if (error) *error = REDIS_SSL_CTX_CERT_KEY_REQUIRED;
-        goto error;
+    const char *ca = cfg->ca && *cfg->ca ? cfg->ca : NULL;
+    const char *ca_dir = cfg->ca_dir && *cfg->ca_dir ? cfg->ca_dir : NULL;
+    if (!SSL_CTX_load_verify_locations(ssl_ctx, ca, ca_dir) ||
+        !configurePeerNames(ssl_ctx, cfg->peer_names) ||
+        !cfg->cert || !SSL_CTX_use_certificate_chain_file(ssl_ctx, cfg->cert) ||
+        !cfg->key || !SSL_CTX_use_PrivateKey_file(ssl_ctx, cfg->key, SSL_FILETYPE_PEM) ||
+        !SSL_CTX_check_private_key(ssl_ctx)) {
+        SSL_CTX_free(ssl_ctx);
+        return NULL;
     }
-
-    if (cacert_filename) {
-        if (!SSL_CTX_load_verify_locations(ssl_ctx, cacert_filename, NULL)) {
-            if (error) *error = REDIS_SSL_CTX_CA_CERT_LOAD_FAILED;
-            goto error;
-        }
-    }
-
-    if (cert_filename) {
-        if (!SSL_CTX_use_certificate_chain_file(ssl_ctx, cert_filename)) {
-            if (error) *error = REDIS_SSL_CTX_CLIENT_CERT_LOAD_FAILED;
-            goto error;
-        }
-        if (!SSL_CTX_use_PrivateKey_file(ssl_ctx, private_key_filename, SSL_FILETYPE_PEM)) {
-            if (error) *error = REDIS_SSL_CTX_PRIVATE_KEY_LOAD_FAILED;
-            goto error;
-        }
-    }
-
+    SSL_CTX_set_default_passwd_cb_userdata(ssl_ctx, NULL);
     return ssl_ctx;
 
-error:
-    if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-    return NULL;
 }
 
 static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
@@ -688,20 +665,16 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         return;
     }
 
-    char* client_cert = NULL;
-    char* client_key = NULL;
-    char* ca_cert = NULL;
-    char* key_file_pass = NULL;
-    if(checkTLS(&client_key, &client_cert, &ca_cert, &key_file_pass)){
-        redisSSLContextError ssl_error = 0;
-        SSL_CTX *ssl_context = MR_CreateSSLContext(ca_cert, client_cert, client_key, key_file_pass, &ssl_error);
-        MR_FREE(client_key);
-        MR_FREE(client_cert);
-        MR_FREE(ca_cert);
-        if (key_file_pass) {
-            MR_FREE(key_file_pass);
-        }
-        if(ssl_context == NULL || ssl_error != 0) {
+    ClusterTLSConfig cfg = {0};
+    if (readClusterTLSConfig(&cfg)) {
+        SSL_CTX *ssl_context = createClusterSSLContext(&cfg);
+        MR_FREE(cfg.cert);
+        MR_FREE(cfg.key);
+        MR_FREE(cfg.ca);
+        MR_FREE(cfg.ca_dir);
+        MR_FREE(cfg.key_pass);
+        MR_FREE(cfg.peer_names);
+        if (!ssl_context) {
             RedisModule_Log(mr_staticCtx, "warning", "SSL context generation to %s:%d failed, will initiate retry.", c->c.tcp.host, c->c.tcp.port);
             // disconnect async, its not possible to free redisAsyncContext here
             MR_EventLoopAddTask(MR_ClusterAsyncDisconnect, n);
@@ -709,7 +682,7 @@ static void MR_OnConnectCallback(const struct redisAsyncContext* c, int status){
         }
         SSL *ssl = SSL_new(ssl_context);
         SSL_CTX_free(ssl_context);
-        if (redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
+        if (!ssl || redisInitiateSSL((redisContext *)(&c->c), ssl) != REDIS_OK) {
             SSL_free(ssl);
             const char *err = "Unknown error";
             if (c->c.err != 0) {
