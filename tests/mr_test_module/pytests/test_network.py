@@ -211,9 +211,7 @@ class ShardMock():
         conn = Connection(sock)
         self.new_conns.put(conn)
 
-    def _send_cluster_set(self, mock_shard_id='2', first_arg='NO-USED'):
-        # try to promote to internal connection
-        promote_internal_client_if_supported(env=self.env)
+    def _cluster_set_args(self, mock_shard_id='2', first_arg='NO-USED'):
         # IPv6 endpoints must be bracketed in host:port strings
         endpoint_host = '[%s]' % self.host if ':' in self.host else self.host
         # Build arguments according to MR_SetClusterData parser:
@@ -239,6 +237,11 @@ class ShardMock():
             'ADDR', 'password@%s:%d' % (endpoint_host, self.port),
             'MASTER'
         ]
+        return args
+
+    def _send_cluster_set(self, mock_shard_id='2', first_arg='NO-USED'):
+        promote_internal_client_if_supported(env=self.env)
+        args = self._cluster_set_args(mock_shard_id, first_arg)
         self.env.cmd('MRTESTS.CLUSTERSET', *args)
         self.env.cmd('MRTESTS.FORCESHARDSCONNECTION')
 
@@ -878,3 +881,23 @@ def testSendMultiRangePerNodeTopology(env, conn):
 
             res = env.cmd(*cmd)
             assert res == 'OK'
+
+
+@MRTestDecorator(skipOnCluster=True)
+def testUnixAddrOnlyClusterSetIsNoOp(env, conn):
+    for host in _get_hosts():
+        with ShardMock(env, host) as shardMock:
+            shardMock.GetConnection()
+            run_id = env.cmd('MRTESTS.INFOCLUSTER')[3]
+            args = shardMock._cluster_set_args()
+            for which in (0, 1, 0):
+                update = list(args)
+                masters = [i for i, value in enumerate(update) if value == 'MASTER']
+                update[masters[which]:masters[which]] = ['UNIXADDR', '/tmp/unused-test.sock']
+                env.expect('MRTESTS.CLUSTERSET', *update).equal('OK')
+                env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)
+                env.cmd('MRTESTS.FORCESHARDSCONNECTION')
+                time.sleep(0.05)
+                env.assertTrue(shardMock.new_conns.empty())
+            env.expect('MRTESTS.CLUSTERSET', *args).equal('OK')
+            env.assertEqual(env.cmd('MRTESTS.INFOCLUSTER')[3], run_id)

@@ -1435,22 +1435,39 @@ static void SetClusterDataLongForm(RedisModuleString** argv, int argc){
 
 static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
     Cluster* current = clusterCtx.CurrCluster;
-    if (!current ||
-        !current->clusterSetCommand ||
-        current->clusterSetCommandSize != argc)
+    if (!current || !current->clusterSetCommand)
         return false;
 
-    for (int i = 1; i < argc; ++i) {
-        /* MYID identifies the receiving shard and is not retained in clusterSetCommand. */
-        if (i == CLUSTERSET_MYID_LONG_FORM_INDEX)
-            continue;
+    int previous = 1;
+    for (int i = 1; i < argc; ++i, ++previous) {
+        if (previous >= current->clusterSetCommandSize)
+            return false;
         size_t argLen;
         const char* arg = RedisModule_StringPtrLen(argv[i], &argLen);
-        if (argLen != strlen(current->clusterSetCommand[i]) ||
-            memcmp(arg, current->clusterSetCommand[i], argLen) != 0)
+        if (i == CLUSTERSET_MYID_LONG_FORM_INDEX) {
+            /* The cached command omits MYID; compare the installed identity. */
+            if (argLen > REDISMODULE_NODE_ID_LEN || !current->myId ||
+                strspn(current->myId, "0") < REDISMODULE_NODE_ID_LEN - argLen ||
+                memcmp(current->myId + REDISMODULE_NODE_ID_LEN - argLen, arg, argLen))
+                return false;
+            continue;
+        }
+        const char* old = current->clusterSetCommand[previous];
+        if (argLen != strlen(old) || memcmp(arg, old, argLen) != 0)
             return false;
+
+        if (i > CLUSTERSET_MYID_LONG_FORM_INDEX + 1 &&
+            !strcasecmp(RedisModule_StringPtrLen(argv[i - 1], NULL), "ADDR")) {
+            /* ParseShardEntry ignores UNIXADDR after ADDR's value; so must this check. */
+            if (i + 2 < argc &&
+                !strcasecmp(RedisModule_StringPtrLen(argv[i + 1], NULL), "UNIXADDR"))
+                i += 2;
+            if (previous + 2 < current->clusterSetCommandSize &&
+                !strcasecmp(current->clusterSetCommand[previous + 1], "UNIXADDR"))
+                previous += 2;
+        }
     }
-    return true;
+    return previous == current->clusterSetCommandSize;
 }
 
 static int MR_SetClusterData(RedisModuleString** argv, int argc){
