@@ -1439,7 +1439,6 @@ static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
         return false;
 
     int previous = 1;
-    bool addressValue = false;
     for (int i = 1; i < argc; ++i, ++previous) {
         if (previous >= current->clusterSetCommandSize)
             return false;
@@ -1457,7 +1456,8 @@ static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
         if (argLen != strlen(old) || memcmp(arg, old, argLen) != 0)
             return false;
 
-        if (addressValue) {
+        if (i > CLUSTERSET_MYID_LONG_FORM_INDEX + 1 &&
+            !strcasecmp(RedisModule_StringPtrLen(argv[i - 1], NULL), "ADDR")) {
             /* ParseShardEntry ignores UNIXADDR after ADDR's value; so must this check. */
             if (i + 2 < argc &&
                 !strcasecmp(RedisModule_StringPtrLen(argv[i + 1], NULL), "UNIXADDR"))
@@ -1465,9 +1465,6 @@ static bool IsSameLongFormClusterSet(RedisModuleString** argv, int argc){
             if (previous + 2 < current->clusterSetCommandSize &&
                 !strcasecmp(current->clusterSetCommand[previous + 1], "UNIXADDR"))
                 previous += 2;
-            addressValue = false;
-        } else {
-            addressValue = i > CLUSTERSET_MYID_LONG_FORM_INDEX && !strcasecmp(arg, "ADDR");
         }
     }
     return previous == current->clusterSetCommandSize;
